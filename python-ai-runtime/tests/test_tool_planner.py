@@ -634,6 +634,18 @@ class ToolPlannerTest(unittest.TestCase):
         )
         by_name = {plan.tool_name: plan for plan in plans}
         self.assertEqual(
+            ["fs_test_customer_source", "fs_test_customer_target"],
+            by_name["datasource.source.metadata.read"].arguments["tableNames"],
+        )
+        self.assertEqual(
+            ["fs_test_customer_source", "fs_test_customer_target"],
+            by_name["datasource.target.metadata.read"].arguments["tableNames"],
+        )
+        self.assertEqual(
+            "public",
+            by_name["datasource.target.metadata.read"].arguments["schemaPattern"],
+        )
+        self.assertEqual(
             ("datasource-source-metadata-read", "datasource-target-metadata-read"),
             by_name["sync.task.draft.save"].governance_hints["dependsOn"],
         )

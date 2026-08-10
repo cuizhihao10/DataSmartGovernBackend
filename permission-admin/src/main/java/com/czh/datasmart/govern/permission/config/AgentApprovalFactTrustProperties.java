@@ -34,4 +34,15 @@ public class AgentApprovalFactTrustProperties {
      */
     private Set<String> allowedSourceServices = new LinkedHashSet<>(
             Set.of("agent-runtime", "approval-service", "permission-admin"));
+
+    /**
+     * 可以作出最终审批决定的受信服务白名单。
+     *
+     * <p>运行时编排服务需要登记 {@code PENDING} 事实，方便后续 worker 知道自己应当等待人工确认；
+     * 但它不应当同时拥有把同一事实改写为 {@code APPROVED} 或 {@code REJECTED} 的能力。
+     * 否则只要运行时的共享凭据被误用，就能够绕过真正的审批中心。这个集合将“可以写入审批流程”
+     * 与“可以作出审批决定”拆成两个权限面，默认只信任专门审批服务和 permission-admin 控制面。</p>
+     */
+    private Set<String> approvalDecisionSourceServices = new LinkedHashSet<>(
+            Set.of("approval-service", "permission-admin"));
 }

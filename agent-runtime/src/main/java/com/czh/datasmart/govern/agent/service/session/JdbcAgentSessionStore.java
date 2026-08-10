@@ -229,10 +229,10 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
     private void upsertSession(Connection connection, AgentSessionRecord session) throws SQLException {
         String sql = """
                 INSERT INTO agent_session (
-                    session_id, agent_id, tenant_id, project_id, workspace_id, actor_id, actor_role, actor_type,
+                    session_id, agent_id, tenant_id, application_id, project_id, workspace_id, actor_id, actor_role, actor_type,
                     authorized_project_roles, channel, objective, isolation_level, workspace_key, state,
                     pinned, archived_at, last_message_at, create_time, update_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (session_id) DO UPDATE SET
                     agent_id=EXCLUDED.agent_id, actor_role=EXCLUDED.actor_role, actor_type=EXCLUDED.actor_type,
                     authorized_project_roles=EXCLUDED.authorized_project_roles, state=EXCLUDED.state,
@@ -244,6 +244,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
             statement.setString(index++, session.getSessionId());
             statement.setString(index++, session.getAgentId());
             setNullableLong(statement, index++, session.getTenantId());
+            setNullableLong(statement, index++, session.getApplicationId());
             setNullableLong(statement, index++, session.getProjectId());
             setNullableLong(statement, index++, session.getWorkspaceId());
             statement.setString(index++, session.getActorId());
@@ -417,7 +418,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
                     return Optional.empty();
                 }
                 AgentDelegationRecord delegation = queryDelegation(connection, sessionId).orElse(null);
-                return Optional.of(new AgentSessionRecord(
+                AgentSessionRecord session = new AgentSessionRecord(
                         sessionId,
                         resultSet.getString("agent_id"),
                         nullableLong(resultSet, "tenant_id"),
@@ -441,7 +442,9 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
                         queryToolBindings(connection, sessionId),
                         queryRuns(connection, sessionId),
                         queryMessages(connection, sessionId)
-                ));
+                );
+                session.bindApplicationId(nullableLong(resultSet, "application_id"));
+                return Optional.of(session);
             }
         }
     }

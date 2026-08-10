@@ -28,6 +28,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AgentRunConfirmedExecutionController {
 
+    /**
+     * Gateway 在完成租户、应用和项目权限判定后重建的应用范围 Header。
+     *
+     * <p>应用 ID 不能从 projectId 推导：不同租户下项目编号可以相同，而一次 Agent 委托、
+     * Specialist fact 和后确认执行必须落在同一个 tenant/application/project 三元范围内。
+     * 因此 Controller 只读取 Gateway 注入的值，并交由服务层在需要声明任务已提交时 fail-closed 校验。</p>
+     */
+    private static final String APPLICATION_ID_HEADER = "X-DataSmart-Application-Id";
+
     private final AgentRunConfirmedExecutionService confirmedExecutionService;
 
     @PostMapping("/{sessionId}/runs/{runId}/confirm-and-execute")
@@ -36,6 +45,7 @@ public class AgentRunConfirmedExecutionController {
             @PathVariable String runId,
             @Valid @RequestBody AgentRunConfirmedExecutionRequest request,
             @RequestHeader(PlatformContextHeaders.TENANT_ID) Long tenantId,
+            @RequestHeader(value = APPLICATION_ID_HEADER, required = false) Long applicationId,
             @RequestHeader(PlatformContextHeaders.PROJECT_ID) Long projectId,
             @RequestHeader(PlatformContextHeaders.ACTOR_ID) String actorId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
@@ -46,7 +56,7 @@ public class AgentRunConfirmedExecutionController {
         return PlatformApiResponse.success(
                 "Agent 计划确认执行完成",
                 confirmedExecutionService.confirmAndExecute(
-                        sessionId, runId, request, tenantId, projectId, actorId,
+                        sessionId, runId, request, tenantId, applicationId, projectId, actorId,
                         actorRole, actorType, authorizedProjectRoles, traceId),
                 traceId
         );

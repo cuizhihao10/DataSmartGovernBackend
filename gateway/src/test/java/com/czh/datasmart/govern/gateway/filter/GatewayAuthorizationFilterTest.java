@@ -92,6 +92,131 @@ class GatewayAuthorizationFilterTest {
     }
 
     /**
+     * 专业事实 session 查询必须经过 GatewayAuthorizationFilter，并使用独立的事实查看动作，
+     * 不能因为路径属于 /api/agent/** 就被当成未授权的直通路由或普通会话查询。
+     */
+    @Test
+    void specialistTurnFactSessionQueryShouldUseDedicatedAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole(
+                "/api/agent/specialist-turn-facts/sessions/session-1", "GET", "ORDINARY_USER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("AI_RUNTIME");
+        assertThat(captor.getValue().getAction()).isEqualTo("VIEW");
+        assertThat(chain.called()).isTrue();
+    }
+
+    /**
+     * 专业事实 run 查询与 session 查询必须使用同一个 AI_RUNTIME + VIEW 语义，
+     * 不能因为路径定位符不同而落入通用 Agent POST/GET 规则。
+     */
+    @Test
+    void specialistTurnFactRunQueryShouldUseDedicatedAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole(
+                "/api/agent/specialist-turn-facts/runs/run-1", "GET", "ORDINARY_USER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("AI_RUNTIME");
+        assertThat(captor.getValue().getAction()).isEqualTo("VIEW");
+        assertThat(chain.called()).isTrue();
+    }
+
+    /**
+     * 专业事实登记即使从 /api/agent 路径进入，也必须命中受控 EXECUTE 动作而不是普通 POST -> CREATE；
+     * agent-runtime Controller 的 source-service + internal-token 守卫仍是最终写入边界。
+     *
+     * <p>请求故意使用没有尾斜杠的集合根路径。路由 metadata 使用真实 V48 的
+     * {@code /api/agent/specialist-turn-facts/**} pattern，本断言因此同时验证 Spring
+     * {@code PathPatternParser} 能让该通配模式匹配根路径，避免服务账号 exact allow 与人类 wildcard
+     * deny 出现覆盖空洞。</p>
+     */
+    @Test
+    void specialistTurnFactRegistrationShouldUseControlledAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = serviceAccountExchange(
+                "/api/agent/specialist-turn-facts", "POST");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("AI_RUNTIME");
+        assertThat(captor.getValue().getAction()).isEqualTo("EXECUTE");
+        assertThat(captor.getValue().getActorRole()).isEqualTo("SERVICE_ACCOUNT");
+        assertThat(chain.called()).isTrue();
+    }
+
+    /**
+     * 专业事实登记的子路径也必须命中同一条 /** 专用 metadata，而不能退回 POST -> CREATE。
+     *
+     * <p>基础路径会先经过内部服务端点保护；子路径不属于内部 exact endpoint，但仍应由
+     * Gateway 的 PathPatternParser 识别为专业事实路由，并把 AI_RUNTIME + EXECUTE 传给权限中心。
+     * 这个用例与 permission-admin 的真实 PostgreSQL 集成用例互补：这里验证网关元数据解析，
+     * 集成测试验证数据库中的 /** DENY 与 exact allow 的最终策略选择。</p>
+     */
+    @Test
+    void specialistTurnFactRegistrationChildPathShouldUseWildcardMetadata() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = serviceAccountExchange(
+                "/api/agent/specialist-turn-facts/child", "POST");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("AI_RUNTIME");
+        assertThat(captor.getValue().getAction()).isEqualTo("EXECUTE");
+        assertThat(captor.getValue().getActorRole()).isEqualTo("SERVICE_ACCOUNT");
+        assertThat(chain.called()).isTrue();
+    }
+
+    /**
+     * 普通用户不能通过 Gateway 进入事实登记根路径。
+     *
+     * <p>这个本地守卫比 permission-admin 更早执行，避免普通客户端把一份伪造的低敏 JSON
+     * 送到 agent-runtime；即使请求绕过 Gateway 直达 Java 服务，后续共享 token 守卫仍会再次拒绝。</p>
+     */
+    @Test
+    void nonServiceAccountSpecialistTurnFactRegistrationShouldBeRejectedLocally() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole(
+                "/api/agent/specialist-turn-facts", "POST", "ORDINARY_USER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isFalse();
+        assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(403);
+        verify(decisionClient, never()).evaluate(any(), any());
+    }
+
+    /**
      * 项目创建申请不是权限设置写操作，必须使用专用申请资源和 APPLY 动作。
      */
     @Test
@@ -233,6 +358,40 @@ class GatewayAuthorizationFilterTest {
                 .isEqualTo("101");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
                 .isEqualTo("101,102");
+    }
+
+    /**
+     * 浏览器携带的应用 Header 只是未验证输入，不能随着项目选择透传给下游。
+     * Gateway 必须删除伪造值，并且只使用 permission-admin 从项目主数据解析的 applicationId 重建它。
+     */
+    @Test
+    void permissionDecisionShouldReplaceSpoofedApplicationHeader() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerHttpRequest request = MockServerHttpRequest
+                .method(org.springframework.http.HttpMethod.GET, "/api/agent/specialist-turn-facts/runs/run-1")
+                .header(PlatformContextHeaders.TRACE_ID, "trace-test-001")
+                .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.ACTOR_ID, "1001")
+                .header(PlatformContextHeaders.ACTOR_ROLE, "ORDINARY_USER")
+                .header(GatewayAuthorizationFilter.APPLICATION_ID_HEADER, "999999")
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW, "101");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID, 101L);
+        GatewayPermissionDecisionResult decision = allowedDecision();
+        decision.setEffectiveTenantId(10L);
+        decision.setEffectiveApplicationId(301L);
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(decision));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders()
+                .getFirst(GatewayAuthorizationFilter.APPLICATION_ID_HEADER)).isEqualTo("301");
     }
 
     /**

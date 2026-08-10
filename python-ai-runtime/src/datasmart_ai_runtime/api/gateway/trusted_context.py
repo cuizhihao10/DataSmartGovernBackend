@@ -12,11 +12,15 @@
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
+from dataclasses import replace
 from typing import Any, Mapping
 
 from datasmart_ai_runtime.api.gateway.signature import (
     GatewaySignatureNonceStore,
+    GatewaySignatureVerificationError,
     GatewaySignatureVerificationConfig,
     ensure_gateway_signature,
     gateway_signature_config_from_env,
@@ -24,9 +28,72 @@ from datasmart_ai_runtime.api.gateway.signature import (
 
 
 GATEWAY_SOURCE_SERVICE = "datasmart-govern-gateway"
+AGENT_RUNTIME_SOURCE_SERVICE = "agent-runtime"
 TRUSTED_ROOT_KEY = "trustedControlPlane"
 TOOL_POLICY_ENVELOPE_HEADER = "X-DataSmart-Tool-Policy-Envelope"
 MAX_TOOL_POLICY_ENVELOPE_BYTES = 4096
+
+
+def runtime_event_access_context_from_gateway_headers(
+    headers: Mapping[str, str],
+    *,
+    signature_config: GatewaySignatureVerificationConfig | None = None,
+    now_ms: int | None = None,
+    nonce_store: GatewaySignatureNonceStore | None = None,
+) -> Any:
+    """Build the event authorization context from verified Gateway headers.
+
+    Event control messages are client supplied JSON and therefore must never be
+    used as the source of tenant, project, actor, or role facts.  This helper is
+    intentionally at the API trust boundary so HTTP and WebSocket routes share
+    the same signature verification and identity projection.
+
+    When signature enforcement is disabled, an empty context is returned for
+    local development.  Production deployments enable enforcement and therefore
+    fail closed for missing or invalid Gateway evidence.
+    """
+
+    from datasmart_ai_runtime.services.runtime_events.runtime_event_authorization import (
+        RuntimeEventAccessContext,
+    )
+
+    effective_signature_config = signature_config or gateway_signature_config_from_env()
+    source_service = _header(headers, "X-DataSmart-Source-Service")
+    if source_service == GATEWAY_SOURCE_SERVICE:
+        # Event subscriptions can expose persisted execution history, so a
+        # claimed Gateway source is always required to prove its HMAC.
+        ensure_gateway_signature(
+            headers,
+            replace(effective_signature_config, required=True),
+            now_ms=now_ms,
+            nonce_store=nonce_store,
+        )
+    elif effective_signature_config.required:
+        raise GatewaySignatureVerificationError("missing-trusted-source")
+    else:
+        return RuntimeEventAccessContext()
+
+    actor_role = _header(headers, "X-DataSmart-Actor-Role")
+    roles = _csv(actor_role)
+    normalized_roles = {role.strip().upper() for role in roles}
+    return RuntimeEventAccessContext(
+        tenant_id=_header(headers, "X-DataSmart-Tenant-Id"),
+        project_id=_header(headers, "X-DataSmart-Project-Id"),
+        actor_id=_header(headers, "X-DataSmart-Actor-Id"),
+        roles=roles,
+        is_platform_admin=bool(normalized_roles & {"PLATFORM_ADMIN", "PLATFORM_ADMINISTRATOR"}),
+        is_tenant_admin=bool(normalized_roles & {"TENANT_ADMIN", "TENANT_ADMINISTRATOR"}),
+        is_auditor=bool(normalized_roles & {"AUDITOR", "PLATFORM_AUDITOR"}),
+        attributes={
+            key: value
+            for key, value in {
+                "traceId": _header(headers, "X-DataSmart-Trace-Id"),
+                "applicationId": _header(headers, "X-DataSmart-Application-Id"),
+                "workspaceId": _header(headers, "X-DataSmart-Workspace-Id"),
+            }.items()
+            if value
+        },
+    )
 
 
 def enrich_agent_plan_payload_from_gateway_headers(
@@ -70,6 +137,7 @@ def enrich_agent_plan_payload_from_gateway_headers(
     ensure_gateway_signature(headers, effective_signature_config, now_ms=now_ms, nonce_store=nonce_store)
 
     tenant_id = _header(headers, "X-DataSmart-Tenant-Id")
+    application_id = _header(headers, "X-DataSmart-Application-Id")
     project_id = _header(headers, "X-DataSmart-Project-Id")
     actor_id = _header(headers, "X-DataSmart-Actor-Id")
     actor_role = _header(headers, "X-DataSmart-Actor-Role")
@@ -94,6 +162,10 @@ def enrich_agent_plan_payload_from_gateway_headers(
         # Gateway 已经在路由授权阶段校验当前项目。Python 再做一次 fail-closed 防御，是为了避免
         # 过滤器顺序、灰度版本或内部调用方错误地组合“当前项目”和“授权项目集合”。
         raise PermissionError("trusted project context is outside authorized project scope")
+    if project_id and not _positive_id(application_id):
+        # 应用范围不能从 projectId、应用名称、用户正文或模型结果推断。Gateway 已识别并签名的项目请求
+        # 如果缺少正整数 applicationId，说明授权上下文重建不完整，必须在 Python API 边界 fail-closed。
+        raise PermissionError("trusted application context is missing or invalid")
 
     # tenantId 与 actorId 属于认证主体事实。只要 gateway 已提供，就覆盖请求体同名字段；
     # 如果 Header 缺失则保留请求体值，兼容本地开发，但生产 gateway 应配置为身份缺失时拒绝请求。
@@ -115,10 +187,14 @@ def enrich_agent_plan_payload_from_gateway_headers(
         "workspaceRiskLevel": workspace_risk_level,
     }
     trusted_control_plane = {
+        # Specialist coordinator 从根级读取该字段，保证所有专业 Agent 使用同一份 Gateway 受信应用范围。
+        # requestContext 同时保留一份用于低敏审计展示；两者都来自同一个已签名 Header。
+        "applicationId": application_id,
         "requestContext": {
             "sourceService": source_service,
             "traceId": trace_id,
             "tenantId": tenant_id,
+            "applicationId": application_id,
             "projectId": project_id,
             "actorId": actor_id,
             "actorRole": actor_role,
@@ -165,6 +241,132 @@ def enrich_agent_plan_payload_from_gateway_headers(
     return sanitized
 
 
+def enrich_rag_query_payload_from_trusted_headers(
+    payload: Mapping[str, object],
+    headers: Mapping[str, str],
+    *,
+    signature_config: GatewaySignatureVerificationConfig | None = None,
+    now_ms: int | None = None,
+    nonce_store: GatewaySignatureNonceStore | None = None,
+    internal_service_token: str | None = None,
+) -> dict[str, object]:
+    """为 RAG 查询重建受信租户/应用/项目/用户/workspace 作用域。
+
+    RAG 与普通 Agent plan 一样会读取项目知识和历史案例，但它的请求体是一个看起来很普通的 JSON，
+    很容易被误认为可以直接信任 ``tenantId``、``projectId`` 或 ``actorId``。该函数把两条合法调用链
+    明确分开：
+
+    - 浏览器 -> Gateway -> Python：必须由 Gateway HMAC 证明 Header 快照，正文作用域字段全部丢弃；
+    - Java Agent Runtime -> Python：必须携带 Agent Runtime 内部共享凭证，作用域仍只来自 Header；
+    - 其他直连：仅在本地未启用可信边界时保留离线单测兼容，生产/Compose 的强制验签配置会拒绝。
+
+    RAG 调整参数、question 和 session/trace 关联可以继续来自正文；身份、范围和授权集合不能来自正文。
+    这里不把 trustedControlPlane 快照写回 RAG payload，避免 LangGraph checkpoint 或回答摘要意外保存控制面细节。
+    """
+
+    sanitized = dict(payload)
+    source_service = _header(headers, "X-DataSmart-Source-Service")
+    effective_signature_config = signature_config or gateway_signature_config_from_env()
+
+    if source_service == GATEWAY_SOURCE_SERVICE:
+        # RAG 会直接读取向量/案例证据，不能沿用普通 plan 的“签名可选”迁移兼容模式。
+        # 是否允许本地无 gateway 的离线调用由下面的 no-source 分支控制；一旦请求声称来自 gateway，
+        # 该路径始终进入强制 HMAC 校验，防止只伪造 source-service 就获得跨项目查询能力。
+        enriched = enrich_agent_plan_payload_from_gateway_headers(
+            {"variables": {}},
+            headers,
+            signature_config=replace(effective_signature_config, required=True),
+            now_ms=now_ms,
+            nonce_store=nonce_store,
+        )
+        trusted = enriched.get("variables", {}).get(TRUSTED_ROOT_KEY, {})
+        request_context = trusted.get("requestContext", {}) if isinstance(trusted, Mapping) else {}
+        return _apply_trusted_rag_scope(
+            sanitized,
+            tenant_id=_header(headers, "X-DataSmart-Tenant-Id"),
+            application_id=trusted.get("applicationId") if isinstance(trusted, Mapping) else None,
+            project_id=request_context.get("projectId") if isinstance(request_context, Mapping) else None,
+            actor_id=request_context.get("actorId") if isinstance(request_context, Mapping) else None,
+            workspace_key=request_context.get("workspaceId") if isinstance(request_context, Mapping) else None,
+            trace_id=request_context.get("traceId") if isinstance(request_context, Mapping) else None,
+            authorized_project_ids=request_context.get("authorizedProjectIds")
+            if isinstance(request_context, Mapping)
+            else (),
+        )
+
+    if source_service == AGENT_RUNTIME_SOURCE_SERVICE:
+        expected_token = (
+            internal_service_token
+            or os.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN")
+            or ""
+        ).strip()
+        actual_token = (_header(headers, "X-DataSmart-Internal-Service-Token") or "").strip()
+        if not expected_token or not actual_token or not hmac.compare_digest(actual_token, expected_token):
+            raise PermissionError("agent-runtime internal service token is missing or invalid")
+        return _apply_trusted_rag_scope(
+            sanitized,
+            tenant_id=_header(headers, "X-DataSmart-Tenant-Id"),
+            application_id=_header(headers, "X-DataSmart-Application-Id"),
+            project_id=_header(headers, "X-DataSmart-Project-Id"),
+            actor_id=_header(headers, "X-DataSmart-Actor-Id"),
+            workspace_key=_header(headers, "X-DataSmart-Workspace-Id"),
+            trace_id=_header(headers, "X-DataSmart-Trace-Id"),
+            authorized_project_ids=_csv(_header(headers, "X-DataSmart-Authorized-Project-Ids")),
+        )
+
+    if effective_signature_config.required:
+        raise GatewaySignatureVerificationError("missing-trusted-source")
+
+    # 仅保留未启用可信边界的离线学习/单测兼容。只要 Compose 或生产把 required 打开，
+    # 上面的分支就会拒绝任何没有 Gateway HMAC 或 Agent Runtime 内部 token 的请求。
+    return sanitized
+
+
+def _apply_trusted_rag_scope(
+    payload: Mapping[str, object],
+    *,
+    tenant_id: object,
+    application_id: object,
+    project_id: object,
+    actor_id: object,
+    workspace_key: object,
+    trace_id: object,
+    authorized_project_ids: object,
+) -> dict[str, object]:
+    """把已验真的作用域覆盖到 RAG payload，并执行应用/项目/授权集合完整性校验。"""
+
+    tenant_text = _string_value(tenant_id)
+    application_text = _string_value(application_id)
+    project_text = _string_value(project_id)
+    actor_text = _string_value(actor_id)
+    workspace_text = _string_value(workspace_key)
+    if not tenant_text or not application_text or not project_text or not actor_text or not workspace_text:
+        raise PermissionError("trusted RAG tenant/application/project/actor/workspace context is incomplete")
+    if not _positive_id(application_text):
+        raise PermissionError("trusted RAG application context is missing or invalid")
+    project_scope = tuple(str(item).strip() for item in authorized_project_ids or () if str(item).strip())
+    if not project_scope or project_text not in project_scope:
+        raise PermissionError("trusted RAG project context is outside authorized project scope")
+
+    sanitized = dict(payload)
+    # camelCase/snake_case 两套正文身份字段都清掉，避免调用方通过别名绕过覆盖。
+    for key in (
+        "tenantId", "tenant_id", "applicationId", "application_id", "projectId", "project_id",
+        "actorId", "actor_id", "workspaceKey", "workspace_key", "traceId", "trace_id",
+        "trustedControlPlane", "variables",
+    ):
+        sanitized.pop(key, None)
+    sanitized.update({
+        "tenantId": tenant_text,
+        "projectId": project_text,
+        "actorId": actor_text,
+        "workspaceKey": workspace_text,
+    })
+    if trace_text := _string_value(trace_id):
+        sanitized["traceId"] = trace_text
+    return sanitized
+
+
 def _header(headers: Mapping[str, str], name: str) -> str | None:
     """大小写不敏感读取 Header，兼容 Starlette Headers 与普通测试字典。"""
 
@@ -182,6 +384,19 @@ def _csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _positive_id(value: str | None) -> bool:
+    """判断 Gateway 重建的作用域标识是否为正整数，拒绝名称、零值和缺失值。
+
+    该校验只用于可信控制面 ID，不会尝试从 projectId 或请求正文补值。这样应用隔离错误会在模型、工具和
+    Specialist 执行之前暴露，而不是等到 Java 事实登记接口返回一个难以关联原请求的 400。
+    """
+
+    try:
+        return int(str(value or "").strip()) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _tool_policy_envelope_from_header(headers: Mapping[str, str]) -> Mapping[str, Any] | None:

@@ -61,6 +61,7 @@ public class AgentToolActionResumeFactBundleController {
             @RequestBody(required = false) AgentToolActionResumeFactBundleQueryRequest request,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.APPLICATION_ID, required = false) String currentApplicationId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
@@ -68,6 +69,7 @@ public class AgentToolActionResumeFactBundleController {
             String authorizedProjectIds) {
         AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
                 currentTenantId,
+                currentApplicationId,
                 currentActorId,
                 currentActorRole,
                 traceId,

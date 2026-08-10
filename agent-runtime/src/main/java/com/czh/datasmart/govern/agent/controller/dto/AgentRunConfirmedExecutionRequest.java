@@ -20,5 +20,18 @@ public record AgentRunConfirmedExecutionRequest(
         Boolean confirmed,
 
         @Size(max = 500, message = "确认说明不能超过 500 个字符")
-        String comment) {
+        String comment,
+
+        /**
+         * Stable client retry key for this confirmation boundary.  The server
+         * still treats a terminal Run as consumed, so changing this value can
+         * never reopen or execute a completed Run.
+         */
+        @Size(max = 128, message = "幂等键不能超过 128 个字符")
+        String idempotencyKey) {
+
+    /** Backward-compatible constructor for older internal callers. */
+    public AgentRunConfirmedExecutionRequest(Boolean confirmed, String comment) {
+        this(confirmed, comment, null);
+    }
 }

@@ -93,6 +93,15 @@ class LangGraphMultiAgentExecutionPlanTest(unittest.TestCase):
         )
         self.assertIn("CREATE_OR_WAIT_HOST_APPROVAL_FACT", summary["nextActions"])
         self.assertIn("MATERIALIZE_HANDOFF_CONTRACT_IN_JAVA_CONTROL_PLANE", summary["nextActions"])
+        work_items = {item["agentRole"]: item for item in summary["workItems"]}
+        # 全局计划仍然等待高风险工具的审批，但无 handoff 的数据源 Specialist
+        # 不应被这个全局状态误判为等待审批；它必须能先完成只读元数据工作。
+        self.assertEqual("PLANNED_READY", work_items["DATASOURCE_AGENT"]["status"])
+        self.assertFalse(work_items["DATASOURCE_AGENT"]["handoffRequired"])
+        self.assertEqual(
+            "WAITING_HUMAN_OR_PERMISSION_HANDOFF",
+            work_items["DATA_QUALITY_AGENT"]["status"],
+        )
         self.assertNotIn("secret-datasource-id", serialized)
         self.assertNotIn("secret business goal", serialized)
         self.assertNotIn("secret objective", serialized)

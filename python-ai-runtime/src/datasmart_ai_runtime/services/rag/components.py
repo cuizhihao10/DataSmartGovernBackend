@@ -10,9 +10,16 @@ from datasmart_ai_runtime.services.memory.memory_embedding_provider import Agent
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
-from datasmart_ai_runtime.services.rag.knowledge_base import InMemoryRagKnowledgeBase, RagHybridRetriever
+from datasmart_ai_runtime.services.rag.knowledge_base import RagHybridRetriever
 from datasmart_ai_runtime.services.rag.models import RagChunkSourceType, RagDocument
 from datasmart_ai_runtime.services.rag.pipeline import RagPipeline
+from datasmart_ai_runtime.services.rag.persistence import (
+    RagKnowledgeBaseRuntime,
+    RagKnowledgeBaseSettings,
+    RagPostgresConnectionFactory,
+    build_rag_knowledge_base_runtime,
+    rag_knowledge_base_settings_from_env,
+)
 
 
 def build_default_governance_rag_pipeline(
@@ -21,17 +28,27 @@ def build_default_governance_rag_pipeline(
     model_gateway: ModelGatewayGovernanceService,
     model_providers: ModelProviderRegistry,
     embedding_provider: AgentMemoryEmbeddingProvider | None = None,
+    knowledge_base_settings: RagKnowledgeBaseSettings | None = None,
+    connection_factory: RagPostgresConnectionFactory | None = None,
 ) -> RagPipeline:
     """构建默认治理 RAG 管线。
 
-    默认文档不是为了替代客户知识库，而是用于本地 smoke、学习和 API 合同验证。真实部署时应把文档来源
-    改为 PostgreSQL/MinIO/Neo4j 或企业文档服务，并继续复用 RagPipeline。
+    默认文档不是为了替代客户知识库，而是用于显式选择的本地 smoke、学习和 API 合同验证。
+    真实部署时由 `RagKnowledgeBaseSettings` 选择 PostgreSQL/pgvector；未配置持久存储时，
+    Runtime 使用不可用的 fail-closed 知识库，而不是悄悄使用内存文档。
+
+    `connection_factory` 只用于测试、迁移 smoke 或由宿主注入连接池。生产默认使用共享的 psycopg3
+    PostgreSQL 连接装配，并且不在启动时自动创建 schema。
     """
 
-    knowledge_base = InMemoryRagKnowledgeBase(default_governance_rag_documents())
-    retriever = RagHybridRetriever(
-        knowledge_base,
+    runtime: RagKnowledgeBaseRuntime = build_rag_knowledge_base_runtime(
+        settings=knowledge_base_settings or rag_knowledge_base_settings_from_env(),
         embedding_provider=embedding_provider,
+        connection_factory=connection_factory,
+    )
+    retriever = RagHybridRetriever(
+        runtime.knowledge_base,
+        embedding_provider=runtime.embedding_provider or embedding_provider,
     )
     return RagPipeline(
         retriever=retriever,

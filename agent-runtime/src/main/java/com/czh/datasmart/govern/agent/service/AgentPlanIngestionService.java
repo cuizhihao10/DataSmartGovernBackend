@@ -91,6 +91,13 @@ public class AgentPlanIngestionService {
      * @return Java 控制面接入结果。
      */
     public IngestedAgentPlanView ingest(IngestAgentPlanRequest request, String traceId) {
+        return ingest(request, traceId, null);
+    }
+
+    /** 接入带 Gateway 应用边界的 Python AgentPlan；applicationId 不从模型输入推导。 */
+    public IngestedAgentPlanView ingest(IngestAgentPlanRequest request,
+                                        String traceId,
+                                        Long applicationId) {
         ensureRuntimeEnabled();
         /*
          * 幂等检查必须放在创建会话和 Run 之前。
@@ -101,7 +108,7 @@ public class AgentPlanIngestionService {
         if (replay.isPresent()) {
             return replay.get();
         }
-        AgentSessionRecord session = resolveSession(request);
+        AgentSessionRecord session = resolveSession(request, applicationId);
         List<AgentPlanToolSnapshot> toolSnapshots = normalizeToolPlans(request);
         synchronized (session) {
             ensureRunCapacityOrSupersedePendingPlan(session);
@@ -153,26 +160,26 @@ public class AgentPlanIngestionService {
         }
     }
 
-    private AgentSessionRecord resolveSession(IngestAgentPlanRequest request) {
+    private AgentSessionRecord resolveSession(IngestAgentPlanRequest request, Long applicationId) {
         if (request.sessionId() == null || request.sessionId().isBlank()) {
-            AgentSessionRecord session = createSession(request);
+            AgentSessionRecord session = createSession(request, applicationId);
             sessionMemoryStore.save(session);
             return session;
         }
         AgentSessionRecord session = sessionMemoryStore.findById(request.sessionId())
                 .orElseThrow(() -> new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
                         "Agent 会话不存在，无法接入 Python AgentPlan，sessionId=" + request.sessionId()));
-        ensureSameBoundary(session, request);
+        ensureSameBoundary(session, request, applicationId);
         return session;
     }
 
-    private AgentSessionRecord createSession(IngestAgentPlanRequest request) {
+    private AgentSessionRecord createSession(IngestAgentPlanRequest request, Long applicationId) {
         WorkspaceIsolationLevel isolationLevel = request.isolationLevel() == null
                 ? WorkspaceIsolationLevel.PROJECT
                 : request.isolationLevel();
         String sessionId = "ags_" + UUID.randomUUID().toString().replace("-", "");
         LocalDateTime now = LocalDateTime.now();
-        return new AgentSessionRecord(
+        AgentSessionRecord session = new AgentSessionRecord(
                 sessionId,
                 request.tenantId(),
                 request.projectId(),
@@ -187,15 +194,22 @@ public class AgentPlanIngestionService {
                 buildWorkspaceKey(isolationLevel, request.tenantId(), request.projectId(), request.workspaceId(), sessionId),
                 now
         );
+        session.bindApplicationId(applicationId);
+        return session;
     }
 
-    private void ensureSameBoundary(AgentSessionRecord session, IngestAgentPlanRequest request) {
+    private void ensureSameBoundary(AgentSessionRecord session,
+                                    IngestAgentPlanRequest request,
+                                    Long applicationId) {
         if (!Objects.equals(session.getTenantId(), request.tenantId())
                 || !Objects.equals(session.getProjectId(), request.projectId())
                 || !Objects.equals(session.getWorkspaceId(), request.workspaceId())
                 || !Objects.equals(session.getActorId(), request.actorId())) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
                     "Python AgentPlan 的租户/项目/工作空间/actor 与已有会话不一致，拒绝接入以避免跨边界混写。");
+        }
+        if (applicationId != null) {
+            session.bindApplicationId(applicationId);
         }
     }
 

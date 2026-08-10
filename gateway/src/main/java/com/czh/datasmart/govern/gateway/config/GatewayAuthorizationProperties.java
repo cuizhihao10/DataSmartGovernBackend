@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.gateway.config;
 
+import jakarta.annotation.PostConstruct;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -206,12 +207,21 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/datasource/**", "DATASOURCE", "数据源、连接器、元数据与同步控制面"));
         defaults.add(route("/api/agent/plan-ingestions", "AI_RUNTIME",
                 "Python AI Runtime 向 Java agent-runtime 提交 AgentPlan 的内部控制面入口", Map.of("POST", "INGEST_PLAN")));
+        defaults.add(route("/api/agent/specialist-turn-facts/**", "AI_RUNTIME",
+                "专业 Agent turn 事实读取与受信登记入口；读取仍受对象级数据范围约束，登记必须通过可信服务白名单和内部凭证",
+                Map.of("GET", "VIEW", "POST", "EXECUTE")));
         defaults.add(route("/api/internal/agent-runtime/**", "AI_RUNTIME",
                 "Agent Runtime 内部服务账号控制面入口，用于 worker lease、worker receipt、payload materialization 等机器协议调用",
                 internalMethodActions()));
         defaults.add(route("/api/agent/events/ws", "AI_RUNTIME",
                 "Agent Runtime 实时事件 WebSocket 订阅入口，用于订阅 run/session 进度、断线续传、ack 和 heartbeat",
                 Map.of("GET", "SUBSCRIBE")));
+        defaults.add(route("/api/agent/events/replay", "AI_RUNTIME",
+                "Python Runtime 实时事件 REST 补偿回放入口；只返回当前授权范围内的低敏事件 envelope",
+                Map.of("POST", "VIEW_EVENTS")));
+        defaults.add(route("/api/agent/events/control", "AI_RUNTIME",
+                "Python Runtime 实时事件 HTTP 控制入口，用于 subscribe、ack、heartbeat、reconnect 和 unsubscribe",
+                Map.of("POST", "SUBSCRIBE")));
         defaults.add(route("/api/agent/plans", "AI_RUNTIME",
                 "普通用户通过智能网关生成受控 Agent 计划；该动作只规划，不直接执行业务副作用",
                 Map.of("POST", "PLAN")));
@@ -221,6 +231,18 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/confirm-and-execute", "AI_RUNTIME",
                 "原发起用户确认并执行当前 Run；Java 控制面会再次校验租户、项目、actor 和项目角色",
                 Map.of("POST", "EXECUTE")));
+        defaults.add(route("/api/agent/rag/query", "AI_RUNTIME",
+                "Python Runtime 治理知识 RAG 查询入口；身份、项目、workspace 和证据范围由受信上下文重建",
+                Map.of("POST", "EXECUTE")));
+        defaults.add(route("/api/agent/rag/diagnostics", "AI_RUNTIME",
+                "Python Runtime RAG 低敏诊断入口；不返回问题、文档正文、凭据或模型输出",
+                Map.of("GET", "DIAGNOSE")));
+        defaults.add(route("/api/agent/langgraph/checkpoints/latest", "AI_RUNTIME",
+                "读取当前主体和项目范围内的 LangGraph 最新低敏 checkpoint 摘要",
+                Map.of("GET", "VIEW_CHECKPOINT")));
+        defaults.add(route("/api/agent/langgraph/checkpoints/events", "AI_RUNTIME",
+                "读取当前主体和项目范围内的 LangGraph 低敏 checkpoint 事件流",
+                Map.of("GET", "VIEW_CHECKPOINT")));
         defaults.add(route("/api/agent/tool-execution-events/outbox/diagnostics", "AI_RUNTIME",
                 "Agent 工具执行事件 outbox 诊断接口，用于运维查看 pending、publishing、failed、blocked 和 ignored 等状态分布",
                 Map.of("GET", "DIAGNOSE")));
@@ -456,6 +478,49 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/permission/**", "SYSTEM_SETTING", "角色、菜单、路由策略、数据范围和平台管理能力"));
         defaults.add(route("/api/observability/**", "AUDIT_LOG", "审计、日志、指标、告警和运维视角"));
         return defaults;
+    }
+
+    /**
+     * 在配置绑定完成后补齐并规范化事实路由的最小授权元数据。
+     *
+     * <p>application.yml 允许部署环境覆盖整个 route-metadata 列表。若某个环境只复制了旧配置，
+     * 新增的专业事实路径就可能退化到末尾的 {@code /api/agent/**}，POST 会被解释成普通 CREATE，
+     * 容易让内部控制面登记入口被误配成公开业务写入口。因此这里不是“只缺少时插入”：即使部署配置
+     * 已经声明了同路径规则，也会用代码中的安全语义替换它，保证 GET 始终是 VIEW、POST 始终是
+     * 受控 EXECUTE，并把规则放在通用 Agent 规则之前。</p>
+     *
+     * <p>该方法不绕过 GatewayAuthorizationFilter，也不替代 agent-runtime 的 source-service +
+     * internal-token 最终守卫。它只负责防止路由元数据漂移，真正的角色、数据范围和审计判定仍由
+     * permission-admin 完成。</p>
+     */
+    @PostConstruct
+    void ensureSpecialistTurnFactsRouteMetadata() {
+        String specialistPath = "/api/agent/specialist-turn-facts/**";
+        List<RouteAuthorizationMetadata> normalizedMetadata = routeMetadata == null
+                ? new ArrayList<>()
+                : routeMetadata.stream()
+                .filter(route -> route != null && !specialistPath.equals(route.getPathPattern()))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+
+        RouteAuthorizationMetadata specialistRoute = route(
+                specialistPath,
+                "AI_RUNTIME",
+                "专业 Agent turn 事实读取与受信登记入口；读取仍受对象级数据范围约束，登记必须通过可信服务白名单和内部凭证",
+                Map.of("GET", "VIEW", "POST", "EXECUTE")
+        );
+        int genericAgentRouteIndex = -1;
+        for (int index = 0; index < normalizedMetadata.size(); index++) {
+            if ("/api/agent/**".equals(normalizedMetadata.get(index).getPathPattern())) {
+                genericAgentRouteIndex = index;
+                break;
+            }
+        }
+        if (genericAgentRouteIndex < 0) {
+            normalizedMetadata.add(0, specialistRoute);
+        } else {
+            normalizedMetadata.add(genericAgentRouteIndex, specialistRoute);
+        }
+        routeMetadata = normalizedMetadata;
     }
 
     /**

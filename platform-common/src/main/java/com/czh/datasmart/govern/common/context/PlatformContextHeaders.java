@@ -20,6 +20,13 @@ public final class PlatformContextHeaders {
     public static final String TRACE_ID = "X-DataSmart-Trace-Id";
     public static final String TENANT_ID = "X-DataSmart-Tenant-Id";
     /**
+     * 当前请求所属平台应用 ID。
+     *
+     * <p>租户可以同时使用多个平台应用，相同项目编号也不能被当成应用边界的替代品。该值必须由 Gateway
+     * 根据权限中心返回的 effectiveApplicationId 重建；浏览器、模型和下游业务参数均无权自报或推断。</p>
+     */
+    public static final String APPLICATION_ID = "X-DataSmart-Application-Id";
+    /**
      * 当前请求所属项目 ID。
      *
      * <p>项目是 DataSmart 多数治理动作的默认数据边界：数据源、同步任务、质量规则、Agent workspace、

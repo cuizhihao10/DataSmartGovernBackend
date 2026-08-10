@@ -43,11 +43,21 @@ def append_edge(
 
 
 def work_item_status(global_status: str, agent_status: str, handoff_required: bool) -> str:
-    """把会话状态和单 Agent 状态压缩成执行前工作项状态。"""
+    """把会话状态和单 Agent 状态压缩成执行前工作项状态。
+
+    ``global_status=APPROVAL_REQUIRED`` 只表示本轮最终工具计划中存在需要
+    人工确认的副作用。它不能把数据源元数据读取、同步规划、确定性预检查
+    或只读监控这些分析型工作项一起阻断；真正的角色级交接由
+    ``handoff_required`` 单独表达。否则会出现“任务写入需要审批，所以所有
+    Specialist 都没有执行”的错误调度结果。
+    """
 
     if global_status == "BLOCKED" or agent_status == "BLOCKED":
         return "BLOCKED_BY_CONTROL_PLANE"
-    if handoff_required or agent_status == "APPROVAL_REQUIRED":
+    # 只根据该 Agent 自身是否需要交接来阻断工作项。全局审批状态会在
+    # execution plan 的 planStatus、tool readiness 和 Java 控制面边界中保留，
+    # 不在这里扩散到无副作用的 Specialist。
+    if handoff_required:
         return "WAITING_HUMAN_OR_PERMISSION_HANDOFF"
     if global_status == "DEGRADED" or agent_status == "DEGRADED":
         return "DEGRADED_CAN_PREPARE_DRAFT"
@@ -62,6 +72,9 @@ def responsibility_for_role(role: str) -> str:
         "DATASOURCE_AGENT": "准备数据源元数据读取、连接诊断和接入边界说明。",
         "DATA_QUALITY_AGENT": "准备质量规则、异常检测和治理建议的低敏草案。",
         "DATA_SYNC_AGENT": "准备同步/ETL 路径、执行模式和一致性策略草案。",
+        "PRECHECK_AGENT": "执行同步平台确定性预检查，确认计划可以进入控制面下一阶段。",
+        "RECOVERY_AGENT": "读取结构化失败事实、组织恢复证据并准备受控恢复交接。",
+        "MONITOR_AGENT": "只读观察任务状态、历史、日志和持续运行风险，不执行业务写操作。",
         "TASK_AGENT": "准备任务草案、状态流转和可恢复执行控制面衔接。",
         "PERMISSION_AGENT": "校验权限、审批、租户/项目边界和高风险动作守门。",
         "MEMORY_AGENT": "提供短期/长期记忆依赖说明和低敏上下文边界。",
@@ -83,7 +96,12 @@ def execution_lane(role: str, mode: str) -> str:
 
 
 def depends_on_roles(role: str, all_roles: tuple[str, ...]) -> tuple[str, ...]:
-    """生成 Agent 工作项的低敏依赖角色。"""
+    """生成 Agent 工作项的低敏依赖角色。
+
+    依赖是“上游低敏结果已经完成后才能准备本角色工作项”的单向关系，不等于 Agent 之间可以互相
+    调用。这里显式写出同步、预检、恢复和监控的边界，避免用“所有领域 Agent 都依赖 KNOWLEDGE_AGENT”
+    这种宽规则制造隐性环路，也避免把 RAG 变成每轮固定的第一步。
+    """
 
     dependencies: list[str] = []
     if role != "MASTER_ORCHESTRATOR" and "MASTER_ORCHESTRATOR" in all_roles:
@@ -91,12 +109,31 @@ def depends_on_roles(role: str, all_roles: tuple[str, ...]) -> tuple[str, ...]:
     if role == "DATA_QUALITY_AGENT" and "DATASOURCE_AGENT" in all_roles:
         dependencies.append("DATASOURCE_AGENT")
     if role == "DATA_SYNC_AGENT":
+        # 同步规划先消费数据源元数据，再可选消费质量门禁；无论是否有质量 Agent，
+        # DATA_SYNC_AGENT 都不会反过来依赖预检或恢复，保证生命周期方向保持单向。
         for dependency in ("DATASOURCE_AGENT", "DATA_QUALITY_AGENT"):
             if dependency in all_roles:
                 dependencies.append(dependency)
-    if role in {"DATASOURCE_AGENT", "DATA_QUALITY_AGENT", "DATA_SYNC_AGENT", "TASK_AGENT", "PERMISSION_AGENT"}:
+    if role == "PRECHECK_AGENT":
+        # 新建任务的专业 Agent 波次尚未产生 Java taskId，PRECHECK 必须先消费 DATA_SYNC_AGENT
+        # 输出的结构化配置，才能调用“按配置预检查”能力。若本轮没有 DATA_SYNC_AGENT，则表示调用方
+        # 正在复核已经保存的任务；该场景可直接依赖 taskId 读取控制面事实，不能被不存在的规划角色阻断。
+        if "DATA_SYNC_AGENT" in all_roles:
+            dependencies.append("DATA_SYNC_AGENT")
+    if role == "RECOVERY_AGENT":
+        # 恢复读取的是 data-sync 已持久化的 task/execution 诊断，不需要重新生成同步规划。只有本轮
+        # 明确调度了案例检索时，KNOWLEDGE_AGENT 才是恢复建议的证据上游。
         if "KNOWLEDGE_AGENT" in all_roles:
             dependencies.append("KNOWLEDGE_AGENT")
+        # For a persisted failure, MONITOR_AGENT observes the same task/execution before recovery
+        # asks its model for a proposal.  This prevents a recovery model from racing an independent
+        # observer and makes the low-sensitive monitoring snapshot available as a trusted dependency.
+        if "MONITOR_AGENT" in all_roles:
+            dependencies.append("MONITOR_AGENT")
+    if role == "MONITOR_AGENT":
+        # 监控只依赖 taskId/executionId 和可信委派范围，真实状态来自执行、日志和对象账本接口。
+        # 它不能等待规划或任务 Agent，否则长任务恰好在其他 Agent 等待补参时会失去观察能力。
+        pass
     return tuple(dict.fromkeys(dependencies))
 
 
@@ -108,7 +145,9 @@ def blocked_by(global_status: str, agent_status: str, handoff_required: bool) ->
         reasons.append("CONTROL_PLANE_BLOCKED")
     if global_status == "DEGRADED" or agent_status == "DEGRADED":
         reasons.append("DEGRADED_DEPENDENCY")
-    if handoff_required or agent_status == "APPROVAL_REQUIRED":
+    # 与 work_item_status 保持同一语义：全局审批不等于每个角色都需要
+    # handoff。只有角色自己的高风险动作或控制面交接要求才记录此原因。
+    if handoff_required:
         reasons.append("HUMAN_OR_PERMISSION_HANDOFF_REQUIRED")
     return tuple(reasons)
 

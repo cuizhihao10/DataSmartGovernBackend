@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -167,11 +168,11 @@ public class SyncTaskImportArtifactToolAdapter implements AgentToolAdapter {
                                               String service,
                                               String uri,
                                               Object body) {
-        return restClientBuilder
-                .baseUrl(httpSupport.baseUrl(service))
-                .build()
+        return httpSupport.serviceClient(restClientBuilder, service)
                 .post()
                 .uri(uri)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
                 .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
                 .body(body)
                 .retrieve()

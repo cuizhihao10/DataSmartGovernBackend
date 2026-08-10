@@ -9,13 +9,23 @@ package com.czh.datasmart.govern.permission.service.impl;
 import com.czh.datasmart.govern.permission.controller.dto.AgentToolActionApprovalFactEvaluateRequest;
 import com.czh.datasmart.govern.permission.controller.dto.AgentToolActionApprovalFactEvaluationView;
 import com.czh.datasmart.govern.permission.controller.dto.AgentToolActionApprovalFactRegisterRequest;
+import com.czh.datasmart.govern.permission.service.support.AgentToolActionApprovalFactRecord;
+import com.czh.datasmart.govern.permission.service.support.AgentToolActionApprovalFactStore;
 import com.czh.datasmart.govern.permission.service.support.InMemoryAgentToolActionApprovalFactStore;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Agent 工具动作审批事实服务测试。
@@ -94,14 +104,44 @@ class AgentToolActionApprovalFactServiceImplTest {
         assertThat(view.issueCodes()).contains("APPROVAL_FACT_SCOPE_MISMATCH");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"APPROVED", "REJECTED"})
+    void delayedPendingMustNotOverwriteTerminalStatus(String terminalStatus) {
+        service.register(register(terminalStatus, LocalDateTime.now().plusMinutes(30)));
+
+        service.register(register("PENDING", LocalDateTime.now().plusMinutes(30)));
+
+        AgentToolActionApprovalFactEvaluationView view = service.evaluate(evaluate());
+
+        assertThat(view.decision()).isEqualTo(terminalStatus);
+        assertThat(view.status()).isEqualTo(terminalStatus);
+    }
+
+    @Test
+    void registrationMustDelegateTheScopeAndVersionGuardToAtomicStoreWrite() {
+        AgentToolActionApprovalFactStore store = mock(AgentToolActionApprovalFactStore.class);
+        when(store.save(any(AgentToolActionApprovalFactRecord.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        AgentToolActionApprovalFactServiceImpl atomicService = new AgentToolActionApprovalFactServiceImpl(store);
+
+        atomicService.register(register("PENDING", LocalDateTime.now().plusMinutes(30)));
+
+        verify(store).save(any(AgentToolActionApprovalFactRecord.class));
+        verify(store, never()).findById(anyString());
+    }
+
     private AgentToolActionApprovalFactRegisterRequest register(String status, LocalDateTime expiresAt) {
         AgentToolActionApprovalFactRegisterRequest request = new AgentToolActionApprovalFactRegisterRequest();
         request.setApprovalFactId("approval:human-001");
         request.setTenantId(10L);
+        request.setApplicationId(10010L);
         request.setProjectId(20L);
+        request.setUserId("30");
         request.setActorId("30");
+        request.setAgentId("datasmart-govern-agent");
         request.setSessionId("session-proposal");
         request.setRunId("run-proposal");
+        request.setDelegationId("delegation-proposal");
         request.setCommandId("taoc-consume-001");
         request.setToolCode("datasource.metadata.read");
         request.setPolicyVersion("tool-readiness-policy.v1");
@@ -117,10 +157,14 @@ class AgentToolActionApprovalFactServiceImplTest {
         AgentToolActionApprovalFactEvaluateRequest request = new AgentToolActionApprovalFactEvaluateRequest();
         request.setApprovalFactId("approval:human-001");
         request.setTenantId(10L);
+        request.setApplicationId(10010L);
         request.setProjectId(20L);
+        request.setUserId("30");
         request.setActorId("30");
+        request.setAgentId("datasmart-govern-agent");
         request.setSessionId("session-proposal");
         request.setRunId("run-proposal");
+        request.setDelegationId("delegation-proposal");
         request.setCommandId("taoc-consume-001");
         request.setToolCode("datasource.metadata.read");
         request.setRequestedPolicyVersion("tool-readiness-policy.v1");

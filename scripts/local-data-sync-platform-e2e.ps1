@@ -772,13 +772,20 @@ function New-ApiHeaders {
         #>
         $headers["X-DataSmart-Tenant-Id"] = [string]$TenantId
         $headers["X-DataSmart-Project-Id"] = [string]$ProjectId
-        $headers["X-DataSmart-Workspace-Id"] = [string]$WorkspaceId
         $headers["X-DataSmart-Actor-Id"] = [string]$CurrentActorId
         $headers["X-DataSmart-Actor-Role"] = $Role
         $headers["X-DataSmart-Actor-Type"] = $ActorType
         $headers["X-DataSmart-Source-Service"] = "local-data-sync-platform-e2e"
         $headers["X-DataSmart-Data-Scope-Level"] = "PROJECT"
         $headers["X-DataSmart-Authorized-Project-Ids"] = [string]$ProjectId
+        <#
+            新权限模型同时使用“项目可见集合”和“项目内角色”判断具体动作。仅注入项目 ID
+            只能证明资源可见，不能证明当前主体有权创建数据源；因此本地直连模式也必须模拟
+            Gateway 从 permission-admin 物化的角色 Header。项目负责人映射为 OWNER，其他
+            本地 E2E 人类角色按 MANAGER 验证日常管理动作；这不替代下游对象级权限校验。
+        #>
+        $effectiveProjectRole = if ($Role -eq "PROJECT_OWNER") { "OWNER" } else { "MANAGER" }
+        $headers["X-DataSmart-Authorized-Project-Roles"] = "${ProjectId}:$effectiveProjectRole"
     }
 
     return $headers
@@ -1916,7 +1923,6 @@ function Main {
         -Body @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E MySQL source $script:RunId"
             type = "MYSQL"
             # 数据源用途必须显式声明。SOURCE 只允许作为同步任务源端读取，
@@ -1937,7 +1943,6 @@ function Main {
         -Body @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E PostgreSQL target $script:RunId"
             type = "POSTGRESQL"
             # 目标端必须显式保存为 TARGET。此前脚本未传该字段时会落到后端默认 SOURCE，

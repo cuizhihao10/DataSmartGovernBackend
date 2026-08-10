@@ -49,6 +49,8 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
             SOURCE_METADATA,
             TARGET_METADATA
     );
+    private static final int MAX_EXACT_TABLE_NAMES = 100;
+    private static final String SAFE_TABLE_NAME_PATTERN = "[A-Za-z_][A-Za-z0-9_$]{0,127}";
 
     private final RestClient.Builder restClientBuilder;
     private final AgentToolDownstreamHttpSupport httpSupport;
@@ -249,32 +251,186 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
     private AgentToolExecutionOutcome discoverMetadata(AgentToolExecutionContext context) {
         Long datasourceId = resolveDatasourceId(context);
         Map<String, Object> arguments = context.audit().getPlanArguments();
+        List<String> tableNames = normalizeExactTableNames(arguments.get("tableNames"));
+        RestClient client = restClientBuilder
+                .baseUrl(httpSupport.baseUrl(TARGET_SERVICE))
+                .build();
+
+        if (!tableNames.isEmpty()) {
+            List<Map<String, Object>> responses = new ArrayList<>();
+            for (String tableName : tableNames) {
+                Map<String, Object> exactRequest = metadataRequest(context, arguments, tableName, 1);
+                responses.add(invokeMetadata(client, context, datasourceId, exactRequest));
+            }
+            return metadataResponseMapper.toOutcome(datasourceId, mergeExactMetadataResponses(responses));
+        }
+
+        Map<String, Object> request = metadataRequest(
+                context,
+                arguments,
+                nullableText(arguments.get("tableNamePattern")),
+                100);
+        Map<String, Object> response = invokeMetadata(client, context, datasourceId, request);
+        return metadataResponseMapper.toOutcome(datasourceId, response);
+    }
+
+    /**
+     * 构造一次 datasource-management 元数据请求。
+     *
+     * <p>批量精确读取与普通模式读取必须使用同一套低敏开关和用户委派 Header；区别只在
+     * tableNamePattern 与 maxTables。精确查询固定 maxTables=1，避免 JDBC 的模式匹配意外
+     * 返回大量近似表；响应还会在合并阶段按 schema/table 去重。</p>
+     */
+    private Map<String, Object> metadataRequest(AgentToolExecutionContext context,
+                                                Map<String, Object> arguments,
+                                                String tableNamePattern,
+                                                int maxTables) {
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("actorId", httpSupport.numericActorId(context));
         request.put("actorRole", httpSupport.delegatedActorRole(context));
         request.put("actorTenantId", context.session().getTenantId());
         request.put("catalog", nullableText(arguments.get("catalog")));
         request.put("schemaPattern", nullableText(arguments.get("schemaPattern")));
-        request.put("tableNamePattern", nullableText(arguments.get("tableNamePattern")));
-        request.put("maxTables", 100);
+        request.put("tableNamePattern", tableNamePattern);
+        request.put("maxTables", maxTables);
         request.put("maxColumnsPerTable", 300);
         request.put("includeColumns", true);
         request.put("includeViews", false);
         request.put("includePrimaryKeys", true);
         request.put("includeIndexes", true);
         request.put("includeSampleRows", false);
+        return request;
+    }
 
-        Map<String, Object> response = restClientBuilder
-                .baseUrl(httpSupport.baseUrl(TARGET_SERVICE))
-                .build()
-                .post()
+    /**
+     * 执行一次真实只读元数据请求，所有调用都保留当前用户、租户、项目和 Agent 委派范围。
+     */
+    private Map<String, Object> invokeMetadata(RestClient client,
+                                               AgentToolExecutionContext context,
+                                               Long datasourceId,
+                                               Map<String, Object> request) {
+        return client.post()
                 .uri("/datasources/{id}/metadata/discover", datasourceId)
                 .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
                 .body(request)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {
                 });
-        return metadataResponseMapper.toOutcome(datasourceId, response);
+    }
+
+    /**
+     * 读取 Python ToolPlan 中的精确表名数组并执行 fail-closed 校验。
+     *
+     * <p>只接受普通 SQL 标识符，最多 100 个，按忽略大小写去重。这里不接受 JDBC `%`/`_`
+     * 通配模式；模糊查询仍使用单独的 tableNamePattern 字段，不能混入“精确已确认对象”合同。</p>
+     */
+    static List<String> normalizeExactTableNames(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        if (!(value instanceof List<?> rawNames)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "tableNames 必须是精确表名数组");
+        }
+        if (rawNames.size() > MAX_EXACT_TABLE_NAMES) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "tableNames 不能超过 " + MAX_EXACT_TABLE_NAMES + " 个");
+        }
+        List<String> result = new ArrayList<>();
+        for (Object rawName : rawNames) {
+            String tableName = rawName == null ? "" : String.valueOf(rawName).trim();
+            if (!tableName.matches(SAFE_TABLE_NAME_PATTERN)) {
+                throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                        "tableNames 包含无效的精确表名");
+            }
+            if (result.stream().noneMatch(existing -> existing.equalsIgnoreCase(tableName))) {
+                result.add(tableName);
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    /**
+     * 把多次精确发现响应合并为一个 datasource-management 兼容包络。
+     *
+     * <p>任何一次下游失败都会原样返回给统一 mapper，整批不会以“部分成功”冒充完整元数据。
+     * 成功响应只合并 tables 与 warnings，并按 schema/table 去重；连接信息、样本行和凭据从未进入
+     * 请求或合并结果。appliedMaxTables 被提升到合并规模以上，避免“每次精确查询上限为 1”被摘要
+     * 误解释为整批目录截断。</p>
+     */
+    static Map<String, Object> mergeExactMetadataResponses(List<Map<String, Object>> responses) {
+        if (responses == null || responses.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> mergedEnvelope = null;
+        Map<String, Object> mergedData = null;
+        List<Map<String, Object>> mergedTables = new ArrayList<>();
+        List<Object> mergedWarnings = new ArrayList<>();
+
+        for (Map<String, Object> response : responses) {
+            if (response == null || numericValue(response.get("code"), -1) != 0) {
+                return response;
+            }
+            if (!(response.get("data") instanceof Map<?, ?> rawData)) {
+                return response;
+            }
+            if (mergedEnvelope == null) {
+                mergedEnvelope = new LinkedHashMap<>(response);
+                mergedData = new LinkedHashMap<>();
+                // mergedData 会在循环结束后继续补写 tables/warnings，因此不能在 lambda 中
+                // 捕获这个随后仍被赋值的局部变量；显式循环也让包络复制规则更容易学习和调试。
+                for (Map.Entry<?, ?> entry : rawData.entrySet()) {
+                    mergedData.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+            Object rawTables = rawData.get("tables");
+            if (rawTables instanceof List<?> tables) {
+                for (Object tableValue : tables) {
+                    if (!(tableValue instanceof Map<?, ?> rawTable)) {
+                        continue;
+                    }
+                    Map<String, Object> table = new LinkedHashMap<>();
+                    rawTable.forEach((key, item) -> table.put(String.valueOf(key), item));
+                    String schema = String.valueOf(table.getOrDefault("schemaName", ""));
+                    String name = String.valueOf(table.getOrDefault("tableName", ""));
+                    boolean duplicate = mergedTables.stream().anyMatch(existing ->
+                            String.valueOf(existing.getOrDefault("schemaName", "")).equalsIgnoreCase(schema)
+                                    && String.valueOf(existing.getOrDefault("tableName", "")).equalsIgnoreCase(name));
+                    if (!duplicate) {
+                        mergedTables.add(table);
+                    }
+                }
+            }
+            Object rawWarnings = rawData.get("warnings");
+            if (rawWarnings instanceof List<?> warnings) {
+                for (Object warning : warnings) {
+                    if (warning != null && !mergedWarnings.contains(warning)) {
+                        mergedWarnings.add(warning);
+                    }
+                }
+            }
+        }
+
+        if (mergedEnvelope == null || mergedData == null) {
+            return null;
+        }
+        mergedData.put("tables", mergedTables);
+        mergedData.put("tableCount", mergedTables.size());
+        mergedData.put("warnings", mergedWarnings);
+        mergedData.put("appliedMaxTables", Math.max(100, mergedTables.size() + 1));
+        mergedEnvelope.put("data", mergedData);
+        return mergedEnvelope;
+    }
+
+    private static int numericValue(Object value, int fallback) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return value == null ? fallback : Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return fallback;
+        }
     }
 
     private Long resolveDatasourceId(AgentToolExecutionContext context) {

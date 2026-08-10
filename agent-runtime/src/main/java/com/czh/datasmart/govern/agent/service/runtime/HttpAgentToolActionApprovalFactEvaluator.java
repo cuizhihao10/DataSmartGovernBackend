@@ -89,10 +89,14 @@ public class HttpAgentToolActionApprovalFactEvaluator implements AgentToolAction
         return new ApprovalFactEvaluatePayload(
                 request.approvalFactId(),
                 request.tenantId(),
+                request.applicationId(),
                 request.projectId(),
+                request.userId(),
                 request.actorId(),
+                request.agentId(),
                 request.sessionId(),
                 request.runId(),
+                request.delegationId(),
                 request.commandId(),
                 request.toolCode(),
                 request.requestedPolicyVersion()
@@ -125,10 +129,14 @@ public class HttpAgentToolActionApprovalFactEvaluator implements AgentToolAction
      */
     private record ApprovalFactEvaluatePayload(String approvalFactId,
                                                Long tenantId,
+                                               Long applicationId,
                                                Long projectId,
+                                               String userId,
                                                String actorId,
+                                               String agentId,
                                                String sessionId,
                                                String runId,
+                                               String delegationId,
                                                String commandId,
                                                String toolCode,
                                                String requestedPolicyVersion) {

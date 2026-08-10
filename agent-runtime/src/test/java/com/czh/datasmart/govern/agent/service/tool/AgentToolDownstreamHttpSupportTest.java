@@ -40,6 +40,8 @@ class AgentToolDownstreamHttpSupportTest {
         assertEquals("101:MANAGER", headers.getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES));
         assertEquals("agent-runtime", headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE));
         assertEquals("PROJECT", headers.getFirst(PlatformContextHeaders.DATA_SCOPE_LEVEL));
+        assertEquals("3001", headers.getFirst(PlatformContextHeaders.APPLICATION_ID));
+        assertEquals("tenant:10:project:101", headers.getFirst(PlatformContextHeaders.WORKSPACE_ID));
     }
 
     @Test
@@ -66,6 +68,7 @@ class AgentToolDownstreamHttpSupportTest {
                 "tenant:10:project:101",
                 LocalDateTime.now()
         );
+        session.bindApplicationId(3001L);
         AgentRunRecord run = new AgentRunRecord(
                 "run-delegation",
                 session.getSessionId(),

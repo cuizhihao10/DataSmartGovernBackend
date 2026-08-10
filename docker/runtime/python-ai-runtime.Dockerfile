@@ -17,20 +17,50 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:${PATH} \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHON_RUNTIME_EXTRAS=${PYTHON_RUNTIME_EXTRAS} \
+    PIP_INDEX_URL=${PIP_INDEX_URL}
 
 WORKDIR /build/python-ai-runtime
 
 RUN python -m venv "${VIRTUAL_ENV}"
 
 COPY python-ai-runtime/pyproject.toml ./pyproject.toml
-COPY python-ai-runtime/src ./src
 
-# extras 由构建参数控制；默认镜像包含当前商用闭环需要的 LangGraph、Chroma、Kafka、Redis、PostgreSQL 与 MCP Client。
-# BuildKit cache 会在重复构建间复用已下载 wheel；网络瞬断时 pip 会重试，避免一次大 wheel 下载失败导致全量重来。
+# 依赖层只消费 pyproject.toml 和 extras，不复制业务源码。旧写法先 COPY src 再执行 `pip install .`，导致任何一行
+# Python 代码变化都会让 Chroma、LangGraph、MCP 等数百个依赖重新安装 7-10 分钟。这里用 Python 3.11 自带的
+# tomllib 结构化读取依赖声明，再一次性交给 pip；它不会用 grep/sed 猜 TOML，也不会遗漏 extra 内的版本约束。
+# BuildKit cache 会跨源码重建复用该完整虚拟环境层，只有 pyproject 或构建 extras 真正变化时才重新解析依赖。
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url "${PIP_INDEX_URL}" --retries 10 --timeout 120 --upgrade pip setuptools wheel \
-    && pip install --index-url "${PIP_INDEX_URL}" --retries 10 --timeout 120 ".[${PYTHON_RUNTIME_EXTRAS}]"
+    && python - <<'PY'
+import os
+import subprocess
+import tomllib
+
+with open("pyproject.toml", "rb") as source:
+    project = tomllib.load(source)["project"]
+
+requirements = list(project.get("dependencies", ()))
+optional = project.get("optional-dependencies", {})
+for extra in (item.strip() for item in os.environ["PYTHON_RUNTIME_EXTRAS"].split(",")):
+    if not extra:
+        continue
+    if extra not in optional:
+        raise SystemExit(f"Unknown PYTHON_RUNTIME_EXTRAS entry: {extra}")
+    requirements.extend(optional[extra])
+
+if requirements:
+    subprocess.check_call([
+        "pip", "install", "--retries", "10", "--timeout", "120", *requirements,
+    ])
+PY
+
+# 业务包在轻量层中安装。`--no-deps` 是安全的，因为上一层已经从同一份 pyproject 结构化安装了全部选中依赖；
+# 该命令只构建约 1-2 MB 的 DataSmart wheel，因此日常源码修改不再使第三方依赖层失效。
+COPY python-ai-runtime/src ./src
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps .
 
 FROM ${PYTHON_IMAGE} AS runtime
 

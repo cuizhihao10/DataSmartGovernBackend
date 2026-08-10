@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.gateway.filter;
 
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.gateway.config.GatewayAgentEventWebSocketProperties;
+import com.czh.datasmart.govern.gateway.authentication.GatewayWebSocketBearerTokenConverter;
 import com.czh.datasmart.govern.gateway.monitoring.GatewayAgentEventWebSocketMetrics;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -94,6 +95,30 @@ class GatewayAgentEventWebSocketGuardFilterTest {
         assertThat(firstChain.called()).isTrue();
         assertThat(secondChain.called()).isTrue();
         assertThat(secondExchange.getResponse().getStatusCode()).isNull();
+    }
+
+    @Test
+    void credentialBearingSubprotocolShouldBeStrippedBeforeProxying() {
+        GatewayAgentEventWebSocketGuardFilter filter = filter(defaultProperties());
+        String credentialProtocol = GatewayWebSocketBearerTokenConverter.BEARER_PROTOCOL_PREFIX + "encoded-token";
+        MockServerHttpRequest request = MockServerHttpRequest.get("/api/agent/events/ws")
+                .header(PlatformContextHeaders.TRACE_ID, "trace-test-001")
+                .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.ACTOR_ID, "1001")
+                .header(HttpHeaders.CONNECTION, "Upgrade")
+                .header(HttpHeaders.UPGRADE, "websocket")
+                .header(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL,
+                        GatewayWebSocketBearerTokenConverter.EVENT_PROTOCOL + ", " + credentialProtocol)
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain(Mono.empty());
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL))
+                .isEqualTo(GatewayWebSocketBearerTokenConverter.EVENT_PROTOCOL);
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL))
+                .doesNotContain(credentialProtocol);
     }
 
     /**

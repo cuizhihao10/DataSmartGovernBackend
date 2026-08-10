@@ -55,6 +55,13 @@ public class AgentToolActionApprovalFactController {
             @RequestHeader(value = PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, required = false) String internalToken,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         trustedRegistrationGuard.requireTrusted(sourceService, internalToken);
+        /*
+         * 基础受信服务身份只能证明“该调用来自平台内部”，不能证明它具有替代人工审批的资格。
+         * 因此必须在把请求交给 service/store 之前，根据目标状态再做一次职责分离校验；否则
+         * agent-runtime 之类的编排服务可以使用自己的共享凭据直接登记 APPROVED 事实。
+         */
+        trustedRegistrationGuard.requireDecisionAuthority(
+                sourceService, request == null ? null : request.getStatus());
         return PlatformApiResponse.success("Agent 工具动作审批事实已登记",
                 approvalFactService.register(request), traceId);
     }

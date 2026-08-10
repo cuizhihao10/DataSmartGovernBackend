@@ -7,18 +7,23 @@
 package com.czh.datasmart.govern.agent.service.session;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
+import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.time.LocalDateTime;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -32,6 +37,46 @@ import static org.mockito.Mockito.when;
  * 或 {@code replaceRuns()}，从而再次删除 continuation 刚写入的 Run。</p>
  */
 class JdbcAgentSessionStoreTest {
+
+    @Test
+    void sessionUpsertShouldUseOnePlaceholderPerApplicationScopedColumn() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        JdbcAgentSessionStore store = store(dataSource);
+        AgentSessionRecord session = new AgentSessionRecord(
+                "session-application-scope",
+                10L,
+                101L,
+                null,
+                "1001",
+                "PROJECT_OWNER",
+                "USER",
+                "101:OWNER",
+                "LOCAL_E2E",
+                "验证应用范围会话持久化。",
+                WorkspaceIsolationLevel.PROJECT,
+                "tenant:10:project:101",
+                LocalDateTime.of(2026, 8, 10, 0, 30)
+        );
+        session.bindApplicationId(10010L);
+
+        store.save(session);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        verify(connection, atLeastOnce()).prepareStatement(sqlCaptor.capture());
+        String sessionUpsert = sqlCaptor.getAllValues().stream()
+                .filter(sql -> sql.contains("INSERT INTO agent_session ("))
+                .findFirst()
+                .orElseThrow();
+        long placeholderCount = sessionUpsert.chars().filter(character -> character == '?').count();
+        assertEquals(20L, placeholderCount,
+                "agent_session 的 20 个列值必须与 20 个 JDBC 绑定参数一一对应");
+        verify(statement).setLong(4, 10010L);
+        verify(connection).commit();
+    }
 
     @Test
     void appendConversationMessageShouldNeverReplaceRunsOrOtherChildren() throws Exception {

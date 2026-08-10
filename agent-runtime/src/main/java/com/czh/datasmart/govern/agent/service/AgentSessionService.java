@@ -76,7 +76,7 @@ public class AgentSessionService {
      */
     public AgentSessionView createSession(CreateAgentSessionRequest request, AgentSessionAccessContext accessContext) {
         ensureCreateAccess(request, accessContext);
-        return createSession(request);
+        return createSessionWithApplication(request, accessContext.applicationId());
     }
 
     /**
@@ -85,6 +85,14 @@ public class AgentSessionService {
      * <p>包级可见是为了让同模块测试和受控内部流程复用，而外部请求必须调用带 accessContext 的入口。</p>
      */
     AgentSessionView createSession(CreateAgentSessionRequest request) {
+        return createSessionWithApplication(request, null);
+    }
+
+    /**
+     * 创建会话并固定可信应用边界。旧的无上下文内部调用仍保留 null，
+     * 但所有 Gateway HTTP 创建请求都会走带 applicationId 的入口。
+     */
+    private AgentSessionView createSessionWithApplication(CreateAgentSessionRequest request, Long applicationId) {
         ensureRuntimeEnabled();
         WorkspaceIsolationLevel isolationLevel = request.isolationLevel() == null
                 ? WorkspaceIsolationLevel.PROJECT
@@ -103,6 +111,7 @@ public class AgentSessionService {
                 buildWorkspaceKey(isolationLevel, request.tenantId(), request.projectId(), request.workspaceId(), sessionId),
                 now
         );
+        session.bindApplicationId(applicationId);
         List<BindAgentToolRequest> toolRequests = request.toolBindings() == null ? List.of() : request.toolBindings();
         ensureToolLimit(session.getToolBindings().size(), toolRequests.size());
         toolRequests.stream()

@@ -56,7 +56,6 @@ class AgentRuntimeConfigurationBindingTest {
                         "sync.execution.status",
                         "knowledge.rag.query"
                 );
-
         AgentSkillRegistryProperties skillProperties = Binder.get(environment)
                 .bind("datasmart.agent-runtime", Bindable.of(AgentSkillRegistryProperties.class))
                 .orElseThrow(() -> new IllegalStateException("agent skill properties were not bound"));

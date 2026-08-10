@@ -171,7 +171,13 @@ public class GatewayContextProperties {
         private List<String> targetPaths = new ArrayList<>(List.of(
                 "/api/agent/plans",
                 "/api/agent/plans/stream",
-                "/api/agent/plans/cancel"));
+                "/api/agent/plans/cancel",
+                "/api/agent/rag/query",
+                "/api/agent/langgraph/checkpoints/latest",
+                "/api/agent/langgraph/checkpoints/events",
+                "/api/agent/events/replay",
+                "/api/agent/events/control",
+                "/api/agent/events/ws"));
     }
 
     /**

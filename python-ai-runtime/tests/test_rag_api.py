@@ -5,18 +5,22 @@
 
 import os
 import sys
+import time
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api.rag import rag_query_from_payload, register_rag_routes
+from datasmart_ai_runtime.api.gateway.signature import sign_gateway_payload
 from datasmart_ai_runtime.config import default_model_routes
 from datasmart_ai_runtime.services.agent_execution import LangGraphDurableCheckpointerService
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService, ModelProviderRegistry
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.rag import build_default_governance_rag_pipeline
+from datasmart_ai_runtime.services.rag import RagKnowledgeBaseSettings
 
 
 class RagApiTest(unittest.TestCase):
@@ -56,6 +60,10 @@ class RagApiTest(unittest.TestCase):
             model_routes=routes,
             model_gateway=ModelGatewayGovernanceService(routes),
             model_providers=ModelProviderRegistry(),
+            knowledge_base_settings=RagKnowledgeBaseSettings(
+                runtime_mode="test",
+                store_type="in-memory",
+            ),
         )
         register_rag_routes(app, rag_pipeline=pipeline)
 
@@ -84,6 +92,10 @@ class RagApiTest(unittest.TestCase):
             model_routes=routes,
             model_gateway=ModelGatewayGovernanceService(routes),
             model_providers=ModelProviderRegistry(),
+            knowledge_base_settings=RagKnowledgeBaseSettings(
+                runtime_mode="test",
+                store_type="in-memory",
+            ),
         )
         checkpointer = LangGraphDurableCheckpointerService()
         register_rag_routes(app, rag_pipeline=pipeline, langgraph_checkpointer_service=checkpointer)
@@ -120,6 +132,81 @@ class RagApiTest(unittest.TestCase):
         self.assertNotIn(response["compressedContext"], state_text)
         self.assertFalse(latest.state["generation"]["answerStored"])
         self.assertFalse(latest.state["generation"]["compressedContextStored"])
+
+    def test_fastapi_route_reads_signed_gateway_headers_instead_of_forged_body_scope(self) -> None:
+        """真实 FastAPI 路由必须拿到 Request Header，不能退化为无可信来源的 500 或信任正文。"""
+
+        try:
+            from fastapi import FastAPI, Request
+            from fastapi.testclient import TestClient
+        except ImportError:  # pragma: no cover - 本地最小 Python 环境可跳过可选 API 依赖
+            self.skipTest("FastAPI test dependency is not installed")
+
+        app = FastAPI()
+        routes = ModelRouteRegistry(default_model_routes())
+        pipeline = build_default_governance_rag_pipeline(
+            model_routes=routes,
+            model_gateway=ModelGatewayGovernanceService(routes),
+            model_providers=ModelProviderRegistry(),
+            knowledge_base_settings=RagKnowledgeBaseSettings(
+                runtime_mode="test",
+                store_type="in-memory",
+            ),
+        )
+        register_rag_routes(app, rag_pipeline=pipeline, request_type=Request)
+
+        timestamp = str(int(time.time() * 1000))
+        headers = {
+            "X-DataSmart-Source-Service": "datasmart-govern-gateway",
+            "X-Gateway-Original-Path": "/api/agent/rag/query",
+            "X-Gateway-Route-Prefix": "/api/agent",
+            "X-DataSmart-Trace-Id": "trace-rag-fastapi",
+            "X-DataSmart-Tenant-Id": "10",
+            "X-DataSmart-Application-Id": "10010",
+            "X-DataSmart-Project-Id": "20",
+            "X-DataSmart-Actor-Id": "1001",
+            "X-DataSmart-Actor-Role": "PROJECT_OWNER",
+            "X-DataSmart-Actor-Type": "USER",
+            "X-DataSmart-Workspace-Id": "workspace-a",
+            "X-DataSmart-Authorized-Project-Ids": "20",
+            "X-DataSmart-Gateway-Signature-Version": "v1",
+            "X-DataSmart-Gateway-Signature-Timestamp": timestamp,
+            "X-DataSmart-Gateway-Signature-Nonce": "nonce-rag-fastapi",
+            "X-DataSmart-Gateway-Signature-Key-Id": "gateway-local-v1",
+        }
+        headers["X-DataSmart-Gateway-Signature"] = sign_gateway_payload(
+            headers,
+            timestamp=timestamp,
+            nonce="nonce-rag-fastapi",
+            key_id="gateway-local-v1",
+            secret="secret-rag-fastapi",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "DATASMART_GATEWAY_SIGNATURE_REQUIRED": "true",
+                "DATASMART_GATEWAY_SIGNATURE_SECRET": "secret-rag-fastapi",
+                "DATASMART_GATEWAY_SIGNATURE_KEY_ID": "gateway-local-v1",
+            },
+            clear=False,
+        ):
+            response = TestClient(app).post(
+                "/api/agent/rag/query",
+                headers=headers,
+                json={
+                    "tenantId": "999",
+                    "projectId": "999",
+                    "actorId": "forged",
+                    "workspaceKey": "forged-workspace",
+                    "question": "DataSmart RAG 管线有哪些阶段？",
+                    "generateAnswer": False,
+                },
+            )
+
+        self.assertEqual(200, response.status_code, response.text)
+        body = response.json()
+        self.assertGreaterEqual(len(body["citations"]), 1)
 
 
 class FakeApp:

@@ -14,6 +14,8 @@ import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 审批事实内部登记接口的 fail-closed 服务身份守卫。
@@ -49,6 +51,48 @@ public class AgentApprovalFactTrustedRegistrationGuard {
             throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
                     "仅受信任的 Agent Runtime、审批服务或管理控制面可以登记审批事实");
         }
+    }
+
+    /**
+     * 在服务身份通过基础认证后，继续验证该来源是否有权作出最终审批决定。
+     *
+     * <p>{@code PENDING} 只表示运行时已提出一个需要人工或审批系统处理的动作，所以任何基础受信来源
+     * 都可以登记。{@code APPROVED}/{@code REJECTED} 则会直接改变高风险工具能否继续执行，必须由审批服务
+     * 或 permission-admin 管理控制面产生。未知状态由业务服务归一为 PENDING，守卫仍按非决定状态处理，
+     * 不会因为一个未识别的字符串意外赋予批准能力。</p>
+     *
+     * @param sourceService 已通过 {@link #requireTrusted(String, String)} 校验的来源服务名
+     * @param requestedStatus 调用方希望持久化的审批状态
+     * @throws PlatformBusinessException 来源不是审批决策者时拒绝写入最终决定
+     */
+    public void requireDecisionAuthority(String sourceService, String requestedStatus) {
+        String normalizedStatus = text(requestedStatus);
+        if (!isFinalDecision(normalizedStatus)) {
+            return;
+        }
+        String source = text(sourceService);
+        Set<String> decisionSources = properties.getApprovalDecisionSourceServices();
+        boolean allowed = source != null && decisionSources != null && decisionSources.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .anyMatch(value -> value.trim().equalsIgnoreCase(source));
+        if (!allowed) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "当前受信服务只能登记待审批事实，不能作出 APPROVED 或 REJECTED 审批决定");
+        }
+    }
+
+    /**
+     * 仅把明确的终态当作需要额外授权的审批决定。
+     *
+     * <p>服务层会把未知状态归一为 PENDING；这里保持相同的保守语义，避免守卫与领域服务对状态词典
+     * 的解释不一致。使用 Locale.ROOT 可以保证不同部署语言环境下的大小写转换结果稳定。</p>
+     */
+    private boolean isFinalDecision(String status) {
+        if (status == null) {
+            return false;
+        }
+        String normalized = status.toUpperCase(Locale.ROOT);
+        return "APPROVED".equals(normalized) || "REJECTED".equals(normalized);
     }
 
     /** 统一清理 Header 和配置文本；空白内容返回 null，确保校验不会把空字符串视为合法凭据。 */

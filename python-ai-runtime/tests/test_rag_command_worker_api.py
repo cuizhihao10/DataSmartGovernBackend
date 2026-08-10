@@ -24,6 +24,7 @@ from datasmart_ai_runtime.services.rag import (
     RAG_COMMAND_WORKER_RUNNER_SCHEMA_VERSION,
     LocalFileRagAnswerArtifactWriter,
     RagCommandWorkerRunner,
+    RagKnowledgeBaseSettings,
     build_default_governance_rag_pipeline,
 )
 from datasmart_ai_runtime.services.tools.command_worker_receipt_client import CommandWorkerReceiptPostResult
@@ -204,6 +205,10 @@ class RagCommandWorkerApiTest(unittest.TestCase):
             model_routes=routes,
             model_gateway=ModelGatewayGovernanceService(routes),
             model_providers=ModelProviderRegistry(),
+            knowledge_base_settings=RagKnowledgeBaseSettings(
+                runtime_mode="test",
+                store_type="in-memory",
+            ),
         )
         return RagCommandWorkerRunner(
             rag_pipeline=pipeline,

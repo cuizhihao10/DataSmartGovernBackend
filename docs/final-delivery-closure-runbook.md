@@ -122,6 +122,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-clo
 
 结果：`failedGates=0, gatesWithWarnings=7`，真实只读 E2E smoke 为 `PASS=89, WARN=0, FAIL=0`。warning 来自 Helm/SBOM/镜像签名/备份恢复/容量基线/故障演练/final audit 中尚未在本机强制完成的发布前增强项，例如 Helm 工具链、Cosign/Syft、真实容量压测、真实故障注入和全量测试复跑；这些属于客户或 CI 发布环境应继续补证的生产化事项，不是当前本地闭环失败。
 
+### 7.1 2026-08-10 迁移后双仓复验
+
+本轮以两个 dirty worktree 的实际代码、当前构建镜像和真实本地服务为证据，不读取旧任务历史，也不把历史数字当作本轮结果：
+
+- Backend：Python `1087 passed`；Java Reactor `BUILD SUCCESS`，Surefire `1321 tests / 0 failures / 0 errors / 9 skipped`；Compose config 和核心服务健康。
+- Frontend：`npm run lint`、`npm run build`（含 `tsc -b`）以及 5 个 Agent/data-sync 合同脚本全部通过；主 bundle `2120.77 kB`、gzip `641.08 kB` 的分包 warning 保留为性能事项。
+- RAG/LangGraph：Compose 使用 PostgreSQL fail-closed checkpointer；Gateway RAG 返回 2 条 citation，写入 3 个 checkpoint 和 3 个 event；Runtime 重启后 latest/events 可恢复读取，同项目其他 actor 被 403 拒绝。
+- 六 Agent：Success 与 Recovery 均完成可在本机执行的真实控制面、RAG、Specialist fact 和 fail-closed 门禁；`DATA_SYNC_AGENT`/`RECOVERY_AGENT` 最终分别停在模型调用失败，未创建同步任务、未自动审批、未执行恢复副作用，审批事实总数仍为 0。
+- 外部阻塞：DataSmart Runtime 保持 `gpt-5.6-sol`/`xhigh`，等价 Provider 探测为 HTTP 401，健康摘要为 degraded、最近 4 次错误率 100%。恢复有效 Provider 凭据并重跑两个场景前，发布说明只能写“工程闭环通过、业务黑盒 E2E 受外部授权阻塞”，不能写六 Agent success/recovery 全部通过。
+
 ## 8. GitHub Actions 发布候选门禁
 
 仓库新增 `.github/workflows/release-candidate.yml`，用于把“本地能跑通的收敛脚本”升级为“每次 push、pull_request 和手动发布候选都能复跑的工程门禁”。这条 workflow 的定位不是替代真实客户/预生产验收，而是提前发现源码、构建、Python Runtime 语法、Docker Compose 合同、生产化脚本和最终闭环审计的漂移。

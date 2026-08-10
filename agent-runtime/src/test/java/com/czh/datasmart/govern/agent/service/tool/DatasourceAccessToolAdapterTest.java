@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.agent.service.tool;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -119,5 +120,42 @@ class DatasourceAccessToolAdapterTest {
                 27L,
                 DatasourceAccessToolAdapter.selectTrustedDatasourceId(27L, null),
                 "结构化向导直接创建的同 Run DAG 在尚未带跨 Run 引用时仍应兼容显式数据源 ID");
+    }
+
+    @Test
+    void exactTableNamesAreValidatedAndDeduplicated() {
+        assertEquals(
+                List.of("fs_test_customer_source", "fs_test_customer_target"),
+                DatasourceAccessToolAdapter.normalizeExactTableNames(List.of(
+                        "fs_test_customer_source",
+                        "FS_TEST_CUSTOMER_SOURCE",
+                        "fs_test_customer_target")));
+    }
+
+    @Test
+    void exactMetadataResponsesAreMergedIntoOneTrustedSummaryInput() {
+        Map<String, Object> firstData = new LinkedHashMap<>();
+        firstData.put("datasourceName", "source");
+        firstData.put("tables", List.of(Map.of(
+                "schemaName", "",
+                "tableName", "fs_test_customer_source",
+                "columns", List.of())));
+        firstData.put("warnings", List.of());
+        Map<String, Object> secondData = new LinkedHashMap<>();
+        secondData.put("datasourceName", "source");
+        secondData.put("tables", List.of(Map.of(
+                "schemaName", "",
+                "tableName", "fs_test_customer_target",
+                "columns", List.of())));
+        secondData.put("warnings", List.of());
+
+        Map<String, Object> merged = DatasourceAccessToolAdapter.mergeExactMetadataResponses(List.of(
+                Map.of("code", 0, "message", "ok", "data", firstData),
+                Map.of("code", 0, "message", "ok", "data", secondData)));
+        Map<?, ?> data = (Map<?, ?>) merged.get("data");
+
+        assertEquals(2, data.get("tableCount"));
+        assertEquals(2, ((List<?>) data.get("tables")).size());
+        assertEquals(100, data.get("appliedMaxTables"));
     }
 }

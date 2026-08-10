@@ -25,12 +25,28 @@ import java.util.Locale;
  */
 public record AgentRuntimeEventQueryAccessContext(
         Long tenantId,
+        Long applicationId,
         Long actorId,
         String actorRole,
         String traceId,
         String dataScopeLevel,
         List<Long> authorizedProjectIds
 ) {
+
+    /**
+     * Backward-compatible constructor for event-query callers that have not yet
+     * adopted the application header. General event reads retain their existing
+     * scope behavior, while approval-fact evaluation treats a null application
+     * as untrusted and fails closed.
+     */
+    public AgentRuntimeEventQueryAccessContext(Long tenantId,
+                                               Long actorId,
+                                               String actorRole,
+                                               String traceId,
+                                               String dataScopeLevel,
+                                               List<Long> authorizedProjectIds) {
+        this(tenantId, null, actorId, actorRole, traceId, dataScopeLevel, authorizedProjectIds);
+    }
 
     /**
      * 是否具备可用于后端数据范围收口的基础身份。

@@ -22,17 +22,19 @@ import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentConversationMessageRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.specialist.SpecialistTurnFactService;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
-import java.time.LocalDateTime;
 import java.util.UUID;
 
 /**
@@ -51,18 +53,37 @@ public class AgentRunConfirmedExecutionService {
     private static final Set<String> PUBLISH_COMPLETES_GOAL_MODES = Set.of(
             "SCHEDULED_FULL", "SCHEDULED_BATCH", "CDC_STREAMING", "REAL_TIME");
 
+    /**
+     * 一个“任务已提交或已调度”的结论必须由两类后置专业 Agent 共同给出执行事实。
+     *
+     * <p>PRECHECK 负责确认发布后的任务配置仍可被确定性校验，MONITOR 负责确认任务/执行资源已能被运行态读取。
+     * 这里校验的是“两个角色都实际执行”，而不是它们的业务结论都必须成功；例如预检查可能发现可展示的告警，
+     * 但该事实不应被伪造成从未执行。</p>
+     */
+    private static final Set<String> REQUIRED_POST_BRIDGE_SPECIALIST_ROLES = Set.of(
+            "PRECHECK_AGENT", "MONITOR_AGENT");
+
     private final AgentSessionStore sessionStore;
     private final AgentSessionService sessionService;
     private final AgentToolExecutionAuditService auditService;
     private final AgentToolExecutionResultQueryService resultQueryService;
     private final AgentExecutionResultAnswerGenerator resultAnswerGenerator;
     private final AgentPostConfirmContinuationClient continuationClient;
+    /**
+     * PostgreSQL 专业 Agent 事实服务是“业务已达到提交边界”结论的持久化证据源。
+     *
+     * <p>本地轻量开发模式可以不启用 JDBC，因此 {@link SpecialistTurnFactService} 会按条件不创建 Bean。
+     * 使用 {@link Optional} 不是为了降级放行：缺少持久化事实服务时，任何声称业务目标已完成的
+     * continuation 都会被拒绝；普通的等待补充信息或等待用户确认流程不受影响。</p>
+     */
+    private final Optional<SpecialistTurnFactService> specialistTurnFactService;
 
     public AgentRunConfirmedExecutionResponse confirmAndExecute(
             String sessionId,
             String runId,
             AgentRunConfirmedExecutionRequest request,
             Long tenantId,
+            Long applicationId,
             Long projectId,
             String actorId,
             String actorRole,
@@ -79,6 +100,18 @@ public class AgentRunConfirmedExecutionService {
             requireDelegatedIdentity(actorRole, authorizedProjectRoles, projectId);
             session.refreshDelegatedIdentity(actorRole, actorType, authorizedProjectRoles);
             AgentRunRecord run = requireRun(session, runId);
+            /*
+             * A confirmation request is a one-way side-effect boundary.  Once
+             * the Run is terminal, re-reading its audits and calling Python
+             * again would duplicate tool execution, continuation Runs, and
+             * specialist facts.  The stable request key is useful for tracing
+             * retries, while this durable Run state is the authoritative
+             * idempotency fence across memory and JDBC stores.
+             */
+            if (run.getState().isTerminal()) {
+                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "Agent Run 已经完成确认执行，不能重复消费同一执行边界；请读取现有运行结果");
+            }
             List<AgentToolExecutionAuditView> audits = auditService.listByRun(sessionId, runId);
             if (audits.isEmpty()) {
                 throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
@@ -160,9 +193,10 @@ public class AgentRunConfirmedExecutionService {
         // submits the next ToolPlan to Java and must acquire the same session to
         // create a new Run; calling it inside synchronized(session) would deadlock.
         AgentPostConfirmContinuationView continuation = continueAfterTerminalBatch(
-                session, runId, tenantId, projectId, actorId, traceId, batch
+                session, runId, tenantId, applicationId, projectId, actorId, traceId, batch
         );
-        continuation = verifyContinuationRunDurability(sessionId, continuation);
+        continuation = verifyContinuationContract(session, applicationId, runId, batch, continuation);
+        continuation = verifyContinuationRunDurability(sessionId, runId, continuation);
         List<AgentToolExecutionFailureView> failures = AgentToolExecutionFailureSupport.failures(
                 batch.finalAudits(), batch.executedResults());
         String assistantReply = resolvedAssistantReply(batch, continuation);
@@ -207,13 +241,20 @@ public class AgentRunConfirmedExecutionService {
             AgentSessionRecord session,
             String runId,
             Long tenantId,
+            Long applicationId,
             Long projectId,
             String actorId,
             String traceId,
             ConfirmedBatch batch) {
-        if (batch.failedCount() == 0 && taskSubmissionBoundaryReached(batch.finalAudits())) {
-            return AgentPostConfirmContinuationView.businessGoalReached();
-        }
+        /*
+         * 即使任务已经发布或提交到 worker，也必须把本批次终态 Java 事实交给 Python：
+         * - 成功路径不会再调用模型复述“任务已提交”，而是仅运行确定性的 PRECHECK/MONITOR 后置复核；
+         * - 失败路径继续进入模型诊断、RAG/Recovery 和下一轮受审批 ToolPlan；
+         * - 两条路径都使用同一批带 auditId/runId/outputRef 的事实，前端或模型文本不能伪造 taskId/executionId。
+         *
+         * 旧逻辑在 taskSubmissionBoundaryReached=true 时直接返回，虽然节省了一次 continuation HTTP，
+         * 却也让提交后的专业 Agent 永远拿不到真实资源定位，durable fact 只留下审批前的“缺少任务引用”。
+         */
         List<AgentToolExecutionResultView> allResults = resultQueryService.listRunToolExecutionResults(
                 session.getSessionId(), runId
         ).stream()
@@ -229,8 +270,10 @@ public class AgentRunConfirmedExecutionService {
         }
         return continuationClient.continueAfterConfirmedTools(new AgentPostConfirmContinuationRequest(
                 String.valueOf(tenantId),
+                String.valueOf(applicationId),
                 String.valueOf(projectId),
                 actorId,
+                session.getDelegation().getDelegationId(),
                 session.getSessionId(),
                 runId,
                 session.getObjective(),
@@ -241,26 +284,169 @@ public class AgentRunConfirmedExecutionService {
     }
 
     /**
+     * 验证 Python 后确认续跑响应能否安全地影响当前 Java 会话。
+     *
+     * <p>Python Runtime 是受信内部服务，但仍是跨进程边界：HTTP 2xx 只证明请求被处理，不能证明返回的
+     * sessionId、sourceRunId、nextRunId 或业务完成结论属于这次确认请求。该方法在响应离开 Java 控制面前
+     * 建立三个 fail-closed 约束：</p>
+     * <ol>
+     *     <li>任何会让前端继续操作的响应，必须回指本次受治理的 session/run；</li>
+     *     <li>下一 Run 不能复用当前源 Run，避免确认页面被回指到已经结束的执行批次；</li>
+     *     <li>“任务已提交/已调度”的完成结论，必须同时具有本地提交边界和 PRECHECK/MONITOR 的后置执行证据。</li>
+     * </ol>
+     *
+     * <p>验证失败不会回滚已经完成的 Java 工具动作。那些动作已经在调用 Python 前持久化并记录审计；这里只清空
+     * 不可信的续跑入口，避免浏览器据此执行错误或悬空的下一步。</p>
+     *
+     * @param session 当前 Java 已知且已验证归属的会话聚合
+     * @param applicationId Gateway 根据权限中心重建的当前产品应用范围
+     * @param runId 当前 Java 已知的源 Run ID
+     * @param batch 已持久化的本轮 Java 工具执行批次
+     * @param continuation Python 返回的低敏续跑视图
+     * @return 原始视图，或不含可执行入口的契约失败视图
+     */
+    private AgentPostConfirmContinuationView verifyContinuationContract(
+            AgentSessionRecord session,
+            Long applicationId,
+            String runId,
+            ConfirmedBatch batch,
+            AgentPostConfirmContinuationView continuation) {
+        String sessionId = session.getSessionId();
+        if (continuation == null) {
+            return AgentPostConfirmContinuationView.contractInvalid(
+                    sessionId, runId, "EMPTY_CONTINUATION_RESPONSE");
+        }
+        if (!claimsActionableContinuation(continuation)) {
+            // 例如 Python 不可用时的 FAILED_RETRYABLE 仅表达诊断状态，既没有 nextRun 也不会引导用户确认，
+            // 不需要把本地构造的失败视图误判为“远端 locator 不一致”。
+            return continuation;
+        }
+        if (!sameRequiredLocator(sessionId, continuation.sessionId())
+                || !sameRequiredLocator(runId, continuation.sourceRunId())) {
+            return AgentPostConfirmContinuationView.contractInvalid(
+                    sessionId, runId, "CONTINUATION_SCOPE_MISMATCH");
+        }
+        if (hasText(continuation.nextRunId()) && runId.equals(continuation.nextRunId().trim())) {
+            return AgentPostConfirmContinuationView.contractInvalid(
+                    sessionId, runId, "NEXT_RUN_REUSES_SOURCE_RUN");
+        }
+        if (claimsBusinessGoalReached(continuation)
+                && !hasVerifiedBusinessGoalHandoff(session, applicationId, runId, batch, continuation)) {
+            return AgentPostConfirmContinuationView.contractInvalid(
+                    sessionId, runId, "POST_BRIDGE_VERIFICATION_INCOMPLETE");
+        }
+        return continuation;
+    }
+
+    /**
+     * 判断远端响应是否会让前端获得新的动作入口或显示“业务已经完成”的最终结论。
+     *
+     * <p>纯失败、禁用或无后续动作的响应不依赖远端 locator；一旦携带 nextRun、确认标记、继续标记或完成结论，
+     * 就必须执行严格的 session/run 契约校验。这避免把内部降级响应错误地二次降级，同时对真正的可执行路径
+     * 保持 fail-closed。</p>
+     */
+    private boolean claimsActionableContinuation(AgentPostConfirmContinuationView continuation) {
+        return hasText(continuation.nextRunId())
+                || Boolean.TRUE.equals(continuation.continued())
+                || Boolean.TRUE.equals(continuation.requiresConfirmation())
+                || claimsBusinessGoalReached(continuation);
+    }
+
+    /**
+     * 判断远端响应是否声称当前同步目标已经到达异步提交边界。
+     *
+     * <p>Python 当前会同时返回 {@code BUSINESS_GOAL_REACHED} 与 {@code TASK_SUBMITTED_OR_SCHEDULED}。
+     * 这里将任一标识视为需要验证的高风险声明，防止其中一个字段被遗漏后绕过后置 PRECHECK/MONITOR 证据。</p>
+     */
+    private boolean claimsBusinessGoalReached(AgentPostConfirmContinuationView continuation) {
+        return "BUSINESS_GOAL_REACHED".equals(normalizeCode(continuation.status()))
+                || "TASK_SUBMITTED_OR_SCHEDULED".equals(normalizeCode(continuation.stoppedReason()));
+    }
+
+    /**
+     * 验证“业务目标已完成”结论的本地提交边界和专业 Agent 证据。
+     *
+     * <p>首先必须是一个真正的终态响应，而不是 {@code CONTINUED + TASK_SUBMITTED_OR_SCHEDULED} 这样的矛盾组合；
+     * 其次 Java 本轮不能有工具失败，并且审计中必须存在已成功的立即运行或定期/CDC 发布动作。最后必须从
+     * PostgreSQL 专业 Agent 事实表读取同一租户、应用、项目、用户、会话、Run 与委托链的 PRECHECK/MONITOR
+     * 成功证据。Python 返回的 {@code postBridgeVerification} 仅供前端展示，永远不作为授权或完成证据。</p>
+     */
+    private boolean hasVerifiedBusinessGoalHandoff(
+            AgentSessionRecord session,
+            Long applicationId,
+            String runId,
+            ConfirmedBatch batch,
+            AgentPostConfirmContinuationView continuation) {
+        boolean terminalShape = "BUSINESS_GOAL_REACHED".equals(normalizeCode(continuation.status()))
+                && "TASK_SUBMITTED_OR_SCHEDULED".equals(normalizeCode(continuation.stoppedReason()))
+                && !Boolean.TRUE.equals(continuation.continued())
+                && !Boolean.TRUE.equals(continuation.requiresConfirmation())
+                && !hasText(continuation.nextRunId());
+        if (!terminalShape || batch == null || batch.failedCount() != 0
+                || !taskSubmissionBoundaryReached(batch.finalAudits())) {
+            return false;
+        }
+        if (session == null || applicationId == null || applicationId <= 0 || !hasText(runId)
+                || session.getDelegation() == null || !hasText(session.getDelegation().getDelegationId())) {
+            return false;
+        }
+        return specialistTurnFactService
+                .map(service -> service.hasTerminalSuccessfulEvidenceForRoles(
+                        session.getTenantId(),
+                        applicationId,
+                        session.getProjectId(),
+                        session.getActorId(),
+                        session.getSessionId(),
+                        runId,
+                        session.getDelegation().getDelegationId(),
+                        REQUIRED_POST_BRIDGE_SPECIALIST_ROLES
+                ))
+                .orElse(false);
+    }
+
+    /** 精确比较受治理定位符；空 Header/字段绝不被解释为可匹配。 */
+    private boolean sameRequiredLocator(String expected, String actual) {
+        return hasText(expected) && hasText(actual) && expected.equals(actual.trim());
+    }
+
+    /** 规范化固定的协议码和角色码；空值保留为空，调用方据此 fail-closed。 */
+    private String normalizeCode(Object value) {
+        return value == null ? "" : value.toString().trim().toUpperCase(Locale.ROOT);
+    }
+
+    /** 统一处理可选短文本，避免空白 nextRunId 或 locator 进入“可执行”判断。 */
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /**
      * 在响应离开 Java 控制面之前确认 Python 声明的下一 Run 已经真实进入 durable store。
      *
-     * <p>远程 continuation 的 HTTP 成功只代表 Python 完成了处理，不等价于下一 Run 一定持久化成功。重新读取会话
-     * 可以同时覆盖 JDBC 提交失败、回调响应与事务提交竞态以及未来存储实现的异常。如果 Run 不存在，返回一个保留
+     * <p>本方法只在 {@link #verifyContinuationContract(String, String, ConfirmedBatch, AgentPostConfirmContinuationView)}
+     * 已验证 session/run 责任链之后执行。远程 continuation 的 HTTP 成功不等价于下一 Run 一定持久化成功；重新读取
+     * 会话可以覆盖 JDBC 提交失败、回调响应与事务提交竞态以及未来存储实现的异常。如果 Run 不存在，返回一个保留
      * 修复建议但不含 {@code nextRunId} 的可重试结果，让前端提供“重新生成审核计划”，而不是展示必然失败的确认按钮。</p>
      *
      * @param sessionId 当前受治理会话 ID
-     * @param continuation Python 返回的续跑视图
+     * @param runId 当前源 Run，用于空响应时构造安全失败视图
+     * @param continuation Python 返回且已通过 locator 契约的续跑视图
      * @return 已验证的原视图，或去除悬空 Run 引用的可重试视图
      */
     private AgentPostConfirmContinuationView verifyContinuationRunDurability(
             String sessionId,
+            String runId,
             AgentPostConfirmContinuationView continuation) {
-        if (continuation == null || continuation.nextRunId() == null || continuation.nextRunId().isBlank()) {
+        if (continuation == null) {
+            return AgentPostConfirmContinuationView.contractInvalid(
+                    sessionId, runId, "EMPTY_CONTINUATION_RESPONSE");
+        }
+        if (!hasText(continuation.nextRunId())) {
             return continuation;
         }
         boolean durableRunExists = sessionStore.findById(sessionId)
                 .stream()
                 .flatMap(storedSession -> storedSession.getRuns().stream())
-                .anyMatch(run -> continuation.nextRunId().equals(run.getRunId()));
+                .anyMatch(run -> continuation.nextRunId().trim().equals(run.getRunId()));
         return durableRunExists
                 ? continuation
                 : AgentPostConfirmContinuationView.nextRunNotDurable(continuation);

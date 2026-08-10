@@ -58,6 +58,15 @@ import java.util.Optional;
 public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
 
     /**
+     * permission-admin 从项目主数据解析出的可信应用上下文 Header。
+     *
+     * <p>本次增量限定在 gateway、permission-admin 与 agent-runtime，因此该协议常量暂不移动到
+     * platform-common。所有写入点都必须先删除来路值，再只使用权限中心返回的
+     * {@code effectiveApplicationId} 重建，防止客户端把其他应用 ID 混入已授权项目。</p>
+     */
+    static final String APPLICATION_ID_HEADER = PlatformContextHeaders.APPLICATION_ID;
+
+    /**
      * 路由授权元数据的路径模式解析器。
      *
      * <p>网关这一侧必须和 permission-admin 使用相同级别的匹配能力，否则会出现“网关把请求解释成 A 资源，
@@ -251,6 +260,7 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
                 .mutate()
                 .headers(headers -> {
                     headers.remove(PlatformContextHeaders.PROJECT_ID);
+                    headers.remove(APPLICATION_ID_HEADER);
                     /*
                      * 数据范围 Header 必须只代表本次 permission-admin 判定结果。
                      * 认证中心 token、受信上游或开发态 Header 可能携带项目候选集合，但那些只能作为登录态/项目切换提示，
@@ -268,6 +278,10 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
                     if (requestedProjectId != null) {
                         if (decision.getEffectiveTenantId() != null) {
                             headers.set(PlatformContextHeaders.TENANT_ID, decision.getEffectiveTenantId().toString());
+                        }
+                        if (decision.getEffectiveApplicationId() != null
+                                && decision.getEffectiveApplicationId() > 0) {
+                            headers.set(APPLICATION_ID_HEADER, decision.getEffectiveApplicationId().toString());
                         }
                         headers.set(PlatformContextHeaders.PROJECT_ID, requestedProjectId.toString());
                     }

@@ -37,7 +37,7 @@ import static com.czh.datasmart.govern.permission.service.support.PermissionAdmi
  * <p>当前判定策略保持保守：
  * 1. 找到当前角色在平台默认和租户范围内的启用路由策略；
  * 2. 按 HTTP 方法、路径模式、资源类型、业务动作匹配候选策略；
- * 3. 高优先级策略先命中，同优先级 DENY 优先于 ALLOW；
+ * 3. 任意匹配的 DENY 都优先于 ALLOW，再在同类策略中按优先级选择；
  * 4. 没有命中任何策略时默认拒绝。
  */
 @Component
@@ -107,6 +107,7 @@ public class PermissionDecisionSupport {
                 dataScope == null ? null : dataScope.getScopeLevel(),
                 dataScope == null ? null : dataScope.getScopeExpression(),
                 projectContext.effectiveTenantId(),
+                projectContext.effectiveApplicationId(),
                 authorizedProjectIds,
                 authorizedProjectRoles,
                 dataScope != null && Boolean.TRUE.equals(dataScope.getApprovalRequired()),
@@ -152,8 +153,15 @@ public class PermissionDecisionSupport {
                 .filter(policy -> semanticMatches(policy.getResourceType(), request.getResourceType()))
                 .filter(policy -> semanticMatches(policy.getAction(), request.getAction()))
                 .sorted(Comparator
-                        .comparing(PermissionRoutePolicy::getPriority, Comparator.nullsLast(Comparator.reverseOrder()))
-                        .thenComparing(policy -> PermissionRouteEffect.DENY.name().equals(policy.getEffect()) ? 0 : 1))
+                        /*
+                         * 路由策略属于安全边界，不能让未来新增的高优先级通用 ALLOW 覆盖一条已经存在的
+                         * 专用 DENY。先做 deny-overrides，再在同一效果内按优先级排序，既能保证 V48
+                         * 的人类主体拒绝规则长期有效，也保留管理员在多个拒绝/允许规则间调整优先级的能力。
+                         */
+                        .comparing((PermissionRoutePolicy policy) ->
+                                PermissionRouteEffect.DENY.name().equals(policy.getEffect()) ? 0 : 1)
+                        .thenComparing(PermissionRoutePolicy::getPriority,
+                                Comparator.nullsLast(Comparator.reverseOrder())))
                 .findFirst()
                 .orElse(null);
     }
@@ -211,7 +219,7 @@ public class PermissionDecisionSupport {
                                                             List<Long> authorizedProjectIds) {
         Long requestedProjectId = request == null ? null : request.getRequestedProjectId();
         if (requestedProjectId == null) {
-            return ProjectContextResolution.allowed(null);
+            return ProjectContextResolution.allowed(null, null);
         }
         PermissionProject project = projectMapper.selectById(requestedProjectId);
         if (project == null) {
@@ -227,19 +235,19 @@ public class PermissionDecisionSupport {
 
         String scopeLevel = dataScope.getScopeLevel();
         if ("PLATFORM".equalsIgnoreCase(scopeLevel)) {
-            return ProjectContextResolution.allowed(project.getTenantId());
+            return ProjectContextResolution.allowed(project.getTenantId(), project.getApplicationId());
         }
         Long actorTenantId = request.getTenantId();
         if (actorTenantId == null || !actorTenantId.equals(project.getTenantId())) {
             return ProjectContextResolution.denied("所选项目不属于当前租户，projectId=" + requestedProjectId);
         }
         if ("TENANT".equalsIgnoreCase(scopeLevel)) {
-            return ProjectContextResolution.allowed(project.getTenantId());
+            return ProjectContextResolution.allowed(project.getTenantId(), project.getApplicationId());
         }
         if (isProjectBoundScope(scopeLevel)
                 && authorizedProjectIds != null
                 && authorizedProjectIds.contains(requestedProjectId)) {
-            return ProjectContextResolution.allowed(project.getTenantId());
+            return ProjectContextResolution.allowed(project.getTenantId(), project.getApplicationId());
         }
         return ProjectContextResolution.denied("当前身份没有所选项目的成员或资源访问权限，projectId=" + requestedProjectId);
     }
@@ -310,6 +318,7 @@ public class PermissionDecisionSupport {
                 routePolicy == null ? null : routePolicy.getEffect(),
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeLevel(),
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeExpression(),
+                null,
                 null,
                 List.of(),
                 List.of(),
@@ -387,14 +396,23 @@ public class PermissionDecisionSupport {
         return value != null && !value.isBlank();
     }
 
-    private record ProjectContextResolution(boolean allowed, Long effectiveTenantId, String reason) {
+    /**
+     * 权威项目主数据解析出的本次业务作用域。
+     *
+     * <p>tenantId 与 applicationId 必须成对从同一条 permission_project 记录取得。这样平台管理员
+     * 切换项目时，下游不会出现“目标租户正确、应用却沿用前一项目”的半更新上下文。</p>
+     */
+    private record ProjectContextResolution(boolean allowed,
+                                            Long effectiveTenantId,
+                                            Long effectiveApplicationId,
+                                            String reason) {
 
-        private static ProjectContextResolution allowed(Long effectiveTenantId) {
-            return new ProjectContextResolution(true, effectiveTenantId, null);
+        private static ProjectContextResolution allowed(Long effectiveTenantId, Long effectiveApplicationId) {
+            return new ProjectContextResolution(true, effectiveTenantId, effectiveApplicationId, null);
         }
 
         private static ProjectContextResolution denied(String reason) {
-            return new ProjectContextResolution(false, null, reason);
+            return new ProjectContextResolution(false, null, null, reason);
         }
     }
 }

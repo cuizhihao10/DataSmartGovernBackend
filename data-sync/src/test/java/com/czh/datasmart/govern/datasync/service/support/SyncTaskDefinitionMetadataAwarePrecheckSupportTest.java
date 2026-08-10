@@ -129,6 +129,126 @@ class SyncTaskDefinitionMetadataAwarePrecheckSupportTest {
         assertThat(result.recommendedActions()).anyMatch(action -> action.contains("主键字段"));
     }
 
+    /**
+     * 验证旧版单对象任务直接把字段映射保存为 JSON 数组时，预检查与执行器使用完全一致的解析语义。
+     *
+     * <p>该格式仍可能来自历史草稿、编辑任务恢复以及本地 E2E 脚本。如果预检查只识别 v2 对象包装格式，
+     * 即使数组中已经明确配置了目标主键 {@code id -> id}，也会错误地同时报告“未选择字段”和
+     * “UPDATE 未映射主键”。测试使用顶层源/目标对象字段，特意不设置 objectMappingConfig，确保覆盖
+     * 真实 SINGLE_OBJECT 兼容路径，而不是再次走新版对象映射结构。</p>
+     */
+    @Test
+    void legacySingleObjectDirectFieldMappingArrayShouldMapTargetPrimaryKeyForUpdate() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(
+                null,
+                "task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema",
+                "target_task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(1003L);
+        definition.setTenantId(10L);
+        definition.setProjectId(101L);
+        definition.setSourceDatasourceId(23L);
+        definition.setTargetDatasourceId(24L);
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSyncMode("FULL");
+        definition.setWriteStrategy("UPDATE");
+        definition.setSourceObjectName("task");
+        definition.setTargetSchemaName("target_schema");
+        definition.setTargetObjectName("target_task");
+        definition.setFieldMappingConfig("""
+                [
+                  {"sourceField": "id", "targetField": "id", "syncEnabled": true},
+                  {"sourceField": "task_name", "targetField": "task_name", "syncEnabled": true}
+                ]
+                """);
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(definition, actor());
+
+        assertThat(result.issueCodes()).doesNotContain(
+                "METADATA_FIELD_MAPPING_SELECTED_EMPTY",
+                "METADATA_TARGET_PRIMARY_KEY_FIELD_NOT_MAPPED_FOR_UPDATE");
+    }
+
+    /**
+     * 验证发布阶段会把真实目标主键写成内部映射标记，使后续执行契约能够生成 primaryKeyColumns。
+     *
+     * <p>这里不通过用户填写 primaryKeyField 来让测试通过，而是沿用真实创建向导的行为：定义中的
+     * primaryKeyField 保持为空，系统读取目标表元数据并在 id 映射行上增加 targetPrimaryKey。这样可以证明
+     * “用户只选 UPDATE，系统自动识别冲突键”的产品语义真正进入了 worker 合同。</p>
+     */
+    @Test
+    void executionPrimaryKeyEnrichmentShouldAnnotateMappedTargetPrimaryKey() throws Exception {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema",
+                "target_task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setTargetDatasourceId(24L);
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setTargetSchemaName("target_schema");
+        definition.setTargetObjectName("target_task");
+        definition.setSourceObjectName("task");
+        definition.setSyncMode("FULL");
+        definition.setWriteStrategy("UPDATE");
+        definition.setFieldMappingConfig("""
+                [
+                  {"sourceField": "id", "targetField": "id", "syncEnabled": true},
+                  {"sourceField": "task_name", "targetField": "task_name", "syncEnabled": true}
+                ]
+                """);
+
+        String enriched = support.enrichExecutionPrimaryKeyFacts(definition, actor());
+
+        assertThat(new ObjectMapper().readTree(enriched).get(0).path("targetPrimaryKey").asBoolean()).isTrue();
+        SyncFieldMappingExecutionContract contract =
+                new SyncFieldMappingExecutionContractSupport(new ObjectMapper()).parse(enriched, null);
+        assertThat(contract.getPrimaryKeyColumns()).containsExactly("id");
+    }
+
+    /**
+     * 验证复合主键必须完整映射，防止只映射其中一列却生成不稳定的 merge 冲突边界。
+     */
+    @Test
+    void updateShouldRequireEveryTargetCompositePrimaryKeyColumnToBeMapped() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+        DatasourceMetadataDiscoveryResponse targetResponse = responseWithTable(
+                "target_schema",
+                "target_task",
+                column("id", "BIGINT", true),
+                column("tenant_id", "BIGINT", true),
+                column("task_name", "VARCHAR", false));
+        targetResponse.getTables().getFirst().setPrimaryKeys(List.of("tenant_id", "id"));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(targetResponse);
+
+        SyncTaskDefinition definition = definitionWithCustomTarget("target_schema", "target_task");
+        definition.setWriteStrategy("UPDATE");
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(definition, actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_TARGET_PRIMARY_KEY_FIELD_NOT_MAPPED_FOR_UPDATE");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("tenant_id"));
+    }
+
     @Test
     void customSqlModeShouldValidateTargetFieldWithoutRequiringSourceObject() {
         DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);

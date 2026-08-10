@@ -11,14 +11,19 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactBu
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactBundleResponse;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
 import com.czh.datasmart.govern.agent.event.command.InMemoryAgentAsyncTaskCommandOutboxStore;
+import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -93,6 +98,34 @@ class AgentToolActionResumeFactBundleServiceTest {
         assertTrue(response.facts().getFirst().issueCodes().contains("APPROVAL_FACT_REJECTED_BY_PERMISSION_ADMIN"));
         assertTrue(response.recommendedActions().stream()
                 .anyMatch(action -> action.contains("APPROVAL_CONFIRMATION_FACT")));
+    }
+
+    @Test
+    void approvalFactRequestShouldBindApplicationAgentAndDelegationFromTrustedContext() {
+        AtomicReference<AgentToolActionApprovalFactRemoteRequest> captured = new AtomicReference<>();
+        TestHarness harness = harness(request -> {
+            captured.set(request);
+            return approvedResult();
+        });
+
+        harness.service().query(
+                request(List.of("APPROVAL_CONFIRMATION_FACT")),
+                projectOwnerContext()
+        );
+
+        AgentToolActionApprovalFactRemoteRequest approvalRequest = captured.get();
+        assertNotNull(approvalRequest);
+        assertEquals(30L, approvalRequest.applicationId());
+        assertEquals("1001", approvalRequest.userId());
+        assertEquals("1001", approvalRequest.actorId());
+        assertEquals("datasmart-govern-agent", approvalRequest.agentId());
+        assertEquals("session-resume", approvalRequest.sessionId());
+        assertEquals("run-resume", approvalRequest.runId());
+        assertEquals("taoc-resume-001", approvalRequest.commandId());
+        assertEquals("datasource.metadata.read", approvalRequest.toolCode());
+        assertEquals("tool-readiness-policy.v1", approvalRequest.requestedPolicyVersion());
+        assertNotNull(approvalRequest.delegationId());
+        assertFalse(approvalRequest.delegationId().isBlank());
     }
 
     @Test
@@ -261,12 +294,14 @@ class AgentToolActionResumeFactBundleServiceTest {
         AgentToolActionResumeFactBundleProperties properties = new AgentToolActionResumeFactBundleProperties();
         InMemoryAgentAsyncTaskCommandOutboxStore outboxStore = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
         InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolActionResumeLocatorIndexStore locatorIndexStore = new InMemoryAgentToolActionResumeLocatorIndexStore();
         AgentToolActionWorkerReceiptIndexService receiptIndexService = new AgentToolActionWorkerReceiptIndexService(
                 new InMemoryAgentToolActionWorkerReceiptIndexStore(100)
         );
         AgentToolActionClarificationFactStore clarificationStore =
                 new InMemoryAgentToolActionClarificationFactStore(properties);
+        sessionStore.save(approvalSession());
         AgentToolActionResumeFactBundleService service = new AgentToolActionResumeFactBundleService(
                 properties,
                 evaluator,
@@ -275,9 +310,10 @@ class AgentToolActionResumeFactBundleServiceTest {
                 new AgentToolActionResumeLocatorIndexService(locatorIndexStore),
                 new AgentToolActionClarificationFactEvaluator(clarificationStore),
                 new AgentToolActionWorkerReceiptFactEvaluator(receiptIndexService, projectionStore),
-                new AgentToolActionResumeFactBundleDiagnosticPublisher(projectionStore)
+                new AgentToolActionResumeFactBundleDiagnosticPublisher(projectionStore),
+                sessionStore
         );
-        return new TestHarness(service, outboxStore, projectionStore, clarificationStore);
+        return new TestHarness(service, outboxStore, projectionStore, clarificationStore, sessionStore);
     }
 
     private AgentToolActionResumeFactBundleQueryRequest request(List<String> requiredFactTypes) {
@@ -433,6 +469,7 @@ class AgentToolActionResumeFactBundleServiceTest {
     private AgentRuntimeEventQueryAccessContext projectOwnerContext() {
         return new AgentRuntimeEventQueryAccessContext(
                 10L,
+                30L,
                 1001L,
                 "PROJECT_OWNER",
                 "trace-resume",
@@ -442,18 +479,7 @@ class AgentToolActionResumeFactBundleServiceTest {
     }
 
     private AgentToolActionApprovalFactEvaluator approvedEvaluator() {
-        return ignored -> new AgentToolActionApprovalFactRemoteResult(
-                "approval-fact-approved-001",
-                true,
-                false,
-                "APPROVED",
-                "internal approval reason should not leak",
-                "APPROVED",
-                "tool-readiness-policy.v1",
-                null,
-                List.of("APPROVAL_FACT_APPROVED", "APPROVAL_FACT_SCOPE_MATCHED"),
-                List.of()
-        );
+        return ignored -> approvedResult();
     }
 
     private AgentToolActionApprovalFactEvaluator rejectedEvaluator() {
@@ -471,11 +497,42 @@ class AgentToolActionResumeFactBundleServiceTest {
         );
     }
 
+    private AgentToolActionApprovalFactRemoteResult approvedResult() {
+        return new AgentToolActionApprovalFactRemoteResult(
+                "approval-fact-approved-001",
+                true,
+                false,
+                "APPROVED",
+                "internal approval reason should not leak",
+                "APPROVED",
+                "tool-readiness-policy.v1",
+                null,
+                List.of("APPROVAL_FACT_APPROVED", "APPROVAL_FACT_SCOPE_MATCHED"),
+                List.of()
+        );
+    }
+
+    private AgentSessionRecord approvalSession() {
+        return new AgentSessionRecord(
+                "session-resume",
+                10L,
+                20L,
+                30L,
+                "1001",
+                "WEB",
+                "approval-fact-resume-session",
+                WorkspaceIsolationLevel.PROJECT,
+                "tenant:10:project:20",
+                LocalDateTime.now()
+        );
+    }
+
     private record TestHarness(
             AgentToolActionResumeFactBundleService service,
             InMemoryAgentAsyncTaskCommandOutboxStore outboxStore,
             InMemoryAgentRuntimeEventProjectionStore projectionStore,
-            AgentToolActionClarificationFactStore clarificationStore
+            AgentToolActionClarificationFactStore clarificationStore,
+            AgentSessionMemoryStore sessionStore
     ) {
     }
 }

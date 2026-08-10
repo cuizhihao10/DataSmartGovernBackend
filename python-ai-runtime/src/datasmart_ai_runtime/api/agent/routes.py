@@ -39,12 +39,14 @@ from datasmart_ai_runtime.api.agent.tool_action_control_flow import build_tool_a
 from datasmart_ai_runtime.api.events import (
     build_event_control_response,
     build_event_replay_response,
-    runtime_event_from_payload,
     subscription_request_from_payload,
 )
 from datasmart_ai_runtime.api.gateway.signature import GatewaySignatureVerificationError
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
-from datasmart_ai_runtime.api.gateway.trusted_context import enrich_agent_plan_payload_from_gateway_headers
+from datasmart_ai_runtime.api.gateway.trusted_context import (
+    enrich_agent_plan_payload_from_gateway_headers,
+    runtime_event_access_context_from_gateway_headers,
+)
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import (
     AgentPlanCancellationIdentity,
@@ -149,6 +151,9 @@ def register_agent_runtime_routes(
     multi_agent_execution_session_metrics: Any | None = None,
     multi_agent_turn_runner_metrics: Any | None = None,
     langgraph_checkpointer_service: Any | None = None,
+    specialist_agent_coordinator: Any | None = None,
+    specialist_allowed_tools_by_role: dict[str, tuple[str, ...]] | None = None,
+    specialist_toolplan_bridge: Any | None = None,
     tool_action_checkpoint_gateway_signature_required: bool = False,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
@@ -309,8 +314,11 @@ def register_agent_runtime_routes(
             langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
             multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
             multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
-            langgraph_checkpointer_service=langgraph_checkpointer_service,
-        )
+             langgraph_checkpointer_service=langgraph_checkpointer_service,
+             specialist_agent_coordinator=specialist_agent_coordinator,
+             specialist_allowed_tools_by_role=specialist_allowed_tools_by_role,
+             specialist_toolplan_bridge=specialist_toolplan_bridge,
+         )
 
     @app.post("/agent/plans/cancel")
     def cancel_agent_plan(payload: dict[str, Any], http_request: request_type) -> dict[str, Any]:
@@ -468,8 +476,11 @@ def register_agent_runtime_routes(
                                 langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
                                 multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
                                 multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
-                                langgraph_checkpointer_service=langgraph_checkpointer_service,
-                                progress_event_sink=emit_progress,
+                                 langgraph_checkpointer_service=langgraph_checkpointer_service,
+                                 specialist_agent_coordinator=specialist_agent_coordinator,
+                                 specialist_allowed_tools_by_role=specialist_allowed_tools_by_role,
+                                 specialist_toolplan_bridge=specialist_toolplan_bridge,
+                                 progress_event_sink=emit_progress,
                                 cancellation_check=cancellation_token.raise_if_cancelled,
                             )
 
@@ -545,6 +556,11 @@ def register_agent_runtime_routes(
                         )
                         continue
                     if frame.get("type") == "done":
+                        # ``done`` is part of the public stream lifecycle, not
+                        # only an internal queue sentinel. Emitting it lets the
+                        # browser and black-box E2E distinguish a cleanly closed
+                        # turn from a proxy disconnect immediately after result.
+                        yield _encode_ndjson_frame(frame)
                         break
                     yield _encode_ndjson_frame(frame)
             finally:
@@ -687,14 +703,31 @@ def register_agent_runtime_routes(
         gateway_signature_security_stats=gateway_signature_security_stats,
     )
 
-    @app.post("/agent/events/replay")
-    def replay_agent_events(payload: dict[str, Any]) -> dict[str, Any]:
+    def _event_access_context(headers: Mapping[str, str]) -> Any:
+        """Resolve event authorization from verified Gateway headers."""
+
+        try:
+            return runtime_event_access_context_from_gateway_headers(
+                headers,
+                nonce_store=gateway_signature_nonce_store,
+            )
+        except GatewaySignatureVerificationError as exc:
+            detail = {
+                "code": GATEWAY_SIGNATURE_ERROR_CODE,
+                "message": "Gateway 可信上下文验签失败，事件访问已拒绝。",
+                "reason": exc.reason,
+            }
+            if gateway_signature_error_factory is not None:
+                raise gateway_signature_error_factory(detail) from exc
+            raise
+
+    def replay_agent_events(payload: dict[str, Any], http_request: Any = None) -> dict[str, Any]:
         """按订阅请求回放 Agent 事件。
 
         路由职责：
         - 根据 subscription 中的 clientId/sessionId/runId/requestId/afterSequence/eventTypes 构造回放条件；
-        - 如果调用方显式传入 events，则作为本地协议测试数据进行筛选；
-        - 如果没有传入 events，则优先从当前 Python event store 或外部 Java replay source 拉取历史事件。
+        - 客户端正文中的 events 永远不作为生产事实源；
+        - 只从当前 Python event store 或外部 Java replay source 拉取历史事件。
 
         设计意图：
         Agent 产品要做到接近 Codex/Claude Code 的可观察执行体验，必须让前端或智能网关能够在断线、刷新、
@@ -702,17 +735,27 @@ def register_agent_runtime_routes(
         为分页回放、审计导出、运行回放和故障诊断接口。
         """
 
+        access_context = _event_access_context(
+            getattr(http_request, "headers", {}) if http_request is not None else {},
+        )
         subscription = subscription_request_from_payload(payload.get("subscription", {}))
-        events = tuple(runtime_event_from_payload(item) for item in payload.get("events", ()))
+        subscription = replace(
+            subscription,
+            tenant_id=access_context.tenant_id,
+            project_id=access_context.project_id,
+            actor_id=access_context.actor_id,
+            roles=access_context.roles,
+        )
         return build_event_replay_response(
             subscription,
-            events=events,
-            event_store=event_store if not events else None,
+            event_store=event_store,
             external_replay_sources=runtime_event_replay_sources,
         )
 
-    @app.post("/agent/events/control")
-    def control_agent_event_subscription(payload: dict[str, Any]) -> dict[str, Any]:
+    replay_agent_events.__annotations__["http_request"] = request_type
+    app.post("/agent/events/replay")(replay_agent_events)
+
+    def control_agent_event_subscription(payload: dict[str, Any], http_request: Any = None) -> dict[str, Any]:
         """处理实时事件订阅控制消息。
 
         支持的控制动作包括 subscribe、ack、heartbeat、reconnect 和 unsubscribe。HTTP 入口与 WebSocket
@@ -720,7 +763,13 @@ def register_agent_runtime_routes(
         逻辑很容易在不同协议入口之间漂移，导致生产排障困难。
         """
 
-        return build_event_control_response(payload, session_manager)
+        access_context = _event_access_context(
+            getattr(http_request, "headers", {}) if http_request is not None else {},
+        )
+        return build_event_control_response(payload, session_manager, access_context=access_context)
+
+    control_agent_event_subscription.__annotations__["http_request"] = request_type
+    app.post("/agent/events/control")(control_agent_event_subscription)
 
     @app.websocket("/agent/events/ws")
     async def websocket_agent_event_subscription(websocket: Any) -> None:
@@ -737,10 +786,22 @@ def register_agent_runtime_routes(
         智能网关/事件基础设施的下一层演进；本模块先保持协议入口清晰，让后续能力有稳定挂点。
         """
 
+        try:
+            access_context = runtime_event_access_context_from_gateway_headers(
+                getattr(websocket, "headers", {}),
+                nonce_store=gateway_signature_nonce_store,
+            )
+        except GatewaySignatureVerificationError as exc:
+            # Reject before accepting the upgrade so an unauthenticated socket
+            # cannot submit a forged subscribe frame.
+            await websocket.close(code=4401, reason=exc.reason)
+            return
+
         await websocket.accept()
         connection = RuntimeEventWebSocketConnectionAdapter(
             session_manager=session_manager,
             live_push_hub=live_push_hub,
+            access_context=access_context,
         )
         outgoing_frames: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 

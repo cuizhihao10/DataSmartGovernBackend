@@ -149,6 +149,9 @@ final class GatewayAuthorizationDefaultCatalog {
         List<InternalServiceEndpointProperties> endpoints = new ArrayList<>();
         endpoints.add(internalEndpoint("agent-plan-ingestion", "/api/agent/plan-ingestions", 120,
                 "Python AI Runtime 提交 AgentPlan 到 Java 控制面的内部入口。"));
+        endpoints.add(internalEndpoint("agent-specialist-turn-fact-registration",
+                "/api/agent/specialist-turn-facts", 240,
+                "受信 Python AI Runtime 登记专业 Agent turn 低敏事实的内部入口；普通人类主体不能进入。"));
         endpoints.add(internalEndpoint("agent-runtime-command-worker-receipts",
                 "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-receipts",
                 240, "命令 worker 写回执行结果的内部入口。"));

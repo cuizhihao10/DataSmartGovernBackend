@@ -79,7 +79,12 @@ def build_websocket_frames_from_control_response(response: dict[str, Any]) -> tu
             },
         )
     ]
-    if replay_envelope is not None:
+    if replay_envelope and (
+        replay_envelope.get("events")
+        or replay_envelope.get("sourceCursors")
+        or replay_envelope.get("externalReplayErrors")
+        or replay_envelope.get("hasMore")
+    ):
         frames.append(
             RuntimeEventWebSocketFrame(
                 frame_type=RuntimeEventWebSocketFrameType.EVENT_ENVELOPE,
@@ -125,6 +130,7 @@ class RuntimeEventWebSocketConnectionAdapter:
         self,
         session_manager: Any,
         live_push_hub: Any | None = None,
+        access_context: Any | None = None,
     ) -> None:
         """创建连接适配器。
 
@@ -140,6 +146,7 @@ class RuntimeEventWebSocketConnectionAdapter:
 
         self._session_manager = session_manager
         self._live_push_hub = live_push_hub
+        self._access_context = access_context
         self._subscription_id: str | None = None
         self._closed = False
 
@@ -181,7 +188,11 @@ class RuntimeEventWebSocketConnectionAdapter:
         # 协议入口仍复用 api.events 中的控制响应构建逻辑，防止 HTTP 和 WebSocket 分叉。
         from datasmart_ai_runtime.api.events import build_event_control_response
 
-        response = build_event_control_response(message, self._session_manager)
+        response = build_event_control_response(
+            message,
+            self._session_manager,
+            access_context=self._access_context,
+        )
         frames = build_websocket_frames_from_control_response(response)
         payloads = frames_to_payloads(frames)
         self._refresh_subscription_binding(response)
@@ -227,6 +238,7 @@ class RuntimeEventWebSocketConnectionAdapter:
                 "reason": reason,
             },
             self._session_manager,
+            access_context=self._access_context,
         )
         frames = build_websocket_frames_from_control_response(response)
         return frames_to_payloads(frames)

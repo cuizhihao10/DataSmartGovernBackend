@@ -227,6 +227,8 @@ class MultiAgentExecutionSessionService:
         handoff_required = bool(raw_item.get("handoffRequired") or raw_item.get("requiresHandoff"))
         durable_phase = string_value(durable_loop.get("phase")) or "not_recorded"
         session_status = _work_item_session_status(
+            role=role,
+            participation_mode=mode,
             source_status=source_status,
             durable_phase=durable_phase,
             handoff_required=handoff_required,
@@ -275,13 +277,49 @@ def _raw_work_items(
     return (), "no_agent_source_available"
 
 
-def _work_item_session_status(*, source_status: str, durable_phase: str, handoff_required: bool) -> str:
-    """融合执行前计划状态与 Durable Loop phase，得到会话层状态。"""
+def _work_item_session_status(
+    *,
+    role: str,
+    participation_mode: str,
+    source_status: str,
+    durable_phase: str,
+    handoff_required: bool,
+) -> str:
+    """融合执行前计划状态与 Durable Loop phase，得到会话层状态。
+
+    Specialist 的模型/规则 turn 本身只产出低敏分析结果或受控 ToolPlan，
+    不等于它建议的业务写操作已经执行。因此即使该角色最终需要把高风险
+    工具交给 Java 审批，只要 Durable Loop 已进入专业 turn 阶段，仍应先让
+    Specialist 完成诊断、规划或方案生成；审批继续约束后续 bridge 和工具
+    执行。GUARDRAIL 与主控角色不享受这个提前执行规则。
+    """
 
     normalized = source_status.upper()
     phase = durable_phase.lower()
     if normalized.startswith("BLOCKED"):
         return "BLOCKED_WAITING_RECOVERY"
+    specialist_turn_ready = participation_mode.upper() in {"SPECIALIST", "OBSERVER"} and phase in {
+        # ``plan_created`` means no legacy model ToolPlan is waiting for Java feedback. A registered
+        # Specialist may therefore perform its own read-only analysis after checkpointing. This is
+        # essential when ownership of ``knowledge.rag.query`` is delegated from the master planner to
+        # Knowledge Agent; keeping it non-ready would replace one deadlock with another.
+        "plan_created",
+        "ready_for_second_turn",
+        "second_turn_completed",
+        # A master-planner ToolPlan may be waiting for Java feedback while an independent Specialist
+        # already has enough trusted request context to perform read-only discovery, diagnosis or
+        # monitoring. Blocking every Specialist behind that global phase creates a circular wait in
+        # recovery flows: Knowledge Agent cannot retrieve evidence, Recovery Agent cannot formulate a
+        # governed handoff, and therefore the missing control-plane action can never be produced.
+        #
+        # This only releases the Specialist *analysis turn*. It does not execute the pending ToolPlan,
+        # approve a recovery action or bypass the Java bridge. Each Specialist still applies its own
+        # input/evidence gates, and every side effect remains subject to ToolPlan admission, approval,
+        # outbox dispatch and worker receipts after the turn completes.
+        "waiting_control_plane",
+    }
+    if specialist_turn_ready:
+        return "READY_FOR_AGENT_TURN"
     if handoff_required or "APPROVAL" in normalized or phase == "waiting_approval":
         return "WAITING_APPROVAL_OR_HANDOFF"
     if phase == "waiting_control_plane":
@@ -290,7 +328,12 @@ def _work_item_session_status(*, source_status: str, durable_phase: str, handoff
         return "WAITING_HUMAN_TAKEOVER"
     if phase == "ready_for_second_turn":
         return "READY_FOR_AGENT_TURN"
-    if phase in {"second_turn_completed", "stopped_by_policy"}:
+    # `second_turn_completed` is a global Durable Loop phase.  It means that
+    # the master coordinator has summarized its turn, not that every
+    # Specialist has already received and completed a controlled turn.
+    if phase == "second_turn_completed":
+        return "COMPLETED_OR_SUMMARIZED" if role == "MASTER_ORCHESTRATOR" else "READY_FOR_AGENT_TURN"
+    if phase == "stopped_by_policy":
         return "COMPLETED_OR_SUMMARIZED"
     if normalized.startswith("DEGRADED"):
         return "DEGRADED_DRAFT_ONLY"

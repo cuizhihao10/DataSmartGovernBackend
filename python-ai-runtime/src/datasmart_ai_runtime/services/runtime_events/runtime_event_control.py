@@ -73,6 +73,8 @@ class RuntimeEventControlHandler:
         self,
         message: RuntimeEventControlMessage,
         access_context: RuntimeEventAccessContext | None = None,
+        *,
+        override_request_identity: bool = True,
     ) -> dict[str, Any]:
         """处理一条控制消息并返回协议响应。
 
@@ -84,7 +86,11 @@ class RuntimeEventControlHandler:
         如果订阅建立或重连产生 replay envelope，该 envelope 会包含在 `subscription.replayEnvelope` 中。
         """
 
-        snapshot = self._dispatch(message, access_context=access_context)
+        snapshot = self._dispatch(
+            message,
+            access_context=access_context,
+            override_request_identity=override_request_identity,
+        )
         return {
             "accepted": True,
             "messageType": message.message_type,
@@ -95,13 +101,19 @@ class RuntimeEventControlHandler:
         self,
         message: RuntimeEventControlMessage,
         access_context: RuntimeEventAccessContext | None = None,
+        *,
+        override_request_identity: bool = True,
     ) -> RuntimeEventSessionSnapshot:
         """按控制消息类型分发到会话状态机。"""
 
         if message.message_type == RuntimeEventControlMessageType.SUBSCRIBE:
             if message.request is None:
                 raise RuntimeEventControlMessageError("subscribe 控制消息必须携带 subscription/request。")
-            request = self._merge_access_context(message.request, access_context)
+            request = self._merge_access_context(
+                message.request,
+                access_context,
+                override_request_identity=override_request_identity,
+            )
             decision = self._authorize(request, access_context)
             if not decision.allowed:
                 raise RuntimeEventControlMessageError(f"订阅未授权：{decision.reason}")
@@ -145,19 +157,29 @@ class RuntimeEventControlHandler:
     def _merge_access_context(
         request: RuntimeEventSubscriptionRequest,
         access_context: RuntimeEventAccessContext | None,
+        *,
+        override_request_identity: bool = True,
     ) -> RuntimeEventSubscriptionRequest:
         """把已认证访问上下文补入订阅请求。
 
         真实 WebSocket 场景里，前端订阅消息通常只会传 sessionId/runId/afterSequence，不应该让前端
         自己声明“我是哪个角色”。角色、租户、项目、操作者应来自 gateway/JWT/服务端认证上下文。
         因此这里在 subscribe 入会话之前做一次合并：
-        - request 已显式传的字段优先保留，方便测试和内部工具；
-        - request 缺失的 tenant/project/actor/roles 从 access_context 补齐；
+        - tenant/project/actor/roles 始终由 access_context 覆盖，防止客户端正文伪造；
+        - 只有事件定位字段（session/run/request）和回放参数继续来自订阅正文；
         - 后续 replay/live push 就能基于会话 request 中的 roles 做同一套脱敏策略。
         """
 
         if access_context is None:
             return request
+        if override_request_identity:
+            return replace(
+                request,
+                tenant_id=access_context.tenant_id,
+                project_id=access_context.project_id,
+                actor_id=access_context.actor_id,
+                roles=access_context.roles,
+            )
         return replace(
             request,
             tenant_id=request.tenant_id or access_context.tenant_id,

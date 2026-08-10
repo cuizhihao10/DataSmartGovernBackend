@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -85,6 +86,10 @@ class DataSyncToolPlanBuilder:
             return ()
 
         object_mappings = payload.get("objectMappings") or request.variables.get("objectMappings") or []
+        metadata_filters = self._metadata_filters(
+            object_mappings=object_mappings,
+            objective=str(request.objective or ""),
+        )
         sync_mode = self._normalize_sync_mode(payload.get("syncMode"))
         write_strategy = self._normalize_write_strategy(payload.get("writeStrategy"), sync_mode)
         common = {
@@ -128,6 +133,7 @@ class DataSyncToolPlanBuilder:
             {
                 "datasourceId": source_id,
                 "connectionTestRef": self._ref("datasource.source.connection.test", "datasourceId"),
+                **metadata_filters["source"],
             },
         )
         self._append(
@@ -139,6 +145,7 @@ class DataSyncToolPlanBuilder:
             {
                 "datasourceId": target_id,
                 "connectionTestRef": self._ref("datasource.target.connection.test", "datasourceId"),
+                **metadata_filters["target"],
             },
         )
         if sync_mode == "CDC_STREAMING":
@@ -218,6 +225,91 @@ class DataSyncToolPlanBuilder:
                 {"taskRef": self._ref("sync.task.run", "taskId")},
             )
         return tuple(plans)
+
+    @classmethod
+    def _metadata_filters(
+        cls,
+        *,
+        object_mappings: object,
+        objective: str,
+    ) -> dict[str, dict[str, object]]:
+        """为两端控制面元数据读取生成确定性的精确过滤参数。
+
+        元数据读取工具的默认上限适合对象选择器，却不能证明上限之外的表不存在。只要用户
+        已经在结构化映射里给出表名，就应把两端名称分别传给 Java Runtime，由 Java 逐表查询、
+        合并并生成同一个审计事实。自然语言场景只在用户明确说“同名表”且出现带下划线或
+        引号包裹的安全标识符时复用同一组名称，避免把 MySQL/PostgreSQL 当作实例或表名。
+
+        该方法只缩小只读查询范围，不创建映射、不修改 schema，也不绕过后续字段和预检查。
+        """
+
+        source_names: list[str] = []
+        target_names: list[str] = []
+        source_schemas: list[str] = []
+        target_schemas: list[str] = []
+
+        def append_identifier(values: list[str], value: object) -> None:
+            normalized = str(value or "").strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]{0,127}", normalized):
+                return
+            if normalized.casefold() not in {item.casefold() for item in values}:
+                values.append(normalized)
+
+        if isinstance(object_mappings, (list, tuple)):
+            for mapping in object_mappings[:100]:
+                if not isinstance(mapping, dict):
+                    continue
+                append_identifier(
+                    source_names,
+                    mapping.get("sourceObjectName") or mapping.get("sourceTableName"),
+                )
+                append_identifier(
+                    target_names,
+                    mapping.get("targetObjectName") or mapping.get("targetTableName"),
+                )
+                append_identifier(source_schemas, mapping.get("sourceSchemaName"))
+                append_identifier(target_schemas, mapping.get("targetSchemaName"))
+
+        normalized_objective = str(objective or "")
+        same_name_requested = any(
+            marker in normalized_objective.casefold()
+            for marker in ("同名", "same-name", "same name")
+        )
+        if not source_names and not target_names and same_name_requested:
+            quoted = re.findall(
+                r"[`\"']([A-Za-z_][A-Za-z0-9_$]{0,127})[`\"']",
+                normalized_objective,
+            )
+            underscored = re.findall(
+                r"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_$]*_[A-Za-z0-9_$]*)(?![A-Za-z0-9_$])",
+                normalized_objective,
+            )
+            for candidate in (*quoted, *underscored):
+                append_identifier(source_names, candidate)
+                append_identifier(target_names, candidate)
+
+        if not target_schemas:
+            schema_patterns = (
+                r"(?<![A-Za-z0-9_$])(?P<schema>[A-Za-z_][A-Za-z0-9_$]{0,127})\s+schema(?![A-Za-z0-9_$])",
+                r"\bschema\s*(?:is|=|:|为|是|叫做|中的)?\s*(?P<schema>[A-Za-z_][A-Za-z0-9_$]{0,127})",
+            )
+            for pattern in schema_patterns:
+                matches = tuple(re.finditer(pattern, normalized_objective, re.IGNORECASE))
+                if matches:
+                    append_identifier(target_schemas, matches[-1].group("schema"))
+                    break
+
+        source: dict[str, object] = {}
+        target: dict[str, object] = {}
+        if source_names:
+            source["tableNames"] = source_names
+        if target_names:
+            target["tableNames"] = target_names
+        if len(source_schemas) == 1:
+            source["schemaPattern"] = source_schemas[0]
+        if len(target_schemas) == 1:
+            target["schemaPattern"] = target_schemas[0]
+        return {"source": source, "target": target}
 
     def build_confirmed_lifecycle_from_draft(
         self,

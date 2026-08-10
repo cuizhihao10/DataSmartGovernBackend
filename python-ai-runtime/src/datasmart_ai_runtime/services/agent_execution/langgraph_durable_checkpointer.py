@@ -484,6 +484,11 @@ class LangGraphDurableCheckpointerService:
 
         return self._store.latest_for_thread(thread_id)
 
+    def checkpoint_by_id(self, checkpoint_id: str) -> LangGraphDurableCheckpoint | None:
+        """按稳定 locator 读取单个 checkpoint，供受控分支操作先执行对象范围校验。"""
+
+        return self._store.get_checkpoint(checkpoint_id)
+
     def events_for_thread(self, thread_id: str) -> tuple[LangGraphCheckpointEvent, ...]:
         """读取 thread 事件流。"""
 

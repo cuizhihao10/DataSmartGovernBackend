@@ -33,6 +33,7 @@ public class AgentRuntimeEventQueryAccessContextResolver {
      * @return 类型安全的 Agent 事件查询访问上下文
      */
     public AgentRuntimeEventQueryAccessContext resolve(String tenantIdHeader,
+                                                       String applicationIdHeader,
                                                        String actorIdHeader,
                                                        String actorRole,
                                                        String traceId,
@@ -40,12 +41,28 @@ public class AgentRuntimeEventQueryAccessContextResolver {
                                                        String authorizedProjectIdsHeader) {
         return new AgentRuntimeEventQueryAccessContext(
                 parseLongHeader(tenantIdHeader, "X-DataSmart-Tenant-Id"),
+                parseLongHeader(applicationIdHeader, "X-DataSmart-Application-Id"),
                 parseLongHeader(actorIdHeader, "X-DataSmart-Actor-Id"),
                 actorRole,
                 traceId,
                 dataScopeLevel,
                 PlatformAuthorizedProjectHeaderSupport.parse(authorizedProjectIdsHeader)
         );
+    }
+
+    /**
+     * Keeps the original resolver contract for controllers that do not need an
+     * application boundary. New approval-fact callers must use the overload
+     * above so the user and Agent action is tied to the product application.
+     */
+    public AgentRuntimeEventQueryAccessContext resolve(String tenantIdHeader,
+                                                       String actorIdHeader,
+                                                       String actorRole,
+                                                       String traceId,
+                                                       String dataScopeLevel,
+                                                       String authorizedProjectIdsHeader) {
+        return resolve(tenantIdHeader, null, actorIdHeader, actorRole, traceId,
+                dataScopeLevel, authorizedProjectIdsHeader);
     }
 
     /**

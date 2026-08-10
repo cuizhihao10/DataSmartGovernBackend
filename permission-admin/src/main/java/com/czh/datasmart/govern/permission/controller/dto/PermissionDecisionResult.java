@@ -63,6 +63,15 @@ public class PermissionDecisionResult {
     private Long effectiveTenantId;
 
     /**
+     * 当前项目选择解析出的有效应用 ID。
+     *
+     * <p>应用不是由浏览器传入的可选展示字段，而是 permission_project 主数据中的权威归属。
+     * gateway 将它与 effectiveTenantId/projectId 一起重建为下游上下文，避免同一租户下的不同
+     * 产品应用把 Agent 会话、专业事实或后续工具动作混入彼此的数据边界。</p>
+     */
+    private Long effectiveApplicationId;
+
+    /**
      * 当前操作者在本次判定资源下可访问的项目 ID 集合。
      *
      * <p>当数据范围为 PROJECT 时，`dataScopeExpression` 通常会包含 `${actorProjectIds}` 占位符。

@@ -32,17 +32,39 @@ public class AgentToolActionApprovalFactRegisterRequest {
     /** 审批事实所属租户；用于多租户隔离和防止跨租户复用审批。 */
     private Long tenantId;
 
+    /**
+     * Product application boundary. Together with tenantId and projectId this
+     * prevents a project identifier from being reused across applications.
+     */
+    private Long applicationId;
+
     /** 审批事实所属项目；用于防止一个项目的审批被另一个项目复用。 */
     private Long projectId;
 
+    /**
+     * Human identity represented by the Agent. userId and actorId are persisted
+     * separately so external identity accounts and platform business actors can
+     * evolve independently without losing the accountability chain.
+     */
+    private String userId;
+
     /** 被代表的上游 actor，通常是发起 Agent 会话的人类用户或服务主体。 */
     private String actorId;
+
+    /** Agent principal that will consume this approval; never substitute actorId. */
+    private String agentId;
 
     /** Agent session ID，作为审批事实与会话上下文的绑定维度。 */
     private String sessionId;
 
     /** Agent run ID，作为审批事实与具体运行轮次的绑定维度。 */
     private String runId;
+
+    /**
+     * Stable minimal-delegation evidence linking the human user to the Agent for
+     * this session/run. Approval and delegation are independent evidence types.
+     */
+    private String delegationId;
 
     /** 工具动作 commandId，用于确保审批只授权这一条受控命令。 */
     private String commandId;

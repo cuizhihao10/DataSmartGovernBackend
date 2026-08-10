@@ -19,6 +19,7 @@ import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -113,6 +114,56 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
                     issueCodes, recommendedActions, safetyNotes);
         }
         return new MetadataAwarePrecheckResult(issueCodes, recommendedActions, safetyNotes);
+    }
+
+    /**
+     * 将预检查确认过的目标主键事实写入内部字段映射快照。
+     *
+     * <p>普通用户只选择 UPDATE/merge，不应该再手工填写 {@code primaryKeyField}。但是 JDBC runner 生成
+     * UPSERT 语句时必须得到准确的目标冲突键，因此发布阶段要把“目标表真实主键 + 本次已启用映射”交集
+     * 固化为每一行映射的 {@code targetPrimaryKey=true}。执行契约随后会从这些服务端生成的标记解析
+     * {@code primaryKeyColumns}，避免出现预检查已经通过、真正写入时却因冲突键为空而失败。</p>
+     *
+     * <p>该方法只处理字段名和主键标记，不读取业务数据、样本值或 SQL。调用方必须先执行
+     * {@link #evaluate(SyncTaskDefinition, SyncActorContext)} 并确认没有阻断问题，再持久化返回值；这样元数据
+     * 变化、目标表不存在或复合主键映射不完整时都会 fail-closed，而不是生成猜测性的执行配置。</p>
+     *
+     * @param definition 已通过当前发布请求数据范围校验的任务定义。
+     * @param actorContext 当前用户/服务主体上下文，用于 datasource-management 的项目权限与审计。
+     * @return 带目标主键标记的字段映射 JSON；无需 merge 或无法安全解析时返回原配置。
+     */
+    public String enrichExecutionPrimaryKeyFacts(SyncTaskDefinition definition, SyncActorContext actorContext) {
+        if (definition == null || actorContext == null || !isConflictWriteStrategy(definition)) {
+            return definition == null ? null : definition.getFieldMappingConfig();
+        }
+        JsonNode fieldRoot = parseJsonForEnrichment(definition.getFieldMappingConfig());
+        if (fieldRoot == null) {
+            return definition.getFieldMappingConfig();
+        }
+        JsonNode objectRoot = parseJsonForEnrichment(definition.getObjectMappingConfig());
+        List<ObjectMapping> objectMappings = parseObjectMappings(definition, objectRoot, fieldRoot);
+        for (ObjectMapping mapping : objectMappings) {
+            if (!hasText(mapping.targetObject())
+                    || requiresSchemaName(definition.getTargetConnectorType()) && !hasText(mapping.targetSchema())) {
+                continue;
+            }
+            List<String> ignoredIssues = new ArrayList<>();
+            List<String> ignoredActions = new ArrayList<>();
+            DatasourceMetadataDiscoveryResponse.TableSummary targetTable = discoverTable(
+                    definition.getTargetDatasourceId(),
+                    definition.getTargetConnectorType(),
+                    mapping.targetSchema(),
+                    mapping.targetObject(),
+                    "TARGET",
+                    actorContext,
+                    ignoredIssues,
+                    ignoredActions);
+            if (targetTable == null || !ignoredIssues.isEmpty()) {
+                continue;
+            }
+            markMappedTargetPrimaryKeys(fieldRoot, mapping, targetPrimaryKeys(targetTable));
+        }
+        return writeJson(fieldRoot, definition.getFieldMappingConfig());
     }
 
     /**
@@ -255,15 +306,97 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
                 .map(this::normalizeKey)
                 .filter(Objects::nonNull)
                 .toList();
-        boolean primaryKeyMapped = targetPrimaryKeys.stream()
-                .map(this::normalizeKey)
-                .anyMatch(enabledTargetFields::contains);
-        if (!primaryKeyMapped) {
+        List<String> unmappedTargetPrimaryKeys = targetPrimaryKeys.stream()
+                .filter(Objects::nonNull)
+                .filter(primaryKey -> !enabledTargetFields.contains(normalizeKey(primaryKey)))
+                .toList();
+        if (!unmappedTargetPrimaryKeys.isEmpty()) {
             issueCodes.add("METADATA_TARGET_PRIMARY_KEY_FIELD_NOT_MAPPED_FOR_UPDATE");
             recommendedActions.add("写入策略为 UPDATE/merge 时，字段映射必须包含目标对象 "
                     + lowSensitiveObject(objectMapping.targetSchema(), objectMapping.targetObject())
-                    + " 的主键字段 " + targetPrimaryKeys
+                    + " 的全部主键字段；当前尚未映射 " + unmappedTargetPrimaryKeys
                     + "；否则执行器无法判断 SQL/源端记录应该合并到目标表的哪一行。");
+        }
+    }
+
+    /**
+     * 在当前对象的字段映射行上标记目标主键。
+     *
+     * <p>字段映射历史上存在直接数组、顶层 mappings 以及 objectMappings 三种形态。本方法保持原 JSON
+     * 结构不变，只在匹配当前对象且已经启用的目标字段行上增加布尔标记，避免迁移旧草稿时重写用户配置。</p>
+     */
+    private void markMappedTargetPrimaryKeys(JsonNode fieldRoot,
+                                             ObjectMapping objectMapping,
+                                             List<String> targetPrimaryKeys) {
+        if (fieldRoot == null || targetPrimaryKeys == null || targetPrimaryKeys.isEmpty()) {
+            return;
+        }
+        List<String> normalizedPrimaryKeys = targetPrimaryKeys.stream()
+                .map(this::normalizeKey)
+                .filter(Objects::nonNull)
+                .toList();
+        JsonNode mappingRows = resolveMutableFieldMappingRows(fieldRoot, objectMapping);
+        if (mappingRows == null || !mappingRows.isArray()) {
+            return;
+        }
+        for (JsonNode row : mappingRows) {
+            if (!(row instanceof ObjectNode objectRow)) {
+                continue;
+            }
+            String targetField = normalizeKey(firstText(row, "targetField", "targetColumn"));
+            boolean enabled = !row.has("syncEnabled") || row.path("syncEnabled").asBoolean(true);
+            if (enabled && targetField != null && normalizedPrimaryKeys.contains(targetField)) {
+                objectRow.put("targetPrimaryKey", true);
+            }
+        }
+    }
+
+    /**
+     * 按兼容格式找到可变的字段映射数组；多对象格式必须匹配同一组源/目标定位，避免把 A 表主键标到 B 表。
+     */
+    private JsonNode resolveMutableFieldMappingRows(JsonNode fieldRoot, ObjectMapping expectedObject) {
+        if (fieldRoot.isArray()) {
+            return fieldRoot;
+        }
+        JsonNode objectRows = firstArray(fieldRoot, "objectMappings");
+        if (objectRows != null) {
+            for (JsonNode objectRow : objectRows) {
+                ObjectMapping candidate = new ObjectMapping(
+                        firstText(objectRow, "sourceSchema", "sourceSchemaName"),
+                        firstText(objectRow, "sourceObject", "sourceObjectName", "sourceTable", "sourceTableName"),
+                        firstText(objectRow, "targetSchema", "targetSchemaName"),
+                        firstText(objectRow, "targetObject", "targetObjectName", "targetTable", "targetTableName"));
+                if (candidate.key().equals(expectedObject.key())) {
+                    return firstArray(objectRow, "mappings", "fieldMappings");
+                }
+            }
+            return null;
+        }
+        return firstArray(fieldRoot, "mappings", "fieldMappings");
+    }
+
+    /**
+     * enrichment 只接受合法 JSON；解析失败时不修改原任务，真正的问题仍由预检查返回给用户。
+     */
+    private JsonNode parseJsonForEnrichment(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(value);
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    /**
+     * 把内部可变 JSON 树重新序列化；序列化异常时保留原值，禁止因辅助标记损坏用户字段映射。
+     */
+    private String writeJson(JsonNode root, String fallback) {
+        try {
+            return objectMapper.writeValueAsString(root);
+        } catch (Exception exception) {
+            return fallback;
         }
     }
 
@@ -553,6 +686,24 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
         if (fieldRoot == null || fieldRoot.isMissingNode() || fieldRoot.isNull()) {
             return result;
         }
+
+        /*
+         * 兼容早期 SINGLE_OBJECT 草稿和执行契约仍在使用的顶层数组格式：
+         * [{"sourceField":"id","targetField":"id"}]。
+         *
+         * 执行侧 SyncFieldMappingExecutionContractSupport 已把这种数组解释为当前唯一对象的字段映射；
+         * 预检查必须采用同一语义，否则会出现执行器能够同步、预检查却误报“未选择字段”以及
+         * “UPDATE 未映射目标主键”的矛盾结果。这里用 single 作为无对象级键名时的统一回退键，
+         * 后续 resolveFieldMappings 会把它绑定到当前 SINGLE_OBJECT 映射。
+         */
+        if (fieldRoot.isArray()) {
+            List<FieldMapping> directMappings = parseFieldMappingRows(fieldRoot);
+            if (!directMappings.isEmpty()) {
+                result.put("single", directMappings);
+            }
+            return result;
+        }
+
         JsonNode objectMappings = firstArray(fieldRoot, "objectMappings");
         if (objectMappings != null && objectMappings.isArray()) {
             for (JsonNode objectNode : objectMappings) {

@@ -721,6 +721,29 @@ public class SyncPartitionShardFanOutDispatchService {
                 .toList();
     }
 
+    /**
+     * 生成“同一次 worker 认领内稳定、重新排队认领后变化”的终态幂等键片段。
+     *
+     * <p>分片选择性重试会复用原父 execution，而不是新建 execution。如果终态幂等键只包含
+     * executionId，那么第一次 {@code FAILED} 已登记成功后，第二轮重试再次失败会被幂等层误判为
+     * 第一次回调的网络重放：生命周期方法只返回旧错误样本，却不会把已经重新进入 RUNNING 的父
+     * execution 再次推进到 FAILED，最终只能等待租约恢复任务兜底。</p>
+     *
+     * <p>leaseExpireTime 在每次 claim 时由原子认领 SQL 重新生成，因此可以作为低敏运行代次：
+     * 同一认领代次中的 HTTP/outbox 重复回调仍得到相同键；选择性重试重新排队并再次 claim 后会得到
+     * 新键。这里不使用表名、分片边界、WHERE、行样本或凭据，避免幂等记录成为敏感信息旁路。</p>
+     *
+     * @param execution 当前被 worker 认领的父执行记录
+     * @return 可安全拼接到 COMPLETE/PARTIAL/FAIL 幂等键中的运行代次片段
+     */
+    private String executionAttemptKey(SyncExecution execution) {
+        String leaseGeneration = execution.getLeaseExpireTime() == null
+                ? "no-lease"
+                : Long.toString(execution.getLeaseExpireTime()
+                        .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli());
+        return execution.getId() + "-" + leaseGeneration;
+    }
+
     private void completeFanOut(SyncTask task,
                                 SyncExecution execution,
                                 SyncActorContext actorContext,
@@ -730,7 +753,7 @@ public class SyncPartitionShardFanOutDispatchService {
         request.setRecordsRead(summary.recordsRead());
         request.setRecordsWritten(summary.recordsWritten());
         request.setCheckpointRef(null);
-        request.setIdempotencyKey("partition-shard-fan-out-complete-" + execution.getId());
+        request.setIdempotencyKey("partition-shard-fan-out-complete-" + executionAttemptKey(execution));
         lifecycleSupport.completeExecution(task, execution, request, actorContext);
         receiptPublisher.publishComplete(task, execution, actorContext,
                 aggregateResponse(summary, "PARTITION_SHARD_ALL_SHARDS_COMPLETED", true, false));
@@ -747,7 +770,7 @@ public class SyncPartitionShardFanOutDispatchService {
         request.setFailedRecordCount(summary.failedRecordCount());
         request.setErrorSummary("PARTITION_SHARD partially succeeded, succeededShards=" + summary.succeededCount()
                 + ", failedShards=" + summary.failedCount());
-        request.setIdempotencyKey("partition-shard-fan-out-partial-" + execution.getId());
+        request.setIdempotencyKey("partition-shard-fan-out-partial-" + executionAttemptKey(execution));
         lifecycleSupport.partiallySucceedExecution(task, execution, request, actorContext);
         receiptPublisher.publishPartiallySucceeded(task, execution, actorContext,
                 aggregateResponse(summary, "PARTITION_SHARD_PARTIALLY_SUCCEEDED", false, false),
@@ -778,7 +801,7 @@ public class SyncPartitionShardFanOutDispatchService {
         request.setRecordsWritten(recordsWritten);
         request.setFailedRecordCount(Math.max(1L, failedRecordCount));
         request.setRetryable(false);
-        request.setIdempotencyKey("partition-shard-fan-out-fail-" + execution.getId() + "-" + errorCode);
+        request.setIdempotencyKey("partition-shard-fan-out-fail-" + executionAttemptKey(execution) + "-" + errorCode);
         lifecycleSupport.failExecution(task, execution, request, actorContext);
         receiptPublisher.publishFailed(task, execution, actorContext, errorCode, issueCodes);
         return new SyncOfflineRunnerDispatchResult(

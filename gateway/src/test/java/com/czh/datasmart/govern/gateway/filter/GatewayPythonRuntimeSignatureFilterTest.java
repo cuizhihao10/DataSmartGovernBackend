@@ -130,11 +130,61 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 PlatformContextHeaders.GATEWAY_SIGNATURE)).isNotBlank();
     }
 
+    /** RAG 会消费租户、项目、actor 与 workspace Header，必须进入同一条 HMAC 信任链。 */
+    @Test
+    void ragQueryShouldUseTheSameSignatureBoundary() {
+        GatewayContextProperties properties = properties(true, "secret-for-test");
+        GatewayPythonRuntimeSignatureFilter filter = filter(properties);
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange("/api/agent/rag/query"), chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(
+                PlatformContextHeaders.GATEWAY_SIGNATURE)).isNotBlank();
+    }
+
+    /** Event replay, control, and WebSocket upgrades consume the same trusted identity snapshot. */
+    @Test
+    void runtimeEventEndpointsShouldUseTheSameSignatureBoundary() {
+        GatewayContextProperties properties = properties(true, "secret-for-test");
+        GatewayPythonRuntimeSignatureFilter filter = filter(properties);
+
+        for (String path : List.of(
+                "/api/agent/events/replay",
+                "/api/agent/events/control",
+                "/api/agent/events/ws")) {
+            RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+            filter.filter(exchange(path), chain).block();
+
+            assertThat(chain.exchange().getRequest().getHeaders().getFirst(
+                    PlatformContextHeaders.GATEWAY_SIGNATURE)).as(path).isNotBlank();
+        }
+    }
+
+    /** Checkpoint locator 查询会读取持久化执行现场，必须使用 Gateway HMAC 可信身份。 */
+    @Test
+    void langGraphCheckpointReadsShouldUseTheSameSignatureBoundary() {
+        GatewayContextProperties properties = properties(true, "secret-for-test");
+        GatewayPythonRuntimeSignatureFilter filter = filter(properties);
+
+        for (String path : List.of(
+                "/api/agent/langgraph/checkpoints/latest",
+                "/api/agent/langgraph/checkpoints/events")) {
+            RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+            filter.filter(exchange(path), chain).block();
+
+            assertThat(chain.exchange().getRequest().getHeaders().getFirst(
+                    PlatformContextHeaders.GATEWAY_SIGNATURE)).as(path).isNotBlank();
+        }
+    }
+
     /**
      * Deployment configuration must not override the Java defaults with a narrower path list.
      */
     @Test
-    void applicationConfigurationShouldSignCancellationRequests() {
+    void applicationConfigurationShouldSignEveryTrustedPythonRequest() {
         YamlPropertiesFactoryBean factory = new YamlPropertiesFactoryBean();
         factory.setResources(new ClassPathResource("application.yml"));
         Properties properties = factory.getObject();
@@ -143,7 +193,14 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 .map(properties::getProperty)
                 .toList();
 
-        assertThat(signaturePaths).contains("/api/agent/plans/cancel");
+        assertThat(signaturePaths).contains(
+                "/api/agent/plans/cancel",
+                "/api/agent/rag/query",
+                "/api/agent/langgraph/checkpoints/latest",
+                "/api/agent/langgraph/checkpoints/events",
+                "/api/agent/events/replay",
+                "/api/agent/events/control",
+                "/api/agent/events/ws");
     }
 
     /**
@@ -169,6 +226,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
         headers.set(PlatformContextHeaders.SOURCE_SERVICE, "datasmart-govern-gateway");
         headers.set(PlatformContextHeaders.TRACE_ID, "trace-001");
         headers.set(PlatformContextHeaders.TENANT_ID, "10");
+        headers.set(PlatformContextHeaders.APPLICATION_ID, "10010");
         headers.set(PlatformContextHeaders.PROJECT_ID, "20");
         headers.set(PlatformContextHeaders.ACTOR_ID, "1001");
 
@@ -186,6 +244,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 X-Gateway-Route-Prefix:
                 X-DataSmart-Trace-Id:trace-001
                 X-DataSmart-Tenant-Id:10
+                X-DataSmart-Application-Id:10010
                 X-DataSmart-Project-Id:20
                 X-DataSmart-Actor-Id:1001""");
         assertThat(payload).contains(PlatformContextHeaders.TOOL_POLICY_ENVELOPE + ":");
@@ -195,7 +254,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 "nonce-001",
                 "gateway-local-v1",
                 "secret-for-test"
-        )).isEqualTo("IHpOc-OUEnN4aFG74znEDj0CoXBINhDJbXbKDHvSRVg");
+        )).isEqualTo("EzM3TuiRxWjjTmbv0iEhqdYkVTZPFRmLpVh3P0wPlbQ");
     }
 
     /**
@@ -226,6 +285,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 .header("X-Gateway-Route-Prefix", "/api/agent")
                 .header(PlatformContextHeaders.TRACE_ID, "trace-001")
                 .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.APPLICATION_ID, "10010")
                 .header(PlatformContextHeaders.PROJECT_ID, "20")
                 .header(PlatformContextHeaders.ACTOR_ID, "1001")
                 .header(PlatformContextHeaders.ACTOR_ROLE, "PROJECT_OWNER")

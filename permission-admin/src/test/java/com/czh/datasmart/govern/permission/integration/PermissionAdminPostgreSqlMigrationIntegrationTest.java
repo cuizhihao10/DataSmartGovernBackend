@@ -11,9 +11,11 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.czh.datasmart.govern.permission.entity.PermissionAuditRecord;
 import com.czh.datasmart.govern.permission.entity.PermissionEventOutbox;
 import com.czh.datasmart.govern.permission.entity.PermissionRole;
+import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequest;
 import com.czh.datasmart.govern.permission.mapper.PermissionAuditRecordMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionEventOutboxMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionRoleMapper;
+import com.czh.datasmart.govern.permission.service.support.PermissionDecisionSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,17 +54,20 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
     private final PermissionRoleMapper roleMapper;
     private final PermissionAuditRecordMapper auditRecordMapper;
     private final PermissionEventOutboxMapper eventOutboxMapper;
+    private final PermissionDecisionSupport decisionSupport;
 
     @Autowired
     PermissionAdminPostgreSqlMigrationIntegrationTest(
             JdbcTemplate jdbcTemplate,
             PermissionRoleMapper roleMapper,
             PermissionAuditRecordMapper auditRecordMapper,
-            PermissionEventOutboxMapper eventOutboxMapper) {
+            PermissionEventOutboxMapper eventOutboxMapper,
+            PermissionDecisionSupport decisionSupport) {
         this.jdbcTemplate = jdbcTemplate;
         this.roleMapper = roleMapper;
         this.auditRecordMapper = auditRecordMapper;
         this.eventOutboxMapper = eventOutboxMapper;
+        this.decisionSupport = decisionSupport;
     }
 
     /**
@@ -82,6 +87,8 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
         assertSeedRolesAndPagination();
         assertFlashSyncTenantBootstrap();
         assertAgentSessionHistoryRoutePolicies();
+        assertSpecialistTurnFactRoutePolicies();
+        assertSpecialistTurnFactDecisions();
 
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         PermissionAuditRecord auditRecord = null;
@@ -203,7 +210,7 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
                 FROM permission_project_membership
                 WHERE tenant_id = 10
                   AND actor_id = 1004
-                  AND project_role = 'MEMBER'
+                  AND project_role = 'READER'
                   AND enabled = true
                 """, Long.class);
 
@@ -247,6 +254,201 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
                 """, Integer.class);
 
         assertThat(enabledPolicyCount).isEqualTo(8);
+    }
+
+    /**
+     * 在真实 PostgreSQL 上验证专业 Agent turn 事实的路由策略和数据范围。
+     *
+     * <p>这条断言同时保护四个跨服务契约：普通用户和项目负责人可以查看本人 session/run，
+     * SERVICE_ACCOUNT 才能进入事实登记动作，人类角色的登记动作存在高优先级 DENY，且
+     * AI_RUNTIME 仍然使用 V35/V48 约定的 SELF 范围。真正的 source-service、共享 token 和
+     * 事实字段一致性由 agent-runtime 继续校验；permission-admin 这里只验证 Flyway 落库的
+     * 路由和范围事实没有缺失或被错误动作覆盖。</p>
+     */
+    private void assertSpecialistTurnFactRoutePolicies() {
+        Integer interactiveReadPolicyCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM permission_route_policy
+                WHERE tenant_id = 0
+                  AND role_code IN ('ORDINARY_USER', 'PROJECT_OWNER')
+                  AND http_method = 'GET'
+                  AND path_pattern IN (
+                      '/api/agent/specialist-turn-facts/sessions/*',
+                      '/api/agent/specialist-turn-facts/runs/*'
+                  )
+                  AND resource_type = 'AI_RUNTIME'
+                  AND action = 'VIEW'
+                  AND effect = 'ALLOW'
+                  AND enabled = true
+                """, Integer.class);
+        assertThat(interactiveReadPolicyCount).isEqualTo(4);
+
+        Integer trustedRegistrationPolicyCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM permission_route_policy
+                WHERE tenant_id = 0
+                  AND role_code = 'SERVICE_ACCOUNT'
+                  AND http_method = 'POST'
+                  AND path_pattern = '/api/agent/specialist-turn-facts'
+                  AND resource_type = 'AI_RUNTIME'
+                  AND action = 'EXECUTE'
+                  AND effect = 'ALLOW'
+                  AND enabled = true
+                """, Integer.class);
+        assertThat(trustedRegistrationPolicyCount).isEqualTo(1);
+
+        Integer humanRegistrationDenyCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM permission_route_policy
+                WHERE tenant_id = 0
+                  AND role_code IN (
+                      'ORDINARY_USER', 'PROJECT_OWNER', 'OPERATOR',
+                      'AUDITOR', 'TENANT_ADMINISTRATOR', 'PLATFORM_ADMINISTRATOR'
+                  )
+                  AND http_method = 'POST'
+                  AND path_pattern = '/api/agent/specialist-turn-facts/**'
+                  AND resource_type = 'AI_RUNTIME'
+                  AND action = 'EXECUTE'
+                  AND effect = 'DENY'
+                  AND enabled = true
+                """, Integer.class);
+        assertThat(humanRegistrationDenyCount).isEqualTo(6);
+
+        Integer selfScopeCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM permission_data_scope_policy
+                WHERE tenant_id = 0
+                  AND role_code IN ('ORDINARY_USER', 'PROJECT_OWNER')
+                  AND resource_type = 'AI_RUNTIME'
+                  AND scope_level = 'SELF'
+                  AND scope_expression = 'actor_id = ${actorId} AND project_id IN ${actorProjectIds}'
+                  AND enabled = true
+                """, Integer.class);
+        assertThat(selfScopeCount).isEqualTo(2);
+    }
+
+    /**
+     * 在已经执行完全部 Flyway 迁移的真实 PostgreSQL 上走一遍权限判定服务。
+     *
+     * <p>这里不能只查询 V48 是否插入了几行 SQL，因为“表里存在策略”和“策略引擎在真实数据上
+     * 选中了正确策略”是两件不同的事情。本方法通过 Spring 容器中的
+     * {@link PermissionDecisionSupport} 读取当前数据库策略，实际执行 PathPattern、方法、资源、
+     * 动作、优先级和数据范围判定，并检查它写入的权限审计结果。这样可以同时验证：
+     * <ul>
+     *     <li>普通用户和项目负责人可以在 SELF 范围查看自己的专业事实；</li>
+     *     <li>运营员、审计员和租户管理员不会因为角色较高而自动得到专业事实 VIEW；</li>
+     *     <li>平台管理员保留既有 /api/** GET 入口，但没有被凭角色名扩大 AI_RUNTIME 对象范围；</li>
+     *     <li>六类人类角色访问 POST 基路径和其子路径都会命中 V48 的 /** DENY；</li>
+     *     <li>SERVICE_ACCOUNT 只有 POST 基路径的专用 EXECUTE allow 可以通过。</li>
+     * </ul>
+     * </p>
+     */
+    private void assertSpecialistTurnFactDecisions() {
+        String auditTracePrefix = "integration-specialist-v48-";
+        try {
+            assertThat(decisionSupport.evaluate(
+                    specialistFactRequest("ORDINARY_USER", 1004L, "GET",
+                            "/api/agent/specialist-turn-facts/sessions/integration-session", "VIEW"),
+                    auditTracePrefix + "ordinary-view").getAllowed())
+                    .as("ORDINARY_USER 应可查看本人专业 session 事实")
+                    .isTrue();
+
+            var projectOwnerView = decisionSupport.evaluate(
+                    specialistFactRequest("PROJECT_OWNER", 1001L, "GET",
+                            "/api/agent/specialist-turn-facts/runs/integration-run", "VIEW"),
+                    auditTracePrefix + "project-owner-view");
+            assertThat(projectOwnerView.getAllowed())
+                    .as("PROJECT_OWNER 应可查看本人专业 run 事实")
+                    .isTrue();
+            assertThat(projectOwnerView.getDataScopeLevel()).isEqualTo("SELF");
+            assertThat(projectOwnerView.getAuthorizedProjectIds()).contains(101L);
+
+            for (String role : List.of("OPERATOR", "AUDITOR", "TENANT_ADMINISTRATOR")) {
+                var result = decisionSupport.evaluate(
+                        specialistFactRequest(role, 1002L, "GET",
+                                "/api/agent/specialist-turn-facts/runs/integration-run", "VIEW"),
+                        auditTracePrefix + role.toLowerCase() + "-view");
+                assertThat(result.getAllowed())
+                        .as("%s 不应自动获得专业事实 VIEW", role)
+                        .isFalse();
+            }
+
+            var platformView = decisionSupport.evaluate(
+                    specialistFactRequest("PLATFORM_ADMINISTRATOR", 9001L, "GET",
+                            "/api/agent/specialist-turn-facts/sessions/integration-session", "VIEW"),
+                    auditTracePrefix + "platform-view");
+            assertThat(platformView.getAllowed())
+                    .as("PLATFORM_ADMINISTRATOR 应保留既有通用 Agent GET 入口")
+                    .isTrue();
+            assertThat(platformView.getDataScopeLevel())
+                    .as("平台通用兜底不能凭角色名生成 AI_RUNTIME 对象范围")
+                    .isNull();
+            assertThat(platformView.getAuthorizedProjectIds()).isEmpty();
+
+            for (String role : List.of(
+                    "ORDINARY_USER",
+                    "PROJECT_OWNER",
+                    "OPERATOR",
+                    "AUDITOR",
+                    "TENANT_ADMINISTRATOR",
+                    "PLATFORM_ADMINISTRATOR")) {
+                for (String path : List.of(
+                        "/api/agent/specialist-turn-facts",
+                        "/api/agent/specialist-turn-facts/child")) {
+                    var result = decisionSupport.evaluate(
+                            specialistFactRequest(role, 1004L, "POST", path, "EXECUTE"),
+                            auditTracePrefix + role.toLowerCase() + "-register-"
+                                    + (path.endsWith("child") ? "child" : "root"));
+                    assertThat(result.getAllowed())
+                            .as("%s POST %s 必须命中 /** DENY", role, path)
+                            .isFalse();
+                    assertThat(result.getRouteEffect())
+                            .as("%s POST %s 应返回显式 DENY", role, path)
+                            .isEqualTo("DENY");
+                }
+            }
+
+            var serviceRegistration = decisionSupport.evaluate(
+                    specialistFactRequest("SERVICE_ACCOUNT", 9101L, "POST",
+                            "/api/agent/specialist-turn-facts", "EXECUTE"),
+                    auditTracePrefix + "service-register-root");
+            assertThat(serviceRegistration.getAllowed())
+                    .as("SERVICE_ACCOUNT POST 基路径应命中专用 EXECUTE allow")
+                    .isTrue();
+            assertThat(serviceRegistration.getRouteEffect()).isEqualTo("ALLOW");
+            assertThat(serviceRegistration.getDataScopeLevel()).isEqualTo("TENANT");
+        } finally {
+            /*
+             * evaluate 会按生产逻辑写入权限审计。集成测试必须验证这条副作用，但不能把临时
+             * trace 留在共享开发库中，因此只按本方法专用前缀清理，绝不使用 TRUNCATE 或 Flyway clean。
+             */
+            jdbcTemplate.update(
+                    "DELETE FROM permission_audit_record WHERE trace_id LIKE ?",
+                    auditTracePrefix + "%");
+        }
+    }
+
+    /**
+     * 构造与 Gateway -> permission-admin 契约一致的专业事实判定请求。
+     *
+     * <p>测试故意同时传入 HTTP 方法、完整请求路径、AI_RUNTIME 和业务动作，避免只调用
+     * 某个 SQL 查询而绕过真正的路由策略选择。请求没有伪造 workspace 字段，也不把 runId
+     * 当成授权凭据，项目级归属仍由 permission_project_membership 和 SELF 策略计算。</p>
+     */
+    private PermissionDecisionRequest specialistFactRequest(String role,
+                                                             Long actorId,
+                                                             String method,
+                                                             String path,
+                                                             String action) {
+        PermissionDecisionRequest request = new PermissionDecisionRequest();
+        request.setTenantId(10L);
+        request.setActorId(actorId);
+        request.setActorRole(role);
+        request.setHttpMethod(method);
+        request.setRequestPath(path);
+        request.setResourceType("AI_RUNTIME");
+        request.setAction(action);
+        return request;
     }
 
     /**

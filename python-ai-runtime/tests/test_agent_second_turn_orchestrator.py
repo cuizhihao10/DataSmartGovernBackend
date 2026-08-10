@@ -321,17 +321,16 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
             loop_control_decision=self._allow_decision(),
         )
 
-        request = provider.requests[0]
-        self.assertEqual("required", request.tool_choice)
-        self.assertEqual(
-            ("datasource.target.metadata.read",),
-            tuple(tool.name for tool in request.available_tools),
-        )
+        self.assertEqual([], provider.requests)
         self.assertEqual(
             ("datasource.target.metadata.read",),
             result.required_evidence_tool_names,
         )
-        self.assertIn("datasource.target.metadata.read", request.messages[0].content)
+        self.assertTrue(result.continues)
+        self.assertEqual(
+            ("datasource.target.metadata.read",),
+            tuple(item.tool_name for item in result.follow_up_tool_plans),
+        )
 
     def test_sync_state_machine_requires_draft_after_complete_evidence(self) -> None:
         """A complete request must advance from evidence collection to the draft contract."""

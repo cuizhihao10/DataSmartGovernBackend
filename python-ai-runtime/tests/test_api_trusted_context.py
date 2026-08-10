@@ -17,11 +17,47 @@ from datasmart_ai_runtime.api.gateway.signature import (
     sign_gateway_payload,
 )
 from datasmart_ai_runtime.api.gateway.security import InMemoryGatewaySignatureNonceStore
-from datasmart_ai_runtime.api.gateway.trusted_context import enrich_agent_plan_payload_from_gateway_headers
+from datasmart_ai_runtime.api.gateway.trusted_context import (
+    enrich_agent_plan_payload_from_gateway_headers,
+    enrich_rag_query_payload_from_trusted_headers,
+    runtime_event_access_context_from_gateway_headers,
+)
 
 
 class ApiTrustedContextTest(unittest.TestCase):
     """Python API 边界可信事实装配测试。"""
+
+    def test_runtime_event_context_comes_from_signed_headers(self) -> None:
+        """Event subscription identity must come from the signed Gateway snapshot."""
+
+        context = runtime_event_access_context_from_gateway_headers(
+            self._signed_headers(original_path="/api/agent/events/control"),
+            signature_config=GatewaySignatureVerificationConfig(
+                required=True,
+                secret="secret-for-test",
+                key_id="gateway-local-v1",
+            ),
+            now_ms=1_800_000_000_100,
+            nonce_store=InMemoryGatewaySignatureNonceStore(),
+        )
+
+        self.assertEqual("10", context.tenant_id)
+        self.assertEqual("20", context.project_id)
+        self.assertEqual("1001", context.actor_id)
+        self.assertEqual(("PROJECT_OWNER",), context.roles)
+        self.assertFalse(context.is_platform_admin)
+
+    def test_runtime_event_context_fails_closed_without_gateway_evidence(self) -> None:
+        """Required verification cannot fall back to client supplied identity."""
+
+        with self.assertRaisesRegex(PermissionError, "missing-trusted-source"):
+            runtime_event_access_context_from_gateway_headers(
+                {},
+                signature_config=GatewaySignatureVerificationConfig(
+                    required=True,
+                    secret="secret-for-test",
+                ),
+            )
 
     def test_gateway_headers_override_identity_and_rebuild_reserved_namespace(self) -> None:
         """统一 gateway 转发时，应覆盖请求体身份并重建最小可信上下文。"""
@@ -40,6 +76,7 @@ class ApiTrustedContextTest(unittest.TestCase):
                 "X-DataSmart-Source-Service": "datasmart-govern-gateway",
                 "X-DataSmart-Trace-Id": "trace-001",
                 "X-DataSmart-Tenant-Id": "10",
+                "X-DataSmart-Application-Id": "10010",
                 "X-DataSmart-Project-Id": "20",
                 "X-DataSmart-Actor-Id": "1001",
                 "X-DataSmart-Actor-Role": "PROJECT_OWNER",
@@ -59,6 +96,8 @@ class ApiTrustedContextTest(unittest.TestCase):
         self.assertEqual("workspace-a", trusted["toolBudget"]["workspaceKey"])
         self.assertEqual(("20", "30"), trusted["requestContext"]["authorizedProjectIds"])
         self.assertEqual("USER", trusted["requestContext"]["actorType"])
+        self.assertEqual("10010", trusted["applicationId"])
+        self.assertEqual("10010", trusted["requestContext"]["applicationId"])
         self.assertEqual("20", trusted["requestContext"]["projectId"])
         self.assertEqual("20:OWNER,30:READER", trusted["requestContext"]["authorizedProjectRoles"])
 
@@ -71,10 +110,85 @@ class ApiTrustedContextTest(unittest.TestCase):
                 {
                     "X-DataSmart-Source-Service": "datasmart-govern-gateway",
                     "X-DataSmart-Tenant-Id": "10",
+                    "X-DataSmart-Application-Id": "10010",
                     "X-DataSmart-Project-Id": "999",
                     "X-DataSmart-Actor-Id": "1001",
                     "X-DataSmart-Authorized-Project-Ids": "20,30",
                 },
+            )
+
+    def test_rag_gateway_headers_override_forged_body_scope(self) -> None:
+        """RAG 查询只能消费签名 Header 中的身份和项目，正文同名字段没有授权效力。"""
+
+        headers = self._signed_headers(original_path="/api/agent/rag/query")
+        payload = enrich_rag_query_payload_from_trusted_headers(
+            {
+                "tenantId": "999",
+                "projectId": "999",
+                "actorId": "forged",
+                "workspaceKey": "forged-workspace",
+                "question": "如何恢复失败同步？",
+            },
+            headers,
+            signature_config=GatewaySignatureVerificationConfig(
+                required=True,
+                secret="secret-for-test",
+            ),
+            now_ms=1_800_000_000_100,
+        )
+
+        self.assertEqual("10", payload["tenantId"])
+        self.assertEqual("20", payload["projectId"])
+        self.assertEqual("1001", payload["actorId"])
+        self.assertEqual("workspace-a", payload["workspaceKey"])
+        self.assertEqual("trace-001", payload["traceId"])
+        self.assertEqual("如何恢复失败同步？", payload["question"])
+        self.assertNotIn("trustedControlPlane", str(payload))
+
+    def test_rag_gateway_request_without_signature_fails_closed(self) -> None:
+        """生产 RAG 入口不能把只有 source-service 的请求升级成可信项目上下文。"""
+
+        headers = self._signed_headers(original_path="/api/agent/rag/query")
+        headers.pop(GATEWAY_SIGNATURE)
+
+        with self.assertRaisesRegex(PermissionError, "missing-signature-headers"):
+            enrich_rag_query_payload_from_trusted_headers(
+                {"question": "test"},
+                headers,
+                signature_config=GatewaySignatureVerificationConfig(
+                    required=True,
+                    secret="secret-for-test",
+                ),
+                now_ms=1_800_000_000_100,
+            )
+
+    def test_rag_agent_runtime_requires_internal_service_token(self) -> None:
+        """Java Agent Host 直连 RAG 时也必须证明服务身份，并只使用 Header 作用域。"""
+
+        headers = {
+            "X-DataSmart-Source-Service": "agent-runtime",
+            "X-DataSmart-Internal-Service-Token": "service-token",
+            "X-DataSmart-Trace-Id": "trace-agent-runtime",
+            "X-DataSmart-Tenant-Id": "10",
+            "X-DataSmart-Application-Id": "10010",
+            "X-DataSmart-Project-Id": "20",
+            "X-DataSmart-Authorized-Project-Ids": "20",
+            "X-DataSmart-Actor-Id": "1001",
+            "X-DataSmart-Workspace-Id": "workspace-a",
+        }
+        payload = enrich_rag_query_payload_from_trusted_headers(
+            {"projectId": "999", "question": "test"},
+            headers,
+            internal_service_token="service-token",
+        )
+        self.assertEqual("20", payload["projectId"])
+
+        headers["X-DataSmart-Internal-Service-Token"] = "wrong-token"
+        with self.assertRaisesRegex(PermissionError, "service token"):
+            enrich_rag_query_payload_from_trusted_headers(
+                {"question": "test"},
+                headers,
+                internal_service_token="service-token",
             )
 
     def test_authorized_project_roles_are_covered_by_gateway_signature(self) -> None:
@@ -99,6 +213,34 @@ class ApiTrustedContextTest(unittest.TestCase):
             "20:MANAGER",
             payload["variables"]["trustedControlPlane"]["requestContext"]["authorizedProjectRoles"],
         )
+
+    def test_application_scope_is_covered_by_gateway_signature(self) -> None:
+        """签名完成后篡改 applicationId 必须被拒绝，防止同租户跨应用复用项目上下文。"""
+
+        headers = self._signed_headers()
+        headers["X-DataSmart-Application-Id"] = "20020"
+
+        with self.assertRaisesRegex(PermissionError, "signature-mismatch"):
+            enrich_agent_plan_payload_from_gateway_headers(
+                {"variables": {}},
+                headers,
+                signature_config=GatewaySignatureVerificationConfig(required=True, secret="secret-for-test"),
+                now_ms=1_800_000_000_100,
+            )
+
+    def test_gateway_project_scope_without_application_is_rejected(self) -> None:
+        """已识别的 Gateway 项目请求缺少应用 ID 时不能回退到请求体或 projectId。"""
+
+        with self.assertRaisesRegex(PermissionError, "application context is missing or invalid"):
+            enrich_agent_plan_payload_from_gateway_headers(
+                {"tenant_id": "10", "project_id": "20", "actor_id": "1001", "variables": {}},
+                {
+                    "X-DataSmart-Source-Service": "datasmart-govern-gateway",
+                    "X-DataSmart-Tenant-Id": "10",
+                    "X-DataSmart-Project-Id": "20",
+                    "X-DataSmart-Actor-Id": "1001",
+                },
+            )
 
     def test_untrusted_source_strips_forged_reserved_namespace_without_injecting_headers(self) -> None:
         """直连或来源不明请求不能通过请求体或伪造身份字段创建可信上下文。"""
@@ -333,15 +475,21 @@ class ApiTrustedContextTest(unittest.TestCase):
                 nonce_store=nonce_store,
             )
 
-    def _signed_headers(self, *, timestamp: str = "1800000000000") -> dict[str, str]:
+    def _signed_headers(
+        self,
+        *,
+        timestamp: str = "1800000000000",
+        original_path: str = "/api/agent/plans",
+    ) -> dict[str, str]:
         """构造与 Java gateway 签名协议一致的测试 Header。"""
 
         headers = {
             "X-DataSmart-Source-Service": "datasmart-govern-gateway",
-            "X-Gateway-Original-Path": "/api/agent/plans",
+            "X-Gateway-Original-Path": original_path,
             "X-Gateway-Route-Prefix": "/api/agent",
             "X-DataSmart-Trace-Id": "trace-001",
             "X-DataSmart-Tenant-Id": "10",
+            "X-DataSmart-Application-Id": "10010",
             "X-DataSmart-Project-Id": "20",
             "X-DataSmart-Actor-Id": "1001",
             "X-DataSmart-Actor-Role": "PROJECT_OWNER",

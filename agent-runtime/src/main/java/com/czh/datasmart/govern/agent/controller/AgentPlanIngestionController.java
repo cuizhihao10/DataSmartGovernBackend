@@ -54,7 +54,9 @@ public class AgentPlanIngestionController {
     @PostMapping
     public PlatformApiResponse<IngestedAgentPlanView> ingest(
             @Valid @RequestBody IngestAgentPlanRequest request,
+            @RequestHeader(value = PlatformContextHeaders.APPLICATION_ID, required = false) Long applicationId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success("Python AgentPlan 已接入 Java 控制面", ingestionService.ingest(request, traceId), traceId);
+        return PlatformApiResponse.success("Python AgentPlan 已接入 Java 控制面",
+                ingestionService.ingest(request, traceId, applicationId), traceId);
     }
 }

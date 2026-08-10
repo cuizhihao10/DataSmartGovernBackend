@@ -21,6 +21,9 @@ from datasmart_ai_runtime.services.agent_execution import (
     LangGraphDurableCheckpoint,
     LangGraphDurableCheckpointerService,
 )
+from datasmart_ai_runtime.services.runtime_events.runtime_event_authorization import (
+    RuntimeEventAccessContext,
+)
 
 
 class LangGraphCheckpointRoutesTest(unittest.TestCase):
@@ -70,6 +73,86 @@ class LangGraphCheckpointRoutesTest(unittest.TestCase):
         self.assertGreaterEqual(events["eventCount"], 4)
         response_text = str((latest, paused, resumed, forked, recovered, events))
         self.assertNotIn("should-not-be-returned", response_text)
+
+    def test_gateway_checkpoint_reads_are_actor_scoped_and_operator_reads_stay_project_scoped(self) -> None:
+        """普通用户不能凭 threadId 读取他人现场，运营角色也不能跨项目读取。"""
+
+        service = LangGraphDurableCheckpointerService()
+        root = service.record_checkpoint(self._root_checkpoint())
+
+        owner_app = FakeApp()
+        register_langgraph_checkpoint_routes(
+            owner_app,
+            checkpointer_service=service,
+            access_context_resolver=lambda _headers: RuntimeEventAccessContext(
+                tenant_id="10",
+                project_id="20",
+                actor_id="30",
+                roles=("PROJECT_OWNER",),
+            ),
+        )
+        latest = owner_app.get_routes["/agent/langgraph/checkpoints/latest"](
+            threadId=root.thread_id,
+            http_request=FakeRequest(),
+        )
+        self.assertTrue(latest["found"])
+
+        other_actor_app = FakeApp()
+        register_langgraph_checkpoint_routes(
+            other_actor_app,
+            checkpointer_service=service,
+            access_context_resolver=lambda _headers: RuntimeEventAccessContext(
+                tenant_id="10",
+                project_id="20",
+                actor_id="31",
+                roles=("PROJECT_OWNER",),
+            ),
+        )
+        with self.assertRaises(PermissionError):
+            other_actor_app.get_routes["/agent/langgraph/checkpoints/latest"](
+                threadId=root.thread_id,
+                http_request=FakeRequest(),
+            )
+
+        other_project_operator_app = FakeApp()
+        register_langgraph_checkpoint_routes(
+            other_project_operator_app,
+            checkpointer_service=service,
+            access_context_resolver=lambda _headers: RuntimeEventAccessContext(
+                tenant_id="10",
+                project_id="21",
+                actor_id="99",
+                roles=("OPERATOR",),
+            ),
+        )
+        with self.assertRaises(PermissionError):
+            other_project_operator_app.get_routes["/agent/langgraph/checkpoints/events"](
+                threadId=root.thread_id,
+                http_request=FakeRequest(),
+            )
+
+    def test_interactive_user_cannot_mutate_checkpoint_control_state(self) -> None:
+        """裸 pause/resume/fork 控制不能绕过 Java 审批闭环开放给交互用户。"""
+
+        service = LangGraphDurableCheckpointerService()
+        root = service.record_checkpoint(self._root_checkpoint())
+        app = FakeApp()
+        register_langgraph_checkpoint_routes(
+            app,
+            checkpointer_service=service,
+            access_context_resolver=lambda _headers: RuntimeEventAccessContext(
+                tenant_id="10",
+                project_id="20",
+                actor_id="30",
+                roles=("PROJECT_OWNER",),
+            ),
+        )
+
+        with self.assertRaises(PermissionError):
+            app.post_routes["/agent/langgraph/checkpoints/pause"](
+                {"threadId": root.thread_id, "reasonCode": "WAIT_APPROVAL"},
+                http_request=FakeRequest(),
+            )
 
     @staticmethod
     def _root_checkpoint() -> LangGraphDurableCheckpoint:
@@ -126,6 +209,12 @@ class FakeApp:
             return handler
 
         return decorator
+
+
+class FakeRequest:
+    """只提供 headers 的请求替身，避免路由授权测试依赖 FastAPI。"""
+
+    headers = {}
 
 
 if __name__ == "__main__":

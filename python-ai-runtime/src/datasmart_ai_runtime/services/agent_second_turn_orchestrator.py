@@ -262,6 +262,41 @@ class AgentSecondTurnOrchestrator:
             visible_tools = tuple(
                 tool for tool in visible_tools if tool.name in required_set
             )
+
+        deterministic_follow_up = self._deterministic_evidence_follow_up(
+            request=request,
+            plan=plan,
+            required_evidence_tool_names=required_evidence_tool_names,
+            visible_tools=visible_tools,
+            control_plane_feedback=control_plane_feedback,
+        )
+        if deterministic_follow_up is not None:
+            events.record_follow_up_tool_planning(deterministic_follow_up.to_summary())
+            events.record_second_turn_completed(
+                feedback_count=len(feedback_items),
+                prompt_tokens=0,
+                completion_tokens=0,
+                error_code=None,
+                public_content="平台已根据已完成的连接审计事实安排下一项只读元数据读取。",
+            )
+            return AgentSecondTurnResult(
+                executed=False,
+                allowed=True,
+                action="continue_with_required_evidence",
+                summary="平台已根据已完成的连接审计事实安排下一项只读元数据读取。",
+                reasons=loop_control_decision.reasons,
+                recommended_actions=loop_control_decision.recommended_actions,
+                feedback_count=len(feedback_items),
+                message_count=len(feedback_bundle.messages),
+                visible_tool_names=tuple(tool.name for tool in visible_tools),
+                required_evidence_tool_names=required_evidence_tool_names,
+                follow_up_tool_plans=deterministic_follow_up.accepted_tool_plans,
+                repeated_tool_call_count=deterministic_follow_up.repeated_count,
+                governance_issue_codes=deterministic_follow_up.state_guard_issue_codes,
+                governance_issue_messages=deterministic_follow_up.state_guard_issue_messages,
+                budget_issue_codes=deterministic_follow_up.budget_issue_codes,
+                runtime_events=events.events(),
+            )
         gateway_context = self._gateway_context_from_plan(request, plan)
         second_turn_request = ModelInvocationRequest(
             route=plan.selected_route,
@@ -394,6 +429,59 @@ class AgentSecondTurnOrchestrator:
             cache_hit=cache_hit,
             runtime_events=events.events(),
         )
+
+    def _deterministic_evidence_follow_up(
+        self,
+        *,
+        request: AgentRequest,
+        plan: AgentPlan,
+        required_evidence_tool_names: tuple[str, ...],
+        visible_tools: tuple[Any, ...],
+        control_plane_feedback: AgentControlPlaneFeedbackSnapshot,
+    ) -> Any | None:
+        """为唯一的只读证据前沿创建受治理 ToolPlan，不额外消耗模型调用。
+
+        元数据读取是同步任务进入草稿阶段前的确定性前置条件。当平台已经识别出唯一缺失的
+        ``source/target.metadata.read``，模型没有可选择的业务分支；让模型再次返回一个空参数
+        tool_call 只增加延迟，并且不同 Provider 对 ``tool_choice=required`` 的实现并不一致。
+        这里仍生成 ``ModelToolCall`` 并交给同一 FollowUpToolPlanner，数据源 ID 和 connectionTestRef
+        继续从 Java 成功反馈/资源账本派生，任何模型或用户伪造值都不会进入 ToolPlan。
+
+        只有纯只读元数据工具走这条优化。草稿保存、发布、运行和恢复动作仍必须由模型意图、审批
+        与 Java 控制面共同决定，不能被该确定性路径自动推进。
+        """
+
+        deterministic_tools = {
+            "datasource.source.metadata.read",
+            "datasource.target.metadata.read",
+        }
+        required = tuple(dict.fromkeys(name for name in required_evidence_tool_names if name in deterministic_tools))
+        if not required or set(required) != set(required_evidence_tool_names):
+            return None
+        if self._follow_up_tool_planner is None:
+            return None
+        calls = tuple(
+            ModelToolCall(
+                call_id=f"platform-required-evidence-{index}",
+                type="function",
+                name=tool_name,
+                arguments="{}",
+                raw_call={"source": "platform_required_evidence_frontier"},
+            )
+            for index, tool_name in enumerate(required, start=1)
+        )
+        result = self._follow_up_tool_planner.govern(
+            request=request,
+            plan=plan,
+            tool_calls=calls,
+            visible_tools=visible_tools,
+            control_plane_feedback=control_plane_feedback,
+        )
+        if not result.accepted_tool_plans:
+            return result
+        if len(result.accepted_tool_plans) != len(required):
+            return None
+        return result
 
     @staticmethod
     def _gateway_context_from_plan(request: AgentRequest, plan: AgentPlan) -> ModelGatewayRequestContext:

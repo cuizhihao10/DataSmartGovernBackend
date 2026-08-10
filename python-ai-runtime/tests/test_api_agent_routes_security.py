@@ -1,6 +1,7 @@
 import os
 import asyncio
 import sys
+import time
 import unittest
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -14,11 +15,13 @@ from datasmart_ai_runtime.api.agent.routes import (
     register_agent_runtime_routes,
 )
 from datasmart_ai_runtime.api.gateway.security import GatewaySignatureSecurityStats
+from datasmart_ai_runtime.api.gateway.signature import sign_gateway_payload
 from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import (
     AgentPlanCancellationIdentity,
     AgentPlanCancellationRegistry,
 )
 from datasmart_ai_runtime.services.agent_plan_ingestion_client import AgentPlanIngestionClientError
+from datasmart_ai_runtime.services.runtime_events.runtime_event_session import RuntimeEventSessionManager
 
 
 class FakeHttpException(Exception):
@@ -84,6 +87,87 @@ class FakeRequest:
 
 
 class ApiAgentRoutesSecurityTest(unittest.TestCase):
+    def test_event_control_route_uses_signed_header_identity(self) -> None:
+        """HTTP event control must ignore identity values in the JSON body."""
+
+        app = FakeApp()
+        register_agent_runtime_routes(
+            app,
+            request_type=FakeRequest,
+            orchestrator=object(),
+            event_store=None,
+            session_manager=RuntimeEventSessionManager(),
+            live_push_hub=None,
+            event_publisher=None,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+            gateway_signature_error_factory=lambda detail: FakeHttpException(status_code=401, detail=detail),
+        )
+
+        with _patched_env(
+            DATASMART_GATEWAY_SIGNATURE_REQUIRED="true",
+            DATASMART_GATEWAY_SIGNATURE_SECRET="secret-for-test",
+        ):
+            result = app.post_routes["/agent/events/control"](
+                {
+                    "type": "subscribe",
+                    "subscription": {
+                        "clientId": "browser-a",
+                        "tenantId": "999",
+                        "projectId": "999",
+                        "actorId": "forged",
+                        "roles": ["PLATFORM_ADMIN"],
+                    },
+                    "accessContext": {
+                        "tenantId": "999",
+                        "projectId": "999",
+                        "actorId": "forged",
+                        "roles": ["PLATFORM_ADMIN"],
+                    },
+                },
+                FakeRequest(headers=self._event_signed_headers()),
+            )
+
+        subscription = result["subscription"]
+        self.assertTrue(result["accepted"])
+        self.assertEqual("10", subscription["tenantId"])
+        self.assertEqual("20", subscription["projectId"])
+        self.assertEqual("1001", subscription["actorId"])
+        self.assertEqual(("PROJECT_OWNER",), subscription["roles"])
+
+    @staticmethod
+    def _event_signed_headers() -> dict[str, str]:
+        timestamp = str(int(time.time() * 1000))
+        headers = {
+            "X-DataSmart-Source-Service": "datasmart-govern-gateway",
+            "X-Gateway-Original-Path": "/api/agent/events/control",
+            "X-Gateway-Route-Prefix": "/api/agent",
+            "X-DataSmart-Tenant-Id": "10",
+            "X-DataSmart-Application-Id": "10010",
+            "X-DataSmart-Project-Id": "20",
+            "X-DataSmart-Actor-Id": "1001",
+            "X-DataSmart-Actor-Role": "PROJECT_OWNER",
+            "X-DataSmart-Actor-Type": "USER",
+            "X-DataSmart-Workspace-Id": "workspace-a",
+            "X-DataSmart-Gateway-Signature-Version": "v1",
+            "X-DataSmart-Gateway-Signature-Timestamp": timestamp,
+            "X-DataSmart-Gateway-Signature-Nonce": "event-route-nonce",
+            "X-DataSmart-Gateway-Signature-Key-Id": "gateway-local-v1",
+        }
+        headers["X-DataSmart-Gateway-Signature"] = sign_gateway_payload(
+            headers,
+            timestamp=timestamp,
+            nonce="event-route-nonce",
+            key_id="gateway-local-v1",
+            secret="secret-for-test",
+        )
+        return headers
+
     """Agent API 安全错误映射测试。"""
 
     def test_gateway_signature_failure_is_mapped_to_http_error_detail(self) -> None:

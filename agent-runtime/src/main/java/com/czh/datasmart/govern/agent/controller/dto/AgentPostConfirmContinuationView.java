@@ -28,8 +28,37 @@ public record AgentPostConfirmContinuationView(
         Map<String, Object> modelSecondTurn,
         Map<String, Object> durableLoop,
         Map<String, Object> repairProposal,
+        Map<String, Object> specialistVerificationExecution,
+        Map<String, Object> postBridgeVerification,
         String payloadPolicy,
         String message) {
+
+    /**
+     * 兼容尚未关心六 Agent 后置复核字段的既有测试和调用代码。
+     *
+     * <p>生产 HTTP 反序列化使用上面的完整 canonical constructor；这个重载只为源码兼容补入两个空 Map，
+     * 不会伪造 PRECHECK/MONITOR 已经运行。新代码需要展示或断言后置复核时必须读取完整字段。</p>
+     */
+    public AgentPostConfirmContinuationView(
+            String schemaVersion,
+            String status,
+            Boolean continued,
+            String requestId,
+            String sessionId,
+            String sourceRunId,
+            String nextRunId,
+            Boolean requiresConfirmation,
+            String stoppedReason,
+            String assistantReply,
+            Map<String, Object> modelSecondTurn,
+            Map<String, Object> durableLoop,
+            Map<String, Object> repairProposal,
+            String payloadPolicy,
+            String message) {
+        this(schemaVersion, status, continued, requestId, sessionId, sourceRunId, nextRunId,
+                requiresConfirmation, stoppedReason, assistantReply, modelSecondTurn, durableLoop,
+                repairProposal, Map.of(), Map.of(), payloadPolicy, message);
+    }
 
     public static AgentPostConfirmContinuationView disabled() {
         return new AgentPostConfirmContinuationView(
@@ -99,33 +128,53 @@ public record AgentPostConfirmContinuationView(
                 continuation.modelSecondTurn(),
                 continuation.durableLoop(),
                 continuation.repairProposal(),
+                continuation.specialistVerificationExecution(),
+                continuation.postBridgeVerification(),
                 continuation.payloadPolicy(),
                 recoveryMessage
         );
     }
 
     /**
-     * The reviewed business goal has reached its asynchronous hand-off point.
-     * No extra model turn is needed after a task is scheduled, handed to CDC,
-     * or submitted to the worker queue.
+     * 将不可信或不完整的 Python 后确认续跑响应降级为不可执行的可重试结果。
+     *
+     * <p>Java 控制面只信任自己已持久化的会话、Run、工具审计和后置复核契约。远端 HTTP 返回 2xx 并不代表
+     * 它携带的 session/run 定位符、下一 Run 或“业务目标已完成”结论可以直接交给前端。因此该工厂刻意清空
+     * {@code nextRunId}、确认标记、模型摘要和修复提案，仅保留 Java 已知的会话定位和可安全展示的固定说明。
+     * 用户仍可基于已保存的本轮工具结果重新生成计划，但不能点击一个可能越权或悬空的操作入口。</p>
+     *
+     * @param sessionId 当前 Java 已知的会话 ID
+     * @param sourceRunId 当前 Java 已知的源 Run ID
+     * @param violationCode 由 Java 本地规则生成的低敏违约码，不能传入远端原始错误正文
+     * @return 无可执行后续动作的 fail-closed 续跑视图
      */
-    public static AgentPostConfirmContinuationView businessGoalReached() {
+    public static AgentPostConfirmContinuationView contractInvalid(
+            String sessionId,
+            String sourceRunId,
+            String violationCode) {
+        String code = violationCode != null && violationCode.matches("[A-Z0-9_]{1,80}")
+                ? violationCode
+                : "UNSPECIFIED";
+        String message = "Agent 后确认续跑响应未通过控制面契约校验（" + code + "）。"
+                + "系统已保留本轮 Java 工具执行结果；请重新生成审核计划或查看任务详情后重试。";
         return new AgentPostConfirmContinuationView(
                 "datasmart.post-confirm-continuation.v1",
-                "BUSINESS_GOAL_REACHED",
+                "FAILED_RETRYABLE",
                 false,
                 null,
-                null,
-                null,
+                sessionId,
+                sourceRunId,
                 null,
                 false,
-                "TASK_SUBMITTED_OR_SCHEDULED",
-                null,
+                "CONTINUATION_CONTRACT_INVALID",
+                message,
+                Map.of(),
+                Map.of(),
                 Map.of(),
                 Map.of(),
                 Map.of(),
                 "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
-                "同步任务已进入真实业务执行边界，无需等待任务终态或再次调用模型。"
+                message
         );
     }
 }

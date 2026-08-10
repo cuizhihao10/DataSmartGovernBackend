@@ -15,6 +15,9 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactVi
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStatus;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
+import com.czh.datasmart.govern.agent.service.session.AgentDelegationRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -63,6 +66,7 @@ public class AgentToolActionResumeFactBundleService {
     private final AgentToolActionClarificationFactEvaluator clarificationFactEvaluator;
     private final AgentToolActionWorkerReceiptFactEvaluator workerReceiptFactEvaluator;
     private final AgentToolActionResumeFactBundleDiagnosticPublisher diagnosticPublisher;
+    private final AgentSessionStore sessionStore;
 
     /**
      * 查询恢复事实包。
@@ -189,17 +193,42 @@ public class AgentToolActionResumeFactBundleService {
             return fact(FACT_APPROVAL, "PERMISSION_ADMIN", "MISSING", false, false, false,
                     List.of(), List.of("APPROVAL_FACT_ID_REQUIRED"), now);
         }
+        if (!hasText(request.sessionId())) {
+            return fact(FACT_APPROVAL, "PERMISSION_ADMIN", "MISSING", false, false, false,
+                    List.of(), List.of("SESSION_ID_REQUIRED_FOR_APPROVAL_FACT_EVALUATION"), now);
+        }
+        if (accessContext.applicationId() == null || accessContext.applicationId() <= 0) {
+            return fact(FACT_APPROVAL, "PERMISSION_ADMIN", "MISSING", false, false, false,
+                    List.of(), List.of("APPLICATION_ID_REQUIRED_FOR_APPROVAL_FACT_EVALUATION"), now);
+        }
+        Optional<AgentSessionRecord> sessionOptional = sessionStore.findById(request.sessionId().trim());
+        if (sessionOptional.isEmpty()) {
+            return fact(FACT_APPROVAL, "PERMISSION_ADMIN", "MISSING", false, false, false,
+                    List.of(), List.of("SESSION_NOT_FOUND_FOR_APPROVAL_FACT_EVALUATION"), now);
+        }
+        AgentSessionRecord session = sessionOptional.get();
+        AgentDelegationRecord delegation = session.getDelegation();
+        if (delegation == null || !hasText(delegation.getDelegationId()) || !hasText(session.getAgentId())) {
+            return fact(FACT_APPROVAL, "PERMISSION_ADMIN", "MISSING", false, false, false,
+                    List.of(), List.of("SESSION_DELEGATION_REQUIRED_FOR_APPROVAL_FACT_EVALUATION"), now);
+        }
+        String userId = String.valueOf(accessContext.actorId());
+        String actorId = firstText(request.actorId(), userId);
         AgentToolActionApprovalFactRemoteResult result = approvalFactEvaluator.evaluate(
                 new AgentToolActionApprovalFactRemoteRequest(
-                        request.approvalFactId(),
+                        request.approvalFactId().trim(),
                         request.tenantId() == null ? accessContext.tenantId() : request.tenantId(),
+                        accessContext.applicationId(),
                         request.projectId(),
-                        firstText(request.actorId(), String.valueOf(accessContext.actorId())),
-                        request.sessionId(),
-                        request.runId(),
-                        request.commandId(),
-                        request.toolCode(),
-                        request.requestedPolicyVersion(),
+                        userId,
+                        actorId,
+                        session.getAgentId(),
+                        request.sessionId().trim(),
+                        text(request.runId()),
+                        delegation.getDelegationId(),
+                        text(request.commandId()),
+                        text(request.toolCode()),
+                        text(request.requestedPolicyVersion()),
                         accessContext.traceId()
                 )
         );

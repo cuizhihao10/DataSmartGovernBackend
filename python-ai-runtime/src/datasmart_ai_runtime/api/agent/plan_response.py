@@ -12,8 +12,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, replace
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from threading import Lock
 from typing import Any
 
 from datasmart_ai_runtime.api.gateway.intelligent_gateway import build_intelligent_gateway_governance_response
@@ -24,6 +27,11 @@ from datasmart_ai_runtime.api.agent.plan_readiness_views import (
 )
 from datasmart_ai_runtime.api.agent.conversation_response import build_agent_conversation_response
 from datasmart_ai_runtime.api.agent.observation_timeline import build_agent_observation_timeline
+from datasmart_ai_runtime.api.agent.post_bridge_finalization import (
+    control_plane_resource_fingerprint,
+    recompute_post_bridge_views,
+    run_post_bridge_verification_wave,
+)
 from datasmart_ai_runtime.api.agent.plan_response_events import (
     attach_agent_execution_gate_event,
     attach_agent_execution_session_event,
@@ -52,6 +60,16 @@ from datasmart_ai_runtime.services.multi_agent import (
     LangGraphMultiAgentTurnRunnerWorkflow,
     MultiAgentExecutionSessionService,
     record_multi_agent_turn_runner_checkpoint,
+)
+from datasmart_ai_runtime.services.multi_agent.specialist_coordinator import (
+    SpecialistAgentCoordinator,
+    SpecialistExecutionBatchResult,
+)
+from datasmart_ai_runtime.services.multi_agent.specialist_events import build_specialist_runtime_events
+from datasmart_ai_runtime.services.multi_agent.specialist_toolplan_bridge import (
+    SpecialistBridgeStatus,
+    SpecialistToolPlanBridge,
+    SpecialistToolPlanBridgeResult,
 )
 from datasmart_ai_runtime.services.memory import LangGraphMemoryRetrievalWorkflow
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
@@ -93,6 +111,9 @@ def build_plan_response(
     multi_agent_turn_runner_metrics: Any | None = None,
     multi_agent_turn_runner_workflow: Any | None = None,
     langgraph_checkpointer_service: Any | None = None,
+    specialist_agent_coordinator: SpecialistAgentCoordinator | None = None,
+    specialist_allowed_tools_by_role: dict[str, tuple[str, ...]] | None = None,
+    specialist_toolplan_bridge: SpecialistToolPlanBridge | None = None,
     progress_event_sink: Callable[[Any], None] | None = None,
     cancellation_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
@@ -119,6 +140,22 @@ def build_plan_response(
         orchestrator.plan(request, event_sink=progress_event_sink)
         if progress_event_sink is not None
         else orchestrator.plan(request)
+    )
+    # The legacy master-planner RAG ToolPlan and the new Knowledge Specialist describe the same
+    # retrieval capability but have different lifecycle semantics. If both survive this boundary,
+    # the legacy ToolPlan is submitted to Java first and moves the whole execution session into
+    # WAITING_CONTROL_PLANE_FEEDBACK before any Specialist can run. The Knowledge Agent then never
+    # gets a turn, while a redundant ``knowledge.rag.query`` audit may remain permanently PLANNED.
+    #
+    # Delegate ownership only when the coordinator is active *and* its governed role/tool matrix
+    # explicitly grants the Knowledge Agent this capability. Deployments without Specialists retain
+    # the established Java command-worker RAG path. Other ToolPlans are untouched because datasource,
+    # metadata and synchronization evidence still has to reach the Java control plane before a domain
+    # Specialist may safely plan against it.
+    plan = _delegate_legacy_knowledge_rag_to_specialist(
+        plan,
+        specialist_agent_coordinator=specialist_agent_coordinator,
+        specialist_allowed_tools_by_role=specialist_allowed_tools_by_role,
     )
     # 模型调用结束与 Java 控制面提交之间必须再次检查。这样用户在最后一个 token 到达时点击停止，
     # 不会因为时间窗口很短而继续提交尚未执行的工具计划。
@@ -156,6 +193,14 @@ def build_plan_response(
     durable_loop_plan = None
     agent_turn_runner_checkpoint = None
     memory_write_proposal = None
+    specialist_agent_execution = None
+    specialist_verification_execution = None
+    specialist_bridge_results: list[SpecialistToolPlanBridgeResult] = []
+    post_bridge_verification_summary: dict[str, Any] | None = None
+    # 只有专业结果真正进入 bridge/Durable 后，才需要把下方已经计算过的
+    # readiness、closure 和多 Agent 调度视图重新计算。普通请求不重复运行这些
+    # workflow，避免改变原有响应的调用次数和运行成本。
+    post_bridge_finalization_required = False
 
     # A complete synchronization request already contains the deterministic
     # lifecycle DAG: draft -> precheck -> publish -> run/status. Submit that
@@ -254,6 +299,11 @@ def build_plan_response(
             loop_control_decision=loop_control_decision,
             second_turn_result=second_turn_result,
         )
+
+    # 这里必须放在首轮 Durable loop 之后、专业 Agent bridge 之前。
+    # 首轮模型可能已经从 Java 控制面拿到最新反馈；如果在初始化变量时就计算指纹，
+    # 桥接后的反馈会被误判为“新资源”，从而重复调度 PRECHECK/MONITOR。
+    pre_bridge_resource_fingerprint = control_plane_resource_fingerprint(control_plane_feedback)
 
     if memory_write_governance is not None:
         check_cancelled()
@@ -409,6 +459,237 @@ def build_plan_response(
         agent_turn_runner=agent_turn_runner_summary,
         agent_turn_runner_checkpoint=agent_turn_runner_checkpoint,
     )
+    if specialist_agent_coordinator is not None:
+        check_cancelled()
+        # 真实专业 Agent 必须发生在 turn checkpoint 之后。协调器只推进已注册的低风险专业分析，
+        # 任务保存、数据源修改和数据库写操作仍由 Java 控制面工具承接。
+        streamed_specialist_events: list[Any] = []
+        specialist_event_lock = Lock()
+
+        def record_specialist_action(raw_event: dict[str, Any]) -> None:
+            """立即把一个专业 Agent 公开动作转换为 SSE 事件，同时保留最终持久化副本。
+
+            专业 Agent 可以在同一执行波次并发运行，因此这里用一把很小的锁保护 sequence 分配和列表
+            追加。锁内不调用前端 sink，避免慢客户端阻塞其他专业 Agent；事件正文仍经过
+            ``build_specialist_runtime_events`` 的白名单裁剪，不会把工具参数或模型原文推给浏览器。
+            """
+
+            with specialist_event_lock:
+                event_plan = replace(
+                    plan,
+                    runtime_events=plan.runtime_events + tuple(streamed_specialist_events),
+                )
+                converted = build_specialist_runtime_events(
+                    request=request,
+                    plan=event_plan,
+                    action_events=(raw_event,),
+                )
+                streamed_specialist_events.extend(converted)
+            if progress_event_sink is not None:
+                for event in converted:
+                    progress_event_sink(event)
+
+        specialist_agent_execution = specialist_agent_coordinator.run(
+            request=request,
+            turn_runner=agent_turn_runner_summary,
+            execution_session=agent_execution_session.to_summary(),
+            allowed_tools_by_role=specialist_allowed_tools_by_role or {},
+            base_context=_specialist_base_context(
+                request,
+                plan,
+                control_plane_feedback=control_plane_feedback,
+            ),
+            checkpoint_recorded=agent_turn_runner_checkpoint is not None,
+            event_sink=record_specialist_action,
+        )
+        specialist_runtime_events = tuple(streamed_specialist_events)
+        if specialist_runtime_events:
+            plan = replace(plan, runtime_events=plan.runtime_events + specialist_runtime_events)
+
+        if specialist_toolplan_bridge is not None and specialist_agent_execution.results:
+            # 专业 Agent 的结果在这里仍然是不可信建议。桥接层会重新执行主 Agent 的工具
+            # 可见性、schema、预算、重复和真实元数据状态校验；只有它返回 ACCEPTED，
+            # 才允许把结果交给与普通模型二轮相同的 Durable runner。
+            bridge_parent_plan = durable_loop_plan or plan
+            for specialist_result in specialist_agent_execution.results:
+                if specialist_result.role.value not in {"DATA_SYNC_AGENT", "RECOVERY_AGENT"}:
+                    continue
+                bridge_result = specialist_toolplan_bridge.bridge(
+                    request=request,
+                    plan=bridge_parent_plan,
+                    specialist_result=specialist_result,
+                    control_plane_feedback=control_plane_feedback,
+                )
+                specialist_bridge_results.append(bridge_result)
+                if (
+                    bridge_result.status is not SpecialistBridgeStatus.ACCEPTED
+                    or bridge_result.plan is None
+                    or bridge_result.model_turn is None
+                ):
+                    # DATA_SYNC/RECOVERY 只有在桥接真正产出受治理 ToolPlan 时才进入 Durable runner。
+                    # Recovery 缺少失败诊断、RAG 证据、预览回执或用户审批时，会安全停留在
+                    # WAITING_FOR_CONTROL_PLANE_EVIDENCE / WAITING_FOR_APPROVAL /
+                    # WAITING_FOR_JAVA_HANDOFF；这些等待态不能被当成瞬时失败自动重试。
+                    continue
+
+                # DATA_SYNC_AGENT 的任务生命周期计划和 RECOVERY_AGENT 的白名单恢复计划都与普通模型
+                # follow-up 共用 AgentDurableModelToolLoopRunner。Runner 会创建 Java run，执行审批、
+                # outbox 和 worker receipt 链路，再决定进入下一轮专业复核还是停在人工门禁。
+                plan = bridge_result.plan
+                post_bridge_finalization_required = True
+                if durable_model_tool_loop_runner is not None:
+                    check_cancelled()
+                    durable_model_tool_loop = durable_model_tool_loop_runner.run(
+                        request=request,
+                        plan=bridge_result.plan,
+                        first_model_turn=bridge_result.model_turn,
+                        initial_feedback=control_plane_feedback,
+                        progress_event_sink=progress_event_sink,
+                    )
+                    durable_loop_plan = durable_model_tool_loop.latest_plan
+                    plan = replace(plan, runtime_events=durable_loop_plan.runtime_events)
+                    if durable_model_tool_loop.latest_feedback is not None:
+                        control_plane_feedback = durable_model_tool_loop.latest_feedback
+                    if durable_model_tool_loop.latest_loop_decision is not None:
+                        loop_control_decision = durable_model_tool_loop.latest_loop_decision
+                    if durable_model_tool_loop.latest_model_turn is not None:
+                        second_turn_result = durable_model_tool_loop.latest_model_turn
+                    if runtime_event_feedback_bridge is not None and control_plane_feedback is not None:
+                        # Durable runner 返回的反馈可能包含 worker receipt 或新 executionId。
+                        # 重新经过事件反馈桥，确保后续验证波次和最终闭环视图看到的是同一份事实快照。
+                        runtime_event_feedback = runtime_event_feedback_bridge.augment(
+                            request=request,
+                            plan=plan,
+                            snapshot=control_plane_feedback,
+                        )
+                        control_plane_feedback = runtime_event_feedback.snapshot
+
+                    # Recovery Specialist 会直接读取一次受保护的 Java 诊断供模型分析，但后续
+                    # preview/retry/apply 仍必须引用 agent-runtime 创建的正式 diagnosis audit。
+                    # 当第一次 Bridge 只提交了 sync.execution.diagnose bootstrap 时，Durable runner
+                    # 已在上方取得新的 auditId/runId feedback；此处用同一个 Specialist 结果再桥接一次，
+                    # 让真正的恢复动作从该 feedback 派生 diagnosisRef。这个分支最多执行一次，且只由
+                    # “唯一 accepted 工具就是只读 diagnose”触发，避免 duplicate-name 或普通恢复计划
+                    # 被重复提交，也避免形成无界 Python 循环。
+                    bootstrap_tool_names = tuple(
+                        item.tool_name for item in bridge_result.accepted_tool_plans
+                    )
+                    if (
+                        specialist_result.role.value == "RECOVERY_AGENT"
+                        and bootstrap_tool_names == ("sync.execution.diagnose",)
+                        and control_plane_feedback is not None
+                    ):
+                        recovery_action_bridge = specialist_toolplan_bridge.bridge(
+                            request=request,
+                            plan=durable_loop_plan or plan,
+                            specialist_result=specialist_result,
+                            control_plane_feedback=control_plane_feedback,
+                        )
+                        specialist_bridge_results.append(recovery_action_bridge)
+                        if (
+                            recovery_action_bridge.status is SpecialistBridgeStatus.ACCEPTED
+                            and recovery_action_bridge.plan is not None
+                            and recovery_action_bridge.model_turn is not None
+                        ):
+                            plan = recovery_action_bridge.plan
+                            if durable_model_tool_loop_runner is not None:
+                                check_cancelled()
+                                recovery_action_loop = durable_model_tool_loop_runner.run(
+                                    request=request,
+                                    plan=recovery_action_bridge.plan,
+                                    first_model_turn=recovery_action_bridge.model_turn,
+                                    initial_feedback=control_plane_feedback,
+                                    progress_event_sink=progress_event_sink,
+                                )
+                                durable_model_tool_loop = recovery_action_loop
+                                durable_loop_plan = recovery_action_loop.latest_plan
+                                plan = replace(plan, runtime_events=durable_loop_plan.runtime_events)
+                                if recovery_action_loop.latest_feedback is not None:
+                                    control_plane_feedback = recovery_action_loop.latest_feedback
+                                if recovery_action_loop.latest_loop_decision is not None:
+                                    loop_control_decision = recovery_action_loop.latest_loop_decision
+                                if recovery_action_loop.latest_model_turn is not None:
+                                    second_turn_result = recovery_action_loop.latest_model_turn
+                                if runtime_event_feedback_bridge is not None and control_plane_feedback is not None:
+                                    runtime_event_feedback = runtime_event_feedback_bridge.augment(
+                                        request=request,
+                                        plan=plan,
+                                        snapshot=control_plane_feedback,
+                                    )
+                                    control_plane_feedback = runtime_event_feedback.snapshot
+                break
+
+            # bridge/Durable 可能刚刚创建出真实 taskId/executionId。只有在控制面反馈
+            # 相对 bridge 前确实出现新事实时，才重新调度两个只读专业 Agent；不能用
+            # specialist 的模型草案或 Python 自己猜测的 ID 触发预检/监控。
+            if post_bridge_finalization_required:
+                verification_plan = durable_loop_plan or plan
+                verification_event_offset = len(streamed_specialist_events)
+                verification_result, post_bridge_verification_summary = run_post_bridge_verification_wave(
+                    request=request,
+                    plan=verification_plan,
+                    control_plane_feedback=control_plane_feedback,
+                    previous_resource_fingerprint=pre_bridge_resource_fingerprint,
+                    specialist_agent_coordinator=specialist_agent_coordinator,
+                    specialist_allowed_tools_by_role=specialist_allowed_tools_by_role or {},
+                    checkpoint_recorded=agent_turn_runner_checkpoint is not None,
+                    event_sink=record_specialist_action,
+                    base_context=_specialist_base_context(
+                        request,
+                        verification_plan,
+                        control_plane_feedback=control_plane_feedback,
+                    ),
+                    execution_session=agent_execution_session.to_summary(),
+                )
+                specialist_verification_execution = verification_result
+                verification_events = tuple(streamed_specialist_events[verification_event_offset:])
+                if verification_events:
+                    verification_plan = replace(
+                        verification_plan,
+                        runtime_events=verification_plan.runtime_events + verification_events,
+                    )
+                    plan = verification_plan
+                    if durable_loop_plan is not None:
+                        durable_loop_plan = verification_plan
+
+        # 专业 bridge 和 Durable runner 发生在首轮 LangGraph/readiness/checkpoint 之后。
+        # 因此这里必须以最新 plan 和最新控制面反馈覆盖所有“最终视图”，否则响应会把
+        # specialist 之前的旧 task/tool 数量、旧 closure 和旧协作调度返回给前端。
+        if post_bridge_finalization_required:
+            check_cancelled()
+            final_state = recompute_post_bridge_views(
+                request=request,
+                plan=durable_loop_plan or plan,
+                readiness_policy_snapshot=readiness_policy_snapshot,
+                control_plane_ingestion=control_plane_ingestion,
+                control_plane_feedback=control_plane_feedback,
+                runtime_event_feedback=runtime_event_feedback,
+                loop_control_decision=loop_control_decision,
+                second_turn_result=second_turn_result,
+                memory_write_proposal=memory_write_proposal,
+                durable_agent_loop_service=durable_agent_loop_service,
+                multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
+                multi_agent_turn_runner_workflow=multi_agent_turn_runner_workflow,
+                multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
+                langgraph_checkpointer_service=langgraph_checkpointer_service,
+                langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
+                workspace_context=workspace_context,
+                skill_manifest_diagnostics=skill_manifest_diagnostics,
+                plan_runtime_event_sink=progress_event_sink,
+            )
+            plan = final_state["plan"]
+            tool_execution_readiness = final_state["tool_execution_readiness"]
+            tool_execution_readiness_response = final_state["tool_execution_readiness_response"]
+            agent_execution_gate_summary = final_state["agent_execution_gate_summary"]
+            command_proposal_templates = final_state["command_proposal_templates"]
+            agent_execution_closure_summary = final_state["agent_execution_closure_summary"]
+            intelligent_gateway_governance = final_state["intelligent_gateway_governance"]
+            agent_collaboration_workflow = final_state["agent_collaboration_workflow"]
+            agent_collaboration_execution_plan_summary = final_state["agent_collaboration_execution_plan_summary"]
+            agent_execution_session = final_state["agent_execution_session"]
+            agent_turn_runner_summary = final_state["agent_turn_runner_summary"]
+            durable_loop_checkpoint = final_state["durable_loop_checkpoint"]
+            agent_turn_runner_checkpoint = final_state["agent_turn_runner_checkpoint"]
     # 长期记忆检索以前只作为 `AgentOrchestrator` 内部的 `retrieve_memory` 顺序步骤存在。
     # 这里新增的 LangGraph workflow 不重复召回记忆、不读取正文、不修改记忆 store，而是把已经生成的
     # `memoryPlan + memoryRetrievalReport` 压缩成可观察节点 trace。这样前端、Java projection 和多 Agent
@@ -451,6 +732,18 @@ def build_plan_response(
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan_summary
     response["agentExecutionSession"] = agent_execution_session.to_summary()
     response["agentTurnRunner"] = agent_turn_runner_summary
+    if specialist_agent_execution is not None:
+        response["specialistAgentExecution"] = specialist_agent_execution.to_summary()
+    if specialist_verification_execution is not None:
+        response["specialistVerificationExecution"] = specialist_verification_execution.to_summary()
+    if post_bridge_verification_summary is not None:
+        response["postBridgeVerification"] = post_bridge_verification_summary
+    if specialist_bridge_results:
+        # 每一个专业结果都保留独立摘要，便于前端区分“同步草案已进入 Durable”与
+        #“恢复动作正在等待审批/Java handoff”。摘要不包含 ToolPlan 参数正文。
+        response["specialistToolPlanBridges"] = tuple(
+            item.to_summary() for item in specialist_bridge_results
+        )
     if agent_turn_runner_checkpoint is not None:
         response["agentTurnRunnerCheckpoint"] = agent_turn_runner_checkpoint
     response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow_summary
@@ -466,9 +759,10 @@ def build_plan_response(
     response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
     response["agentExecutionClosure"] = agent_execution_closure_summary
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
+    conversation_source_plan = plan if post_bridge_finalization_required else durable_loop_plan
     conversation_plan = (
         replace(
-            plan,
+            conversation_source_plan,
             tool_plans=durable_loop_plan.tool_plans,
             response_summary=(
                 str(getattr(second_turn_result, "summary", "") or "").strip()
@@ -476,7 +770,7 @@ def build_plan_response(
             ),
             next_actions=durable_loop_plan.next_actions,
         )
-        if durable_loop_plan is not None
+        if durable_loop_plan is not None and conversation_source_plan is not None
         else plan
     )
     conversation_readiness = ToolExecutionReadinessService().evaluate(
@@ -547,6 +841,59 @@ def build_plan_response(
     return response
 
 
+def _delegate_legacy_knowledge_rag_to_specialist(
+    plan: AgentPlan,
+    *,
+    specialist_agent_coordinator: SpecialistAgentCoordinator | None,
+    specialist_allowed_tools_by_role: Mapping[str, tuple[str, ...]] | None,
+) -> AgentPlan:
+    """Transfer RAG ownership from the legacy ToolPlan to the governed Knowledge Agent.
+
+    The function changes planning ownership, not authorization. Knowledge Specialist execution still
+    requires a recorded turn checkpoint, a concrete project scope, a registered Specialist instance,
+    and an allow-listed ``knowledge.rag.query`` capability. Its result remains low-sensitive and any
+    follow-up side effect must still cross the Specialist ToolPlan bridge and Java control plane.
+
+    A low-sensitive workflow diagnostic is retained so operators can explain why the model proposed a
+    tool that does not appear in the Java ingestion batch. Prompt text, model output, query text and tool
+    arguments are deliberately excluded from that diagnostic.
+    """
+
+    allowed_tools = tuple((specialist_allowed_tools_by_role or {}).get("KNOWLEDGE_AGENT", ()))
+    specialist_owns_rag = (
+        specialist_agent_coordinator is not None
+        and "knowledge.rag.query" in allowed_tools
+    )
+    if not specialist_owns_rag:
+        return plan
+
+    delegated_count = sum(
+        1 for tool_plan in plan.tool_plans if tool_plan.tool_name == "knowledge.rag.query"
+    )
+    if delegated_count == 0:
+        return plan
+
+    diagnostics = dict(plan.workflow_diagnostics)
+    diagnostics["specialistToolOwnership"] = {
+        "schemaVersion": "datasmart.specialist-tool-ownership.v1",
+        "delegatedTools": ("knowledge.rag.query",),
+        "delegatedPlanCount": delegated_count,
+        "ownerRole": "KNOWLEDGE_AGENT",
+        "javaLegacyPlanSuppressed": True,
+        "payloadPolicy": "LOW_SENSITIVE_TOOL_NAME_AND_COUNT_ONLY",
+    }
+    return replace(
+        plan,
+        tool_plans=tuple(
+            tool_plan
+            for tool_plan in plan.tool_plans
+            if tool_plan.tool_name != "knowledge.rag.query"
+        ),
+        state_trace=plan.state_trace + ("delegate_knowledge_rag_to_specialist",),
+        workflow_diagnostics=diagnostics,
+    )
+
+
 def _control_plane_ready_subplan(
     plan: AgentPlan,
     readiness: Any,
@@ -564,6 +911,13 @@ def _control_plane_ready_subplan(
         for item in tuple(getattr(readiness, "items", ()) or ())
         if bool(getattr(item, "executable", False))
     }
+    ready_indices.update(
+        _required_directional_metadata_indices(
+            plan,
+            readiness,
+            already_ready_indices=ready_indices,
+        )
+    )
     ready_tools = tuple(
         tool_plan
         for index, tool_plan in enumerate(plan.tool_plans, start=1)
@@ -576,6 +930,82 @@ def _control_plane_ready_subplan(
             tool_plan.requires_human_approval for tool_plan in ready_tools
         ),
     )
+
+
+def _required_directional_metadata_indices(
+    plan: AgentPlan,
+    readiness: Any,
+    *,
+    already_ready_indices: set[int],
+) -> set[int]:
+    """Keep a safe source/target metadata evidence wave from becoming asymmetric.
+
+    The readiness budget is intentionally conservative and may allow the two
+    connection tests plus only the first directional metadata read in a sync
+    plan.  Treating the target-side sibling as a completely separate model turn
+    leaves the specialist bridge with source-only evidence and makes task
+    planning depend on a model rediscovering a deterministic platform step.
+
+    This method permits one narrow exception: a directional metadata read that
+    is *only* ``THROTTLED`` may join the same Java DAG when its matching
+    connection test is already executable.  It never admits a node waiting for
+    clarification or approval, a blocked node, an invalid parameter set, or any
+    write-capable lifecycle tool.  Java still rechecks datasource permissions,
+    executes the dependency edge, and records a separate audit fact for each
+    read.
+
+    Args:
+        plan: The complete user-visible plan before the control-plane boundary.
+        readiness: The low-sensitive readiness report for exactly that plan.
+        already_ready_indices: One-based plan indices already admitted by the
+            ordinary readiness decision.
+
+    Returns:
+        The one-based metadata plan indices that can safely join this evidence
+        wave.  An empty set means the ordinary readiness frontier is preserved.
+    """
+
+    readiness_by_index = {
+        int(item.plan_index): item
+        for item in tuple(getattr(readiness, "items", ()) or ())
+    }
+    plan_index_by_tool = {
+        tool_plan.tool_name: index
+        for index, tool_plan in enumerate(plan.tool_plans, start=1)
+    }
+    evidence_pairs = tuple(
+        (
+            plan_index_by_tool.get(f"datasource.{direction}.connection.test"),
+            plan_index_by_tool.get(f"datasource.{direction}.metadata.read"),
+            direction,
+        )
+        for direction in ("source", "target")
+    )
+    # The exemption is intentionally pair-scoped.  If either connection test
+    # is itself outside the admitted budget, adding only the other side's
+    # metadata would recreate the asymmetric evidence state this method exists
+    # to prevent and could make a datasource appear validated when its peer was
+    # never checked.
+    if any(connection_index not in already_ready_indices for connection_index, _, _ in evidence_pairs):
+        return set()
+
+    evidence_indices: set[int] = set()
+    for connection_index, metadata_index, direction in evidence_pairs:
+        metadata_name = f"datasource.{direction}.metadata.read"
+        if connection_index is None or metadata_index is None:
+            continue
+        metadata_plan = plan.tool_plans[metadata_index - 1]
+        metadata_readiness = readiness_by_index.get(metadata_index)
+        decision = str(getattr(getattr(metadata_readiness, "decision", None), "value", ""))
+        if (
+            metadata_index not in already_ready_indices
+            and decision == "throttled"
+            and metadata_plan.parameter_validation.can_execute
+            and not metadata_plan.requires_human_approval
+            and metadata_plan.tool_name == metadata_name
+        ):
+            evidence_indices.add(metadata_index)
+    return evidence_indices
 
 
 def _control_plane_ingestion_subplan(
@@ -660,6 +1090,288 @@ def _skill_publication_manifest_diagnostics_snapshot(
             "lastError": str(exc),
         }
     return snapshot if isinstance(snapshot, dict) else None
+
+
+def _specialist_base_context(
+    request: AgentRequest,
+    plan: AgentPlan,
+    *,
+    control_plane_feedback: Any | None = None,
+) -> dict[str, Any]:
+    """为专业 Agent 构建瞬时、字段白名单化的共享上下文。
+
+    这里不复制完整 `request.variables`，因为其中未来可能包含制品定位、内部控制面字段或业务正文。首批
+    专业 Agent 只需要数据源消歧提示、同步模式提示和主 Agent 已形成的低敏计划事实；SQL、WHERE、字段
+    映射正文等内容后续应通过受控 payloadReference 获取，而不是进入可持久化 handoff 状态。
+    """
+
+    safe_variable_names = (
+        "sourceDatasourceId",
+        "sourceDatasourceName",
+        "sourceConnectorType",
+        "sourceDatabaseType",
+        "targetDatasourceId",
+        "targetDatasourceName",
+        "targetConnectorType",
+        "targetDatabaseType",
+        "requestedDirections",
+        "taskName",
+        "syncMode",
+        "writeMode",
+        "scheduleType",
+        "taskId",
+        "executionId",
+        "taskKind",
+        "failureReference",
+        "failureCode",
+        "caseReference",
+        "taskReference",
+    )
+    safe_variables = {
+        name: request.variables[name]
+        for name in safe_variable_names
+        if name in request.variables and _is_low_sensitive_scalar_or_sequence(request.variables[name])
+    }
+    # 前端高级配置把用户已经审核过的任务名称、模式、对象/字段映射、WHERE、调度和 SQL 放在
+    # ``variables.dataSyncRequest``。这些值是同步规划的业务输入，不是数据源凭据；如果专业 Agent
+    # 只能看到顶层 datasourceId，它就会再次声称缺少映射，形成“用户已经补全、Agent 仍然追问”的假循环。
+    #
+    # 这里不能直接复制整个对象：未来前端可能新增连接信息或内部控制字段。因此通过专用白名单函数逐层
+    # 重建瞬时上下文，只允许手工向导同契约字段进入本次进程内 handoff。专业事实表仍只保存低敏摘要，
+    # 不保存该配置正文；真正持久化和执行继续由 Java ToolPlan、审批与 data-sync 控制面负责。
+    data_sync_request = _specialist_sync_request(request.variables.get("dataSyncRequest"))
+    if data_sync_request:
+        safe_variables["dataSyncRequest"] = data_sync_request
+    for direction_name in ("source", "target", "sourceDatasource", "targetDatasource"):
+        nested = request.variables.get(direction_name)
+        if isinstance(nested, dict):
+            safe_variables[direction_name] = {
+                key: value
+                for key, value in nested.items()
+                if key in {"datasourceId", "id", "datasourceName", "name", "connectorType", "databaseType", "type"}
+                and _is_low_sensitive_scalar_or_sequence(value)
+            }
+
+    # 恢复和监控请求通常把定位字段放在一个小型嵌套对象中。这里只复制 ID、状态、类型和布尔开关，
+    # 不复制日志正文、SQL、WHERE、字段映射、样本或任意凭据。
+    for context_name in (
+        "monitoringRequest",
+        "monitorRequest",
+        "recoveryContext",
+        "failureContext",
+    ):
+        nested = request.variables.get(context_name)
+        if isinstance(nested, Mapping):
+            safe_variables[context_name] = {
+                key: value
+                for key, value in nested.items()
+                if key in {
+                    "taskId",
+                    "executionId",
+                    "taskKind",
+                    "syncMode",
+                    "status",
+                    "failureCode",
+                    "failureReference",
+                    "includeLogs",
+                    "includeObjects",
+                }
+                and _is_low_sensitive_scalar_or_sequence(value)
+            }
+
+    control_plane_facts = _specialist_control_plane_facts(plan, control_plane_feedback)
+    if control_plane_facts:
+        safe_variables["controlPlaneFacts"] = control_plane_facts
+        # 三类确定性专业 Agent 都使用顶层定位字段。按反馈顺序保留最后一个非空值，可覆盖计划参数中的
+        # 草稿 ID，但不能覆盖请求显式提供的定位，避免一次多工具计划串错对象。
+        for locator_name in ("taskId", "executionId", "taskKind", "failureCode"):
+            if locator_name in safe_variables:
+                continue
+            for fact in reversed(control_plane_facts):
+                value = fact.get(locator_name)
+                if value is not None:
+                    safe_variables[locator_name] = value
+                    break
+        if "taskId" in safe_variables:
+            safe_variables.setdefault("taskReference", safe_variables["taskId"])
+
+    intent = plan.intent_analysis
+    domains = tuple(
+        getattr(domain, "value", str(domain))
+        for domain in (getattr(intent, "governance_domains", ()) if intent is not None else ())
+    )
+    return {
+        **safe_variables,
+        "traceId": plan.request_id,
+        "governanceDomains": domains,
+        "intentConfidence": getattr(intent, "confidence", None) if intent is not None else None,
+        "plannedToolNames": tuple(tool.tool_name for tool in plan.tool_plans),
+        "payloadPolicy": "LOW_SENSITIVE_SPECIALIST_TRANSIENT_CONTEXT_ONLY",
+    }
+
+
+def _specialist_control_plane_facts(
+    plan: AgentPlan,
+    control_plane_feedback: Any | None,
+) -> tuple[dict[str, Any], ...]:
+    """提取专业 Agent 可用的控制面定位事实，不复制工具结果正文。
+
+    控制面反馈的 ``result`` 可能包含元数据、字段映射或错误详情，绝不能整体放入多 Agent handoff。
+    本方法只提取任务/执行定位、生命周期状态、失败码和审计引用。若工具尚未返回反馈，则从已经通过
+    参数治理的 ToolPlan 中提取同一组低敏字段，让只读监控和预检查仍可定位既有任务。
+    """
+
+    facts: list[dict[str, Any]] = []
+    for tool in plan.tool_plans:
+        locator_values = _specialist_locator_values(tool.arguments)
+        if not locator_values:
+            continue
+        facts.append({
+            "toolName": tool.tool_name,
+            "source": "GOVERNED_TOOL_PLAN",
+            **locator_values,
+        })
+
+    for item in tuple(getattr(control_plane_feedback, "feedback_items", ()) or ()):
+        result = getattr(item, "result", {})
+        locator_values = _specialist_locator_values(result)
+        status = getattr(getattr(item, "status", None), "value", None)
+        fact = {
+            "toolName": str(getattr(item, "tool_name", "") or ""),
+            "status": str(status or ""),
+            "auditId": getattr(item, "audit_id", None),
+            "runId": getattr(item, "run_id", None),
+            "outputRef": getattr(item, "output_ref", None),
+            "errorCode": getattr(item, "error_code", None),
+            "source": "JAVA_CONTROL_PLANE_FEEDBACK",
+            **locator_values,
+        }
+        facts.append({key: value for key, value in fact.items() if value not in (None, "", (), [])})
+    return tuple(facts[-30:])
+
+
+def _specialist_locator_values(value: Any, *, depth: int = 0) -> dict[str, Any]:
+    """在有限深度内查找任务定位字段，拒绝把未知嵌套对象带入 handoff。"""
+
+    if not isinstance(value, Mapping) or depth > 3:
+        return {}
+    allowed_names = {
+        "taskId",
+        "executionId",
+        "taskKind",
+        "syncMode",
+        "status",
+        "precheckStatus",
+        "failureCode",
+        "failureReference",
+    }
+    result = {
+        str(key): item
+        for key, item in value.items()
+        if str(key) in allowed_names and _is_low_sensitive_scalar_or_sequence(item)
+    }
+    for item in value.values():
+        if not isinstance(item, Mapping):
+            continue
+        for key, nested_value in _specialist_locator_values(item, depth=depth + 1).items():
+            result.setdefault(key, nested_value)
+    return result
+
+
+def _is_low_sensitive_scalar_or_sequence(value: Any) -> bool:
+    """限制专业 handoff 的直接字段类型，拒绝任意嵌套正文。"""
+
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return True
+    return isinstance(value, (tuple, list)) and len(value) <= 20 and all(
+        isinstance(item, (str, int, float, bool)) or item is None for item in value
+    )
+
+
+def _specialist_sync_request(value: Any) -> dict[str, Any]:
+    """重建 DATA_SYNC_AGENT 可消费的瞬时任务配置，拒绝任意未知字段穿透。
+
+    该函数解决的是“必要业务正文”和“敏感连接凭据”必须分开的边界问题：WHERE、只读 SQL、表名和字段
+    映射虽然不属于低敏诊断字段，但它们是用户明确交给同步 Agent 的任务内容；password、JDBC URL、Token
+    等连接秘密则永远不应由自然语言 Agent 接收。为避免未来新增前端字段时意外扩大暴露面，本函数采用
+    显式白名单和有界数组，而不是递归复制未知 JSON。
+
+    返回对象只存在于当前请求内存中。调用方不得把它写入专业 Agent 低敏事实表、日志或运行事件。
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+
+    scalar_names = {
+        "taskName",
+        "taskDescription",
+        "groupCode",
+        "groupName",
+        "sourceDatasourceId",
+        "targetDatasourceId",
+        "syncMode",
+        "writeStrategy",
+        "writeMode",
+        "scheduleConfig",
+        "customSqlText",
+        "customSqlConfirmed",
+        "targetTableResolution",
+        "mappingDefaultsConfirmed",
+    }
+    result = {
+        str(name): item
+        for name, item in value.items()
+        if str(name) in scalar_names and isinstance(item, (str, int, float, bool))
+    }
+
+    raw_mappings = value.get("objectMappings") or value.get("object_mappings")
+    if not isinstance(raw_mappings, (list, tuple)):
+        return result
+
+    mappings: list[dict[str, Any]] = []
+    mapping_names = {
+        "objectKey",
+        "sourceSchemaName",
+        "sourceObjectName",
+        "targetSchemaName",
+        "targetObjectName",
+        "whereCondition",
+    }
+    field_names = {
+        "sourceField",
+        "sourceType",
+        "targetField",
+        "targetType",
+        "nullable",
+        "primaryKey",
+        "syncEnabled",
+        "typeCompatible",
+        "transform",
+    }
+    # 一个交互式任务最多传 500 条对象映射、每个对象最多 2,000 条字段映射。超出部分由确定性
+    # 参数校验明确报错或要求批量导入，避免单次 Agent turn 被异常 JSON 占满内存。
+    for raw_mapping in raw_mappings[:500]:
+        if not isinstance(raw_mapping, Mapping):
+            continue
+        mapping = {
+            str(name): item
+            for name, item in raw_mapping.items()
+            if str(name) in mapping_names and isinstance(item, (str, int, float, bool))
+        }
+        raw_fields = raw_mapping.get("fieldMappings") or raw_mapping.get("field_mappings")
+        if isinstance(raw_fields, (list, tuple)):
+            mapping["fieldMappings"] = [
+                {
+                    str(name): item
+                    for name, item in raw_field.items()
+                    if str(name) in field_names and isinstance(item, (str, int, float, bool))
+                }
+                for raw_field in raw_fields[:2_000]
+                if isinstance(raw_field, Mapping)
+            ]
+        mappings.append(mapping)
+    result["objectMappings"] = mappings
+    return result
 
 
 def _attach_workspace_hints(plan: AgentPlan, workspace_context: AgentWorkspaceContext) -> AgentPlan:

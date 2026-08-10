@@ -4,6 +4,7 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -153,9 +154,23 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
         Long executionId = executionId(context, args, "diagnosisRef");
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("executionId", executionId);
-        putIfPresent(request, "errorSampleIds", args.get("errorSampleIds"));
-        request.put("quarantineAllRetryableInExecution",
-                booleanValue(args.get("quarantineAllRetryableInExecution"), false));
+        Object errorSampleIds = args.get("errorSampleIds");
+        putIfPresent(request, "errorSampleIds", errorSampleIds);
+
+        /*
+         * The preview endpoint deliberately requires exactly one selector: explicit sample IDs, or
+         * "all retryable samples in this execution". Recovery Agent output must not contain dirty-row
+         * values and often cannot safely name sample IDs, so an otherwise valid read-only preview would
+         * be rejected when both optional fields are absent. In that one bounded, side-effect-free case
+         * we select all retryable samples. Data-sync still caps the result at 500 rows and returns only a
+         * confirmation digest; the later apply action remains approval-required and binds the exact IDs
+         * from that preview. Explicit IDs always win and never silently expand to a broader selection.
+         */
+        boolean hasExplicitSampleIds = errorSampleIds instanceof List<?> items && !items.isEmpty();
+        boolean previewAllRetryable = hasExplicitSampleIds
+                ? booleanValue(args.get("quarantineAllRetryableInExecution"), false)
+                : true;
+        request.put("quarantineAllRetryableInExecution", previewAllRetryable);
         request.put("reason", "AGENT_DIRTY_RECORD_QUARANTINE_PREVIEW");
         Map<String, Object> data = postData(context, DATA_SYNC,
                 "/sync-tasks/{taskId}/errors/quarantine/preview", request,
@@ -310,7 +325,7 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
                                         String uri,
                                         String action,
                                         Object... variables) {
-        Map<String, Object> response = restClientBuilder.baseUrl(httpSupport.baseUrl(service)).build()
+        Map<String, Object> response = httpSupport.serviceClient(restClientBuilder, service)
                 .get().uri(uri, variables)
                 .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
                 .retrieve().body(new ParameterizedTypeReference<>() {
@@ -324,7 +339,7 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
                                          Object body,
                                          String action,
                                          Object... variables) {
-        Map<String, Object> response = restClientBuilder.baseUrl(httpSupport.baseUrl(service)).build()
+        Map<String, Object> response = httpSupport.serviceClient(restClientBuilder, service)
                 .post().uri(uri, variables).body(body)
                 .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
                 .retrieve().body(new ParameterizedTypeReference<>() {
@@ -337,9 +352,14 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
                                         String service,
                                         String uri,
                                         Object body) {
-        return restClientBuilder.baseUrl(httpSupport.baseUrl(service)).build()
+        return httpSupport.serviceClient(restClientBuilder, service)
                 .post().uri(uri)
-                .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> {
+                    httpSupport.applyUserDelegationHeaders(headers, context);
+                    httpSupport.applyPythonRuntimeInternalServiceToken(headers);
+                })
                 .body(body)
                 .retrieve().body(new ParameterizedTypeReference<>() {
                 });

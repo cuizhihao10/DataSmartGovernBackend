@@ -77,6 +77,14 @@ spring:
           filters:
             # Python FastAPI 内部路由是 /agent/events/ws，外部网关路径仍归入 /api/agent/** 产品入口。
             - RewritePath=/api/agent/events/ws, /agent/events/ws
+        - id: python-ai-runtime-events-http
+          # REST replay/control 与 WebSocket 必须复用 Python Runtime 同一套事件状态机。
+          # 精确路由放在 Java agent-runtime 通配路由之前，避免前端断线补偿误落到 Java 控制面。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
+          predicates:
+            - Path=/api/agent/events/replay,/api/agent/events/control
+          filters:
+            - RewritePath=/api/agent/events/(?<segment>.*), /agent/events/$\{segment}
         - id: python-ai-runtime-agent-plans-cancel
           # 停止模型推理必须进入持有进程内取消令牌的 Python Runtime，不能落到 Java agent-runtime。
           # 该入口只停止当前规划和后续推理，不撤销已经提交的数据同步任务。
@@ -114,6 +122,14 @@ spring:
             - Path=/api/agent/rag/query,/api/agent/rag/diagnostics
           filters:
             - RewritePath=/api/agent/rag/(?<segment>.*), /agent/rag/$\{segment}
+        - id: python-ai-runtime-langgraph-checkpoints
+          # 只把低敏 latest/events 查询暴露给产品 Gateway。pause/resume/fork 仍是内部运维控制动作，
+          # 不能绕过 Java 审批、双主体事实和 ToolPlan 执行闭环开放给浏览器。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
+          predicates:
+            - Path=/api/agent/langgraph/checkpoints/latest,/api/agent/langgraph/checkpoints/events
+          filters:
+            - RewritePath=/api/agent/langgraph/checkpoints/(?<segment>.*), /agent/langgraph/checkpoints/$\{segment}
         - id: python-ai-runtime-runtime-diagnostics
           # Python Runtime 低敏诊断与闭口检查入口。
           #
@@ -249,7 +265,6 @@ datasmart:
         target-paths:
           - /api/agent/plans
           - /api/agent/plans/stream
-          - /api/agent/plans/cancel
         # 当前租户套餐默认值。后续应由 permission-admin 或租户中心返回真实套餐事实。
         default-tenant-plan-code: ${DATASMART_GATEWAY_DEFAULT_TENANT_PLAN_CODE:STANDARD}
         # 当前 workspace 风险默认值。后续应由 workspace 风险评估、数据分类分级或人工标记返回真实值。
@@ -316,6 +331,12 @@ datasmart:
           - /api/agent/plans
           - /api/agent/plans/stream
           - /api/agent/plans/cancel
+          - /api/agent/rag/query
+          - /api/agent/langgraph/checkpoints/latest
+          - /api/agent/langgraph/checkpoints/events
+          - /api/agent/events/replay
+          - /api/agent/events/control
+          - /api/agent/events/ws
     authentication-center:
       # 网关认证中心门面开关。
       #
@@ -1249,6 +1270,20 @@ datasmart:
           method-actions:
             GET: SUBSCRIBE
 
+        - path-pattern: /api/agent/events/replay
+          resource-type: AI_RUNTIME
+          default-action: VIEW_EVENTS
+          description: Python Runtime 实时事件 REST 补偿回放入口；只返回当前授权范围内的低敏事件 envelope。
+          method-actions:
+            POST: VIEW_EVENTS
+
+        - path-pattern: /api/agent/events/control
+          resource-type: AI_RUNTIME
+          default-action: SUBSCRIBE
+          description: Python Runtime 实时事件 HTTP 控制入口，用于 subscribe、ack、heartbeat、reconnect 和 unsubscribe。
+          method-actions:
+            POST: SUBSCRIBE
+
         - path-pattern: /api/agent/plans
           resource-type: AI_RUNTIME
           default-action: PLAN
@@ -1301,6 +1336,20 @@ datasmart:
           description: Python Runtime RAG 管线诊断入口，用于确认检索、证据门禁、LangGraph checkpoint 和模型生成摘要是否闭合。
           method-actions:
             GET: DIAGNOSE
+
+        - path-pattern: /api/agent/langgraph/checkpoints/latest
+          resource-type: AI_RUNTIME
+          default-action: VIEW_CHECKPOINT
+          description: 按当前可信租户、项目与主体读取最新 LangGraph 低敏 checkpoint 摘要；Python Runtime 再执行对象范围校验。
+          method-actions:
+            GET: VIEW_CHECKPOINT
+
+        - path-pattern: /api/agent/langgraph/checkpoints/events
+          resource-type: AI_RUNTIME
+          default-action: VIEW_CHECKPOINT
+          description: 按当前可信租户、项目与主体读取 LangGraph 低敏事件流；不返回 state、prompt、工具参数或模型正文。
+          method-actions:
+            GET: VIEW_CHECKPOINT
 
         - path-pattern: /api/agent/capabilities/**
           resource-type: AI_RUNTIME

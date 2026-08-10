@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.permission.service.support;
 
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,6 +31,63 @@ import java.util.Optional;
 public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionApprovalFactStore {
 
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() { };
+    private static final String ATOMIC_UPSERT_SQL = """
+            INSERT INTO agent_tool_action_approval_fact AS current_fact (
+                approval_fact_id, tenant_id, application_id, project_id, user_id, actor_id, agent_id,
+                session_id, run_id, delegation_id, command_id, tool_code, policy_version, status, expires_at,
+                approved_by_actor_id, reason_codes, evidence_codes, create_time, update_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT (approval_fact_id) DO UPDATE SET
+                status = CASE
+                    WHEN UPPER(COALESCE(current_fact.status, '')) IN ('APPROVED', 'REJECTED')
+                         AND UPPER(COALESCE(EXCLUDED.status, 'PENDING')) = 'PENDING'
+                    THEN current_fact.status
+                    ELSE EXCLUDED.status
+                END,
+                expires_at = CASE
+                    WHEN UPPER(COALESCE(current_fact.status, '')) IN ('APPROVED', 'REJECTED')
+                         AND UPPER(COALESCE(EXCLUDED.status, 'PENDING')) = 'PENDING'
+                    THEN current_fact.expires_at
+                    ELSE EXCLUDED.expires_at
+                END,
+                approved_by_actor_id = CASE
+                    WHEN UPPER(COALESCE(current_fact.status, '')) IN ('APPROVED', 'REJECTED')
+                         AND UPPER(COALESCE(EXCLUDED.status, 'PENDING')) = 'PENDING'
+                    THEN current_fact.approved_by_actor_id
+                    ELSE EXCLUDED.approved_by_actor_id
+                END,
+                reason_codes = CASE
+                    WHEN UPPER(COALESCE(current_fact.status, '')) IN ('APPROVED', 'REJECTED')
+                         AND UPPER(COALESCE(EXCLUDED.status, 'PENDING')) = 'PENDING'
+                    THEN current_fact.reason_codes
+                    ELSE EXCLUDED.reason_codes
+                END,
+                evidence_codes = CASE
+                    WHEN UPPER(COALESCE(current_fact.status, '')) IN ('APPROVED', 'REJECTED')
+                         AND UPPER(COALESCE(EXCLUDED.status, 'PENDING')) = 'PENDING'
+                    THEN current_fact.evidence_codes
+                    ELSE EXCLUDED.evidence_codes
+                END,
+                update_time = CASE
+                    WHEN UPPER(COALESCE(current_fact.status, '')) IN ('APPROVED', 'REJECTED')
+                         AND UPPER(COALESCE(EXCLUDED.status, 'PENDING')) = 'PENDING'
+                    THEN current_fact.update_time
+                    ELSE CURRENT_TIMESTAMP
+                END
+            WHERE current_fact.tenant_id IS NOT DISTINCT FROM EXCLUDED.tenant_id
+              AND current_fact.application_id IS NOT DISTINCT FROM EXCLUDED.application_id
+              AND current_fact.project_id IS NOT DISTINCT FROM EXCLUDED.project_id
+              AND current_fact.user_id IS NOT DISTINCT FROM EXCLUDED.user_id
+              AND current_fact.actor_id IS NOT DISTINCT FROM EXCLUDED.actor_id
+              AND current_fact.agent_id IS NOT DISTINCT FROM EXCLUDED.agent_id
+              AND current_fact.session_id IS NOT DISTINCT FROM EXCLUDED.session_id
+              AND current_fact.run_id IS NOT DISTINCT FROM EXCLUDED.run_id
+              AND current_fact.delegation_id IS NOT DISTINCT FROM EXCLUDED.delegation_id
+              AND current_fact.command_id IS NOT DISTINCT FROM EXCLUDED.command_id
+              AND current_fact.tool_code IS NOT DISTINCT FROM EXCLUDED.tool_code
+              AND current_fact.policy_version IS NOT DISTINCT FROM EXCLUDED.policy_version
+            RETURNING *
+            """;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
@@ -43,23 +102,19 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
      */
     @Override
     public AgentToolActionApprovalFactRecord save(AgentToolActionApprovalFactRecord record) {
-        jdbcTemplate.update("""
-                        INSERT INTO agent_tool_action_approval_fact (
-                            approval_fact_id, tenant_id, project_id, actor_id, session_id, run_id, command_id,
-                            tool_code, policy_version, status, expires_at, approved_by_actor_id,
-                            reason_codes, evidence_codes, create_time, update_time
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT (approval_fact_id) DO UPDATE SET
-                            status=EXCLUDED.status, expires_at=EXCLUDED.expires_at,
-                            approved_by_actor_id=EXCLUDED.approved_by_actor_id,
-                            reason_codes=EXCLUDED.reason_codes, evidence_codes=EXCLUDED.evidence_codes,
-                            policy_version=EXCLUDED.policy_version, update_time=CURRENT_TIMESTAMP
-                        """,
-                record.approvalFactId(), record.tenantId(), record.projectId(), record.actorId(),
-                record.sessionId(), record.runId(), record.commandId(), record.toolCode(), record.policyVersion(),
-                record.status(), record.expiresAt(), record.approvedByActorId(), json(record.reasonCodes()),
-                json(record.evidenceCodes()), record.createdAt());
-        return findById(record.approvalFactId()).orElse(record);
+        List<AgentToolActionApprovalFactRecord> records = jdbcTemplate.query(
+                ATOMIC_UPSERT_SQL,
+                this::mapRecord,
+                record.approvalFactId(), record.tenantId(), record.applicationId(), record.projectId(),
+                record.userId(), record.actorId(), record.agentId(), record.sessionId(), record.runId(),
+                record.delegationId(), record.commandId(), record.toolCode(), record.policyVersion(), record.status(),
+                record.expiresAt(), record.approvedByActorId(), json(record.reasonCodes()), json(record.evidenceCodes()),
+                record.createdAt());
+        if (records.isEmpty()) {
+            throw new PlatformBusinessException(PlatformErrorCode.DUPLICATE_OPERATION,
+                    "approvalFactId 的双主体 scope 或 policyVersion 与已有事实不一致，拒绝覆盖");
+        }
+        return records.get(0);
     }
 
     /**
@@ -84,8 +139,9 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
     private AgentToolActionApprovalFactRecord mapRecord(ResultSet resultSet, int rowNum) throws SQLException {
         return new AgentToolActionApprovalFactRecord(
                 resultSet.getString("approval_fact_id"), resultSet.getObject("tenant_id", Long.class),
-                resultSet.getObject("project_id", Long.class), resultSet.getString("actor_id"),
-                resultSet.getString("session_id"), resultSet.getString("run_id"),
+                resultSet.getObject("application_id", Long.class), resultSet.getObject("project_id", Long.class),
+                resultSet.getString("user_id"), resultSet.getString("actor_id"), resultSet.getString("agent_id"),
+                resultSet.getString("session_id"), resultSet.getString("run_id"), resultSet.getString("delegation_id"),
                 resultSet.getString("command_id"), resultSet.getString("tool_code"),
                 resultSet.getString("policy_version"), resultSet.getString("status"),
                 resultSet.getTimestamp("expires_at") == null ? null : resultSet.getTimestamp("expires_at").toLocalDateTime(),

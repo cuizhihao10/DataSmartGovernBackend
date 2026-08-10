@@ -48,11 +48,13 @@ class AgentFollowUpToolPlanningResult:
     accepted_before_repeat_guard: int = 0
     rejected_count: int = 0
     repeated_count: int = 0
+    intake_issue_codes: tuple[str, ...] = ()
     state_guard_rejected_count: int = 0
     state_guard_issue_codes: tuple[str, ...] = ()
     state_guard_issue_messages: tuple[str, ...] = ()
     budget_issue_codes: tuple[str, ...] = ()
     repeated_fingerprints: tuple[str, ...] = ()
+    repeated_tool_names: tuple[str, ...] = ()
     resource_reference_count: int = 0
     platform_expanded_tool_names: tuple[str, ...] = ()
 
@@ -71,12 +73,19 @@ class AgentFollowUpToolPlanningResult:
             "acceptedCount": len(self.accepted_tool_plans),
             "rejectedCount": self.rejected_count,
             "repeatedCount": self.repeated_count,
+            # Only stable issue codes cross this low-sensitive boundary.  Raw model
+            # arguments and parser messages remain inside the runtime because they
+            # may contain SQL, object names or other user-authored content.
+            "intakeIssueCodes": self.intake_issue_codes,
             "stateGuardRejectedCount": self.state_guard_rejected_count,
             "stateGuardIssueCodes": self.state_guard_issue_codes,
             "stateGuardIssueMessages": self.state_guard_issue_messages,
             "acceptedToolNames": tuple(plan.tool_name for plan in self.accepted_tool_plans),
             "budgetIssueCodes": self.budget_issue_codes,
             "repeatedFingerprints": self.repeated_fingerprints,
+            # 工具名来自平台注册表，属于低敏治理元数据；参数仍只保留不可逆 fingerprint。
+            # 这样前端可以说明“哪个工具被去重”，而不会把 SQL、对象名或用户输入带出边界。
+            "repeatedToolNames": self.repeated_tool_names,
             "resourceReferenceCount": self.resource_reference_count,
             "platformExpandedToolCount": len(self.platform_expanded_tool_names),
             "platformExpandedToolNames": self.platform_expanded_tool_names,
@@ -280,7 +289,20 @@ class AgentFollowUpToolPlanner:
                 visible_tools=effective_visible_tools,
                 proposed_count=len(tool_calls),
                 rejected_count=len(tool_calls),
+                intake_issue_codes=("TOOL_ACTION_INTAKE_REPORT_MISSING",),
             )
+
+        # Preserve the *pre-state-guard* rejection reason before later governance
+        # layers append their own issues.  Previously a Specialist bridge could only
+        # say "schema/permission/state validation failed" even though the intake
+        # report already knew whether the tool was unknown, not exposed or malformed.
+        # Codes are deliberately retained without raw messages to keep the public
+        # diagnostic safe for multi-tenant logs and API responses.
+        intake_issue_codes = tuple(dict.fromkeys(
+            issue.code
+            for issue in report.issues
+            if issue.blocking
+        ))
 
         state_guarded_report, state_guard_rejected_count = self._apply_state_guards(
             report,
@@ -303,6 +325,7 @@ class AgentFollowUpToolPlanner:
         prior_fingerprints.update(self._inherited_fingerprints(plan))
         accepted: list[ToolPlan] = []
         repeated: list[str] = []
+        repeated_tool_names: list[str] = []
         current_fingerprints: set[str] = set()
         for item in guarded.guarded_report.accepted_tool_plans:
             fingerprint = self.fingerprint(item.tool_name, item.arguments)
@@ -311,6 +334,7 @@ class AgentFollowUpToolPlanner:
                 and (fingerprint in prior_fingerprints or fingerprint in current_fingerprints)
             ):
                 repeated.append(fingerprint)
+                repeated_tool_names.append(item.tool_name)
                 continue
             current_fingerprints.add(fingerprint)
             governance_hints = {
@@ -347,6 +371,7 @@ class AgentFollowUpToolPlanner:
             accepted_before_repeat_guard=len(guarded.guarded_report.accepted_tool_plans),
             rejected_count=len(guarded.guarded_report.rejected_candidates),
             repeated_count=len(repeated),
+            intake_issue_codes=intake_issue_codes,
             state_guard_rejected_count=state_guard_rejected_count,
             state_guard_issue_codes=tuple(dict.fromkeys(
                 issue.code for issue in state_guard_issues
@@ -356,6 +381,7 @@ class AgentFollowUpToolPlanner:
             )),
             budget_issue_codes=guarded.budget_issue_codes,
             repeated_fingerprints=tuple(repeated),
+            repeated_tool_names=tuple(dict.fromkeys(repeated_tool_names)),
             resource_reference_count=len(resource_ledger),
             platform_expanded_tool_names=platform_expanded_tool_names,
         )

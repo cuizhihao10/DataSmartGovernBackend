@@ -57,6 +57,7 @@ from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.api.lifecycle import register_lifecycle_handler
 from datasmart_ai_runtime.api.runtime_event_replay_sources import build_runtime_event_replay_sources
 from datasmart_ai_runtime.config import model_routes_from_env
+from datasmart_ai_runtime.domain.contracts import ProviderType, WorkloadType
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
 from datasmart_ai_runtime.services.agent_loop_control_policy import (
     AgentLoopControlPolicy,
@@ -86,14 +87,52 @@ from datasmart_ai_runtime.services.memory import (
     AgentMemoryMaterializationMetrics,
     LangGraphMemoryRetrievalMetrics,
     UserProfileMemoryService,
-    build_memory_embedding_provider,
-    memory_embedding_provider_settings_from_env,
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
     AgentMemoryMaterializationWorker,
     memory_materialization_worker_settings_from_env,
 )
 from datasmart_ai_runtime.services.multi_agent import MultiAgentExecutionSessionMetrics, MultiAgentTurnRunnerMetrics
+from datasmart_ai_runtime.services.multi_agent.specialist_coordinator import SpecialistAgentCoordinator
+from datasmart_ai_runtime.services.multi_agent.specialist_control_plane_adapters import (
+    ControlPlaneHttpClientSettings,
+    HttpFailureDiagnosticClient,
+    HttpPrecheckControlPlaneClient,
+    HttpTaskMonitoringClient,
+)
+from datasmart_ai_runtime.services.multi_agent.specialist_fact_client import (
+    JavaSpecialistTurnFactClient,
+    JavaSpecialistTurnFactClientSettings,
+)
+from datasmart_ai_runtime.services.multi_agent.specialist_registry import SpecialistAgentRegistry
+from datasmart_ai_runtime.services.multi_agent.specialist_toolplan_bridge import SpecialistToolPlanBridge
+from datasmart_ai_runtime.services.multi_agent.specialist_runtime_adapters import (
+    GovernedDatasourceDisambiguationModel,
+    GovernedMonitoringSummaryModel,
+    GovernedPrecheckExplanationModel,
+    GovernedRecoveryPlanningModel,
+    GovernedSpecialistJsonModel,
+    GovernedSyncPlanningModel,
+    HttpDatasourceDiscoveryTool,
+)
+from datasmart_ai_runtime.services.multi_agent.specialist_metadata_adapters import (
+    HttpSyncMetadataDiscoveryTool,
+)
+from datasmart_ai_runtime.services.multi_agent.specialists.data_sync_agent import DataSyncSpecialistAgent
+from datasmart_ai_runtime.services.multi_agent.specialists.datasource_agent import DatasourceSpecialistAgent
+from datasmart_ai_runtime.services.multi_agent.specialists.knowledge_agent import KnowledgeSpecialistAgent
+from datasmart_ai_runtime.services.multi_agent.specialists.monitor_agent import (
+    MONITOR_TOOL_CODE,
+    MonitorSpecialistAgent,
+)
+from datasmart_ai_runtime.services.multi_agent.specialists.precheck_agent import (
+    PRECHECK_TOOL_CODE,
+    PrecheckSpecialistAgent,
+)
+from datasmart_ai_runtime.services.multi_agent.specialists.recovery_agent import (
+    FAILURE_DIAGNOSTIC_TOOL_CODE,
+    RecoverySpecialistAgent,
+)
 from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
@@ -106,8 +145,10 @@ from datasmart_ai_runtime.services.model_gateway.model_provider import model_pro
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.platform_convergence import default_platform_convergence_diagnostics_service
 from datasmart_ai_runtime.services.rag import (
+    RAG_TOOL_CODE,
     RagCommandWorkerRunner,
     build_default_governance_rag_pipeline,
+    rag_embedding_provider_from_env,
     rag_answer_artifact_writer_from_env,
 )
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
@@ -189,13 +230,132 @@ def create_app() -> Any:
     # - RAG 负责企业知识、产品文档、规则说明和可引用证据。
     # 这里复用同一 provider 配置，是为了避免本地/生产各自维护两套 embedding endpoint；后续如果治理知识库
     # 需要独立模型，可以新增 DATASMART_AI_RAG_EMBEDDING_* 覆盖，而不改变 RagPipeline 契约。
-    rag_embedding_provider = build_memory_embedding_provider(memory_embedding_provider_settings_from_env())
+    rag_embedding_provider = rag_embedding_provider_from_env()
     rag_pipeline = build_default_governance_rag_pipeline(
         model_routes=model_route_registry,
         model_gateway=model_gateway,
         model_providers=model_provider_registry,
         embedding_provider=rag_embedding_provider,
     )
+    # 真实专业 Agent 使用同一个注册表，但每个角色只有在它依赖的基础设施实际可用时才装配：
+    # - KNOWLEDGE_AGENT 已有真实 RagPipeline，可始终注册；
+    # - DATASOURCE_AGENT 需要 datasource-management 只读服务地址，模型仅用于多候选消歧；
+    # - DATA_SYNC_AGENT 必须有真实模型路由，dry-run Provider 不能伪装成已完成同步规划。
+    # 这种按依赖 fail-closed 的启动方式让能力诊断与运行事实一致，避免前端显示“已上线”但实际使用占位结果。
+    specialist_agents: list[Any] = [KnowledgeSpecialistAgent(rag_pipeline)]
+    specialist_allowed_tools_by_role: dict[str, tuple[str, ...]] = {
+        "KNOWLEDGE_AGENT": (RAG_TOOL_CODE,),
+    }
+    specialist_json_model = GovernedSpecialistJsonModel(
+        model_routes=model_route_registry,
+        model_gateway=model_gateway,
+        model_providers=model_provider_registry,
+    )
+    reasoning_route = model_route_registry.route_for(WorkloadType.AGENT_REASONING)
+    real_specialist_model_available = reasoning_route.provider_type != ProviderType.DRY_RUN
+    # DATA_SYNC_AGENT 的元数据读取与 PRECHECK/RECOVERY/MONITOR 共享同一条 data-sync 控制面
+    # 连接边界。这样生产环境只需要维护一份 data-sync URL、超时和内部服务 token；配置类型
+    # 已经按优先级复用 DATASMART_DATA_SYNC_INTERNAL_SERVICE_TOKEN、
+    # DATASMART_DATA_SYNC_SERVICE_TOKEN 和现有的 DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN，
+    # 不再为元数据 Agent 增加另一套重复秘密。
+    data_sync_base_url = os.getenv("DATASMART_DATA_SYNC_BASE_URL")
+    control_plane_settings = (
+        ControlPlaneHttpClientSettings.from_env(base_url=data_sync_base_url)
+        if data_sync_base_url
+        else None
+    )
+    specialist_metadata_discovery_tool = None
+    datasource_management_base_url = os.getenv("DATASMART_DATASOURCE_MANAGEMENT_BASE_URL")
+    if datasource_management_base_url:
+        specialist_agents.append(
+            DatasourceSpecialistAgent(
+                HttpDatasourceDiscoveryTool(
+                    datasource_management_base_url,
+                    service_token=os.getenv("DATASMART_DATASOURCE_MANAGEMENT_INTERNAL_SERVICE_TOKEN"),
+                ),
+                # 没有真实模型时仍可完成唯一候选解析；多候选必须停下来让用户选择，不能让 dry-run
+                # 占位文本参与判别或被误标为真实模型决策。
+                GovernedDatasourceDisambiguationModel(specialist_json_model)
+                if real_specialist_model_available
+                else None,
+            )
+        )
+        specialist_allowed_tools_by_role["DATASOURCE_AGENT"] = ("datasource.discovery.read",)
+
+    if real_specialist_model_available:
+        # 只有真实模型路由可用时才注册 DATA_SYNC_AGENT；但一旦注册，必须同时注入真实的
+        # 只读元数据工具。预加载元数据的离线单测仍可直接实例化领域类，而生产 app 不会
+        # 把“没有工具”伪装成“已经完成元数据校验”。
+        if control_plane_settings is not None:
+            specialist_metadata_discovery_tool = HttpSyncMetadataDiscoveryTool(
+                settings=control_plane_settings
+            )
+        specialist_agents.append(
+            DataSyncSpecialistAgent(
+                GovernedSyncPlanningModel(specialist_json_model),
+                metadata_discovery_tool=specialist_metadata_discovery_tool,
+            )
+        )
+        specialist_allowed_tools_by_role["DATA_SYNC_AGENT"] = (
+            "datasource.source.metadata.read",
+            "datasource.target.metadata.read",
+            "sync.cdc.readiness.check",
+        )
+
+    if data_sync_base_url:
+        # PRECHECK/RECOVERY/MONITOR 共享 data-sync 连接边界，但每个客户端仍有独立稳定 agentId。
+        # 三个接口全部是确定性事实读取：预检查不会保存任务，恢复客户端不会执行修复，监控也没有
+        # retry/stop/replay 方法。真正的副作用仍须进入 Java ToolPlan、审批、outbox 和 worker receipt。
+        # ``control_plane_settings`` 已在上方创建并注入 DATA_SYNC_AGENT，所有专业角色共用同一
+        # 个不可变配置快照，避免某个角色悄悄读取另一套 token 或超时策略。
+        assert control_plane_settings is not None
+        monitor_model = (
+            GovernedMonitoringSummaryModel(specialist_json_model)
+            if real_specialist_model_available
+            else None
+        )
+        specialist_agents.append(
+            MonitorSpecialistAgent(
+                HttpTaskMonitoringClient(settings=control_plane_settings),
+                monitor_model,
+            )
+        )
+        specialist_allowed_tools_by_role["MONITOR_AGENT"] = (MONITOR_TOOL_CODE,)
+
+        if real_specialist_model_available:
+            specialist_agents.extend(
+                (
+                    PrecheckSpecialistAgent(
+                        HttpPrecheckControlPlaneClient(settings=control_plane_settings),
+                        GovernedPrecheckExplanationModel(specialist_json_model),
+                    ),
+                    RecoverySpecialistAgent(
+                        HttpFailureDiagnosticClient(settings=control_plane_settings),
+                        GovernedRecoveryPlanningModel(specialist_json_model),
+                    ),
+                )
+            )
+            specialist_allowed_tools_by_role["PRECHECK_AGENT"] = (PRECHECK_TOOL_CODE,)
+            # Python Recovery 只获得诊断读取能力。模型生成的高风险修复建议必须回到主 Agent，
+            # 再由 Java 控制面创建审批绑定和受控 ToolPlan，不能在 Python 中直连数据库执行。
+            specialist_allowed_tools_by_role["RECOVERY_AGENT"] = (FAILURE_DIAGNOSTIC_TOOL_CODE,)
+
+    specialist_agent_registry = SpecialistAgentRegistry(tuple(specialist_agents))
+    specialist_turn_fact_client = JavaSpecialistTurnFactClient(
+        JavaSpecialistTurnFactClientSettings.from_env()
+    )
+    specialist_agent_coordinator = SpecialistAgentCoordinator(
+        specialist_agent_registry,
+        result_sink=specialist_turn_fact_client,
+    )
+    # 将生产装配事实暴露在 FastAPI state，供启动诊断和集成测试读取；这里没有 prompt、工具参数、
+    # 模型输出或服务 token，不能被当作业务执行入口。
+    app.state.specialist_agent_registry = specialist_agent_registry
+    app.state.specialist_agent_coordinator = specialist_agent_coordinator
+    app.state.specialist_allowed_tools_by_role = dict(specialist_allowed_tools_by_role)
+    # 仅暴露装配对象本身供启动诊断和 bootstrap 测试确认，不返回配置 token、请求正文或元数据。
+    # 业务请求仍必须经过 SpecialistAgentCoordinator 的 delegation 和项目范围校验。
+    app.state.specialist_metadata_discovery_tool = specialist_metadata_discovery_tool
     # RAG command worker 是 Java command outbox -> Python Runtime 的内部消费入口：
     # - 普通 `/agent/rag/query` 仍保留学习/调试友好的 answer/citations 返回；
     # - command worker 只返回低敏 receipt、javaReceiptPayload 与 LangGraph checkpoint locator；
@@ -300,7 +460,10 @@ def create_app() -> Any:
         user_profile_memory=user_profile_memory,
     )
     plan_ingestion_client = (
-        JavaAgentPlanIngestionClient(base_url=agent_runtime_base_url)
+        JavaAgentPlanIngestionClient(
+            base_url=agent_runtime_base_url,
+            service_token=os.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN"),
+        )
         if agent_runtime_base_url and _truthy_env("DATASMART_AGENT_RUNTIME_PLAN_INGESTION_ENABLED")
         else None
     )
@@ -355,6 +518,16 @@ def create_app() -> Any:
         else None
     )
     follow_up_tool_planner = AgentFollowUpToolPlanner(tool_planner=orchestrator.tool_planner)
+    # 专业 Agent 只返回不可信建议。桥接服务与主 Agent 共用同一份工具注册表和
+    # follow-up planner，确保 DATA_SYNC_AGENT 不能绕过主 Agent 的可见性、schema、
+    # 预算、重复和真实元数据门禁。RECOVERY_AGENT 在 Python 内只能诊断和提出建议；桥接层会把
+    # 明确白名单内的恢复动作转换为 Java ToolPlan，并继续经过审批、outbox、worker receipt 与
+    # PRECHECK/MONITOR 复核，绝不把模型建议直接当作数据库或同步执行命令。
+    specialist_toolplan_bridge = SpecialistToolPlanBridge(
+        tool_planner=orchestrator.tool_planner,
+        follow_up_tool_planner=follow_up_tool_planner,
+    )
+    app.state.specialist_toolplan_bridge = specialist_toolplan_bridge
     second_turn_orchestrator = (
         AgentSecondTurnOrchestrator(
             model_providers=model_provider_registry,
@@ -401,6 +574,11 @@ def create_app() -> Any:
             loop_control_evaluator=loop_control_evaluator,
             durable_loop_runner=durable_model_tool_loop_runner,
             tool_planner=orchestrator.tool_planner,
+            # 确认接口发生在首个浏览器请求结束之后，因此必须显式复用启动期装配的同一套
+            # Specialist 注册表、工具白名单和 Java durable fact sink。成功提交时不再调用模型复述结果，
+            # 但仍会用真实 taskId/executionId 运行 PRECHECK_AGENT 与 MONITOR_AGENT 并登记事实。
+            specialist_agent_coordinator=specialist_agent_coordinator,
+            specialist_allowed_tools_by_role=specialist_allowed_tools_by_role,
         )
         if durable_model_tool_loop_runner is not None
         and loop_control_evaluator is not None
@@ -721,8 +899,11 @@ def create_app() -> Any:
         langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
         multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
         multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
-        langgraph_checkpointer_service=langgraph_checkpointer_service,
-        tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
+         langgraph_checkpointer_service=langgraph_checkpointer_service,
+         specialist_agent_coordinator=specialist_agent_coordinator,
+         specialist_allowed_tools_by_role=specialist_allowed_tools_by_role,
+         specialist_toolplan_bridge=specialist_toolplan_bridge,
+         tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
         request_validation_error_factory=lambda status_code, detail: HTTPException(
@@ -760,6 +941,13 @@ def create_app() -> Any:
         app,
         rag_pipeline=rag_pipeline,
         langgraph_checkpointer_service=langgraph_checkpointer_service,
+        request_type=Request,
+        gateway_signature_nonce_store=gateway_signature_nonce_store,
+        gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
+        request_validation_error_factory=lambda status_code, detail: HTTPException(
+            status_code=status_code,
+            detail=detail,
+        ),
     )
     register_rag_command_worker_routes(
         app,
@@ -774,6 +962,17 @@ def create_app() -> Any:
         app,
         checkpointer_service=langgraph_checkpointer_service,
         error_factory=lambda status_code, detail: HTTPException(status_code=status_code, detail=detail),
+        request_type=Request,
+        gateway_signature_nonce_store=gateway_signature_nonce_store,
+        gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
+        access_error_factory=lambda status_code, detail: HTTPException(
+            status_code=status_code,
+            detail={
+                "code": "LANGGRAPH_CHECKPOINT_FORBIDDEN",
+                "message": "当前主体无权访问该 LangGraph checkpoint。",
+                "reason": detail,
+            },
+        ),
     )
     register_mcp_durable_worker_routes(
         app,

@@ -49,6 +49,9 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback impo
     ToolExecutionFeedbackStatus,
 )
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
+from datasmart_ai_runtime.services.agent_execution.post_resource_specialist_verification import (
+    run_post_bridge_verification_wave,
+)
 
 
 POST_CONFIRM_CONTINUATION_SCHEMA_VERSION = "datasmart.post-confirm-continuation.v1"
@@ -61,14 +64,29 @@ class AgentPostConfirmContinuationResult:
     request_id: str
     session_id: str
     source_run_id: str
-    model_turn: Any
+    model_turn: Any | None
     durable_loop: Any | None
     repair_plan: DuplicateTaskNameRecoveryPlan | None = None
+    specialist_verification: Any | None = None
+    post_bridge_verification: Mapping[str, Any] | None = None
 
     def to_summary(self) -> dict[str, Any]:
+        """Return the browser-safe continuation and specialist verification view.
+
+        A successful sync submission intentionally has no second model turn: the
+        user goal is already at the asynchronous worker boundary, while the
+        deterministic PRECHECK/MONITOR wave still runs and persists its own
+        facts.  Failed or incomplete batches retain the model/tool continuation.
+        """
+
         latest_plan = self.durable_loop.latest_plan if self.durable_loop is not None else None
         next_run_id = _plan_hint(latest_plan, "agentRuntimeRunId")
-        stopped_reason = (
+        submission_completed = (
+            self.model_turn is None
+            and self.post_bridge_verification is not None
+            and str(self.post_bridge_verification.get("status") or "") == "EXECUTED"
+        )
+        stopped_reason = "TASK_SUBMITTED_OR_SCHEDULED" if submission_completed else (
             self.durable_loop.stopped_reason
             if self.durable_loop is not None
             else "MODEL_COMPLETED_WITHOUT_MORE_TOOLS"
@@ -79,22 +97,40 @@ class AgentPostConfirmContinuationResult:
         }
         return {
             "schemaVersion": POST_CONFIRM_CONTINUATION_SCHEMA_VERSION,
-            "status": "WAITING_CONFIRMATION" if requires_confirmation else "CONTINUED",
-            "continued": True,
+            "status": (
+                "BUSINESS_GOAL_REACHED"
+                if submission_completed
+                else "WAITING_CONFIRMATION"
+                if requires_confirmation
+                else "CONTINUED"
+            ),
+            "continued": not submission_completed,
             "requestId": self.request_id,
             "sessionId": self.session_id,
             "sourceRunId": self.source_run_id,
             "nextRunId": next_run_id,
             "requiresConfirmation": requires_confirmation,
             "stoppedReason": stopped_reason,
-            "assistantReply": self.model_turn.summary,
-            "modelSecondTurn": self.model_turn.to_summary(),
+            "assistantReply": (
+                "同步任务已经创建并提交执行；提交后预检查与运行监控已基于真实任务和执行记录完成复核。"
+                if submission_completed
+                else self.model_turn.summary
+                if self.model_turn is not None
+                else "已完成 Java 工具结果复核。"
+            ),
+            "modelSecondTurn": self.model_turn.to_summary() if self.model_turn is not None else None,
             "durableLoop": self.durable_loop.to_summary() if self.durable_loop is not None else None,
             "repairProposal": (
                 self.repair_plan.proposal.to_summary()
                 if self.repair_plan is not None
                 else None
             ),
+            "specialistVerificationExecution": (
+                self.specialist_verification.to_summary()
+                if self.specialist_verification is not None
+                else None
+            ),
+            "postBridgeVerification": dict(self.post_bridge_verification or {}),
             "payloadPolicy": "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
         }
 
@@ -111,7 +147,17 @@ class AgentPostConfirmContinuationCoordinator:
         durable_loop_runner: AgentDurableModelToolLoopRunner,
         tool_planner: ToolPlanner | None = None,
         intent_analyzer: RuleBasedIntentAnalyzer | None = None,
+        specialist_agent_coordinator: Any | None = None,
+        specialist_allowed_tools_by_role: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
+        """Build the same-session continuation and optional post-submit verifier.
+
+        The specialist dependencies are optional for source-level unit tests and
+        deployments that have not enabled the six-Agent roster.  Production
+        Compose injects both objects; when absent, successful submissions remain
+        visible but are marked as having no post-bridge verification evidence.
+        """
+
         self._model_routes = model_routes
         self._second_turn_orchestrator = second_turn_orchestrator
         self._loop_control_evaluator = loop_control_evaluator
@@ -122,6 +168,10 @@ class AgentPostConfirmContinuationCoordinator:
             else None
         )
         self._intent_analyzer = intent_analyzer or RuleBasedIntentAnalyzer()
+        self._specialist_agent_coordinator = specialist_agent_coordinator
+        self._specialist_allowed_tools_by_role = dict(
+            specialist_allowed_tools_by_role or {}
+        )
 
     def continue_after_confirmed_tools(
         self,
@@ -132,8 +182,10 @@ class AgentPostConfirmContinuationCoordinator:
         session_id = _required_text(payload, "sessionId")
         source_run_id = _required_text(payload, "runId")
         tenant_id = _required_text(payload, "tenantId")
+        application_id = _required_positive_identifier(payload, "applicationId")
         project_id = _required_text(payload, "projectId")
         actor_id = _required_text(payload, "actorId")
+        parent_delegation_id = _required_text(payload, "delegationId")
         objective = _required_text(payload, "objective")
         workspace_key = _text(payload.get("workspaceKey")) or f"tenant:{tenant_id}:project:{project_id}"
         request_id = _text(payload.get("traceId")) or _continuation_request_id(session_id, source_run_id)
@@ -149,6 +201,28 @@ class AgentPostConfirmContinuationCoordinator:
                 "traceId": request_id,
                 "workspaceKey": workspace_key,
                 "postConfirmContinuation": True,
+                # This endpoint accepts only the authenticated Java service account.
+                # Java received applicationId from Gateway and checked the initiating
+                # session's tenant/project/actor ownership. Rebuild the minimal trusted
+                # envelope so durable PRECHECK/MONITOR facts retain all three isolation
+                # layers. User variables and model output are never identity sources.
+                "trustedControlPlane": {
+                    "tenantId": tenant_id,
+                    "applicationId": application_id,
+                    "projectId": project_id,
+                    "actorId": actor_id,
+                    # This is the already-authorized Java session delegation.  SpecialistAgentCoordinator
+                    # never reuses it directly: it becomes an input to a deterministic per-turn child
+                    # delegation that Java can independently recompute before accepting completion evidence.
+                    "delegationId": parent_delegation_id,
+                    "requestContext": {
+                        "tenantId": tenant_id,
+                        "applicationId": application_id,
+                        "projectId": project_id,
+                        "actorId": actor_id,
+                        "delegationId": parent_delegation_id,
+                    },
+                },
                 # 用户已经通过审批事实表达决定；后续模型续跑只记录审批来源，不重复写原始 objective。
                 "interactionOrigin": "APPROVAL_DECISION",
             },
@@ -201,6 +275,45 @@ class AgentPostConfirmContinuationCoordinator:
             ),),
             intent_analysis=intent,
         )
+        specialist_verification = None
+        post_bridge_verification: Mapping[str, Any] | None = None
+        if self._specialist_agent_coordinator is not None:
+            specialist_verification, post_bridge_verification = (
+                run_post_bridge_verification_wave(
+                    request=request,
+                    plan=plan,
+                    control_plane_feedback=snapshot,
+                    previous_resource_fingerprint=None,
+                    specialist_agent_coordinator=self._specialist_agent_coordinator,
+                    specialist_allowed_tools_by_role=self._specialist_allowed_tools_by_role,
+                    # Terminal Java tool audits and their output references are
+                    # already durable before Java invokes this internal endpoint.
+                    checkpoint_recorded=True,
+                    event_sink=None,
+                    base_context=_post_confirm_specialist_context(snapshot),
+                    execution_session={
+                        "sessionId": session_id,
+                        "runId": source_run_id,
+                        "workItems": (),
+                    },
+                )
+            )
+
+        # A successful immediate run (or a published scheduled/streaming job)
+        # has already reached the product completion boundary.  Do not spend a
+        # second model call merely to restate success; return the deterministic
+        # specialist review and let MONITOR continue asynchronously.
+        if _submission_boundary_reached(tool_plans, feedback_items):
+            return AgentPostConfirmContinuationResult(
+                request_id=request_id,
+                session_id=session_id,
+                source_run_id=source_run_id,
+                model_turn=None,
+                durable_loop=None,
+                repair_plan=repair_plan,
+                specialist_verification=specialist_verification,
+                post_bridge_verification=post_bridge_verification,
+            )
         decision = self._loop_control_evaluator.evaluate(
             snapshot,
             AgentLoopControlState(
@@ -246,6 +359,8 @@ class AgentPostConfirmContinuationCoordinator:
             model_turn=model_turn,
             durable_loop=durable_loop,
             repair_plan=repair_plan,
+            specialist_verification=specialist_verification,
+            post_bridge_verification=post_bridge_verification,
         )
 
     @staticmethod
@@ -356,6 +471,63 @@ def _feedback_snapshot(
     )
 
 
+def _submission_boundary_reached(
+    tool_plans: tuple[ToolPlan, ...],
+    feedback_items: tuple[AgentControlPlaneFeedbackItem, ...],
+) -> bool:
+    """Decide whether a confirmed sync request already reached its hand-off point.
+
+    The decision uses terminal Java feedback, never model prose.  Immediate
+    full/incremental/SQL jobs complete the Agent creation goal when
+    ``sync.task.run`` succeeds.  Scheduled and streaming jobs have no finite
+    completion wait, so a successful publish is enough when the reviewed sync
+    mode explicitly belongs to that family.
+    """
+
+    if not feedback_items or any(
+        item.status is not ToolExecutionFeedbackStatus.SUCCEEDED
+        for item in feedback_items
+    ):
+        return False
+    successful_tools = {item.tool_name for item in feedback_items}
+    if "sync.task.run" in successful_tools:
+        return True
+    if "sync.task.publish" not in successful_tools:
+        return False
+    scheduled_or_streaming_modes = {
+        "SCHEDULED_FULL",
+        "SCHEDULED_BATCH",
+        "CDC_STREAMING",
+        "REAL_TIME",
+    }
+    return any(
+        plan.tool_name == "sync.task.publish"
+        and str(plan.arguments.get("syncMode") or "").strip().upper()
+        in scheduled_or_streaming_modes
+        for plan in tool_plans
+    )
+
+
+def _post_confirm_specialist_context(
+    snapshot: AgentControlPlaneFeedbackSnapshot,
+) -> dict[str, Any]:
+    """Build the transient hand-off marker for post-submit specialists.
+
+    Task and execution identifiers are deliberately not copied here.  The
+    shared post-bridge verifier extracts them only from successful Java tool
+    results with a valid ``agent-runtime://`` output reference and injects the
+    trusted locators afterwards.  This helper merely tells PRECHECK/MONITOR why
+    this separate wave exists and keeps prompts, SQL and tool arguments out of
+    durable specialist context.
+    """
+
+    return {
+        "postConfirmContinuation": True,
+        "terminalToolResultCount": len(snapshot.feedback_items),
+        "payloadPolicy": "LOW_SENSITIVE_POST_CONFIRM_SPECIALIST_CONTEXT_ONLY",
+    }
+
+
 def _terminal_feedback_status(state: str) -> ToolExecutionFeedbackStatus | None:
     """Map only terminal Java audit states into model tool-result feedback."""
 
@@ -387,6 +559,24 @@ def _required_text(payload: Mapping[str, Any], name: str) -> str:
     if value is None:
         raise ValueError(f"{name} is required.")
     return value
+
+
+def _required_positive_identifier(payload: Mapping[str, Any], name: str) -> str:
+    """Read one positive decimal scope ID from the trusted Java payload.
+
+    Post-confirm Specialist facts are durable audit records, so a missing or
+    malformed application boundary must fail before PRECHECK/MONITOR starts.
+    Returning the canonical decimal string keeps Java ``Long`` and JSON string
+    representations equivalent without accepting booleans, signs or decimals.
+    """
+
+    value = payload.get(name)
+    if isinstance(value, bool):
+        raise ValueError(f"Post-confirm continuation requires positive {name}.")
+    normalized = str(value or "").strip()
+    if not normalized.isdecimal() or int(normalized) <= 0:
+        raise ValueError(f"Post-confirm continuation requires positive {name}.")
+    return str(int(normalized))
 
 
 def _text(value: Any) -> str | None:

@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -23,6 +24,83 @@ from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteR
 
 
 class PostConfirmContinuationTest(unittest.TestCase):
+    def test_successful_submission_skips_model_but_runs_post_resource_specialists(self) -> None:
+        """A submitted job needs deterministic review, not a costly success paraphrase."""
+
+        specialist_coordinator = _RecordingSpecialistCoordinator()
+        second_turn = _FailIfCalledSecondTurn()
+        coordinator = AgentPostConfirmContinuationCoordinator(
+            model_routes=_routes(),
+            second_turn_orchestrator=second_turn,
+            loop_control_evaluator=_AllowLoop(),
+            durable_loop_runner=_DurableRunner(waiting_confirmation=False),
+            specialist_agent_coordinator=specialist_coordinator,
+            specialist_allowed_tools_by_role={
+                "PRECHECK_AGENT": ("sync.task.precheck",),
+                "MONITOR_AGENT": ("sync.execution.status",),
+            },
+        )
+
+        summary = coordinator.continue_after_confirmed_tools(
+            _submission_payload()
+        ).to_summary()
+
+        self.assertEqual("BUSINESS_GOAL_REACHED", summary["status"])
+        self.assertFalse(summary["continued"])
+        self.assertEqual("TASK_SUBMITTED_OR_SCHEDULED", summary["stoppedReason"])
+        self.assertIsNone(summary["modelSecondTurn"])
+        self.assertEqual("EXECUTED", summary["postBridgeVerification"]["status"])
+        self.assertEqual("77", summary["postBridgeVerification"]["taskId"])
+        self.assertEqual("1958", summary["postBridgeVerification"]["executionId"])
+        self.assertEqual(
+            ("PRECHECK_AGENT", "MONITOR_AGENT"),
+            tuple(summary["postBridgeVerification"]["executedRoles"]),
+        )
+        self.assertEqual(1, len(specialist_coordinator.calls))
+        specialist_context = specialist_coordinator.calls[0]["base_context"]
+        self.assertEqual("77", specialist_context["taskId"])
+        self.assertEqual("1958", specialist_context["executionId"])
+        self.assertTrue(specialist_context["postBridgeVerification"])
+        specialist_request = specialist_coordinator.calls[0]["request"]
+        self.assertEqual(
+            "10010",
+            specialist_request.variables["trustedControlPlane"]["applicationId"],
+        )
+        self.assertEqual(
+            "delegation-parent-session-1",
+            specialist_request.variables["trustedControlPlane"]["delegationId"],
+        )
+
+    def test_rejects_post_confirm_payload_without_application_scope(self) -> None:
+        """Post-confirm facts must never fall back to tenant/project-only isolation."""
+
+        payload = _submission_payload()
+        payload.pop("applicationId")
+        coordinator = AgentPostConfirmContinuationCoordinator(
+            model_routes=_routes(),
+            second_turn_orchestrator=_FailIfCalledSecondTurn(),
+            loop_control_evaluator=_AllowLoop(),
+            durable_loop_runner=_DurableRunner(waiting_confirmation=False),
+        )
+
+        with self.assertRaisesRegex(ValueError, "positive applicationId"):
+            coordinator.continue_after_confirmed_tools(payload)
+
+    def test_rejects_post_confirm_payload_without_parent_delegation(self) -> None:
+        """Java continuation must preserve the session delegation used to derive Specialist children."""
+
+        payload = _submission_payload()
+        payload.pop("delegationId")
+        coordinator = AgentPostConfirmContinuationCoordinator(
+            model_routes=_routes(),
+            second_turn_orchestrator=_FailIfCalledSecondTurn(),
+            loop_control_evaluator=_AllowLoop(),
+            durable_loop_runner=_DurableRunner(waiting_confirmation=False),
+        )
+
+        with self.assertRaisesRegex(ValueError, "delegationId"):
+            coordinator.continue_after_confirmed_tools(payload)
+
     def test_preserves_all_confirmed_results_as_initial_evidence(self) -> None:
         second_turn = _SecondTurn()
         durable_runner = _DurableRunner(waiting_confirmation=True)
@@ -241,6 +319,48 @@ class _SecondTurn:
         )
 
 
+class _FailIfCalledSecondTurn:
+    """Guard proving the successful submission path does not invoke the model."""
+
+    def run(self, **kwargs):
+        del kwargs
+        raise AssertionError("a completed submission must not invoke a second model turn")
+
+
+class _RecordingSpecialistCoordinator:
+    """Record the trusted post-resource wave and return two low-sensitive facts."""
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        results = tuple(
+            SimpleNamespace(role=SimpleNamespace(value=role), to_summary=lambda: {})
+            for role in ("PRECHECK_AGENT", "MONITOR_AGENT")
+        )
+
+        class Batch:
+            status = "COMPLETED"
+            skipped_roles = {}
+            execution_waves = (("PRECHECK_AGENT", "MONITOR_AGENT"),)
+
+            def __init__(self, values):
+                self.results = values
+
+            def to_summary(self):
+                return {
+                    "status": self.status,
+                    "results": tuple(
+                        {"agentRole": item.role.value, "status": "COMPLETED"}
+                        for item in self.results
+                    ),
+                    "skippedRoles": {},
+                }
+
+        return Batch(results)
+
+
 class _DurableRunner:
     def __init__(self, *, waiting_confirmation: bool) -> None:
         self._waiting_confirmation = waiting_confirmation
@@ -347,8 +467,10 @@ def _payload() -> dict:
 
     return {
         "tenantId": "10",
+        "applicationId": "10010",
         "projectId": "101",
         "actorId": "1001",
+        "delegationId": "delegation-parent-session-1",
         "sessionId": "session-1",
         "runId": "run-read",
         "objective": "创建 MySQL 到 PostgreSQL 的全量同步任务。",
@@ -356,6 +478,44 @@ def _payload() -> dict:
         "toolResults": [
             result("datasource.source.catalog.search", "source-catalog", {"items": [{"id": 27}]}),
             result("datasource.target.catalog.search", "target-catalog", {"items": [{"id": 28}]}),
+        ],
+    }
+
+
+def _submission_payload() -> dict:
+    """Build one complete Java lifecycle receipt with trusted resource IDs."""
+
+    def result(tool_code: str, audit_id: str, output: dict) -> dict:
+        return {
+            "audit": {
+                "auditId": audit_id,
+                "sessionId": "session-1",
+                "runId": "run-lifecycle",
+                "toolCode": tool_code,
+                "state": "SUCCEEDED",
+                "riskLevel": "HIGH",
+                "executionMode": "APPROVAL_REQUIRED",
+                "planArguments": {"syncMode": "FULL"},
+                "governanceHints": {"modelToolCallId": f"call-{audit_id}"},
+            },
+            "output": output,
+        }
+
+    return {
+        "tenantId": "10",
+        "applicationId": "10010",
+        "projectId": "101",
+        "actorId": "1001",
+        "delegationId": "delegation-parent-session-1",
+        "sessionId": "session-1",
+        "runId": "run-lifecycle",
+        "objective": "Create and submit one full synchronization task.",
+        "workspaceKey": "tenant:10:project:101",
+        "toolResults": [
+            result("sync.task.draft.save", "draft", {"taskId": 77}),
+            result("sync.task.precheck", "precheck", {"taskId": 77}),
+            result("sync.task.publish", "publish", {"taskId": 77}),
+            result("sync.task.run", "run", {"taskId": 77, "executionId": 1958}),
         ],
     }
 

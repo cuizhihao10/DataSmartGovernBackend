@@ -268,15 +268,45 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
             append_edge(edges, "DATASOURCE_AGENT", "DATA_SYNC_AGENT", "provides_context_to", "SYNC_NEEDS_SOURCE_METADATA")
         if {"DATA_QUALITY_AGENT", "DATA_SYNC_AGENT"}.issubset(roles):
             append_edge(edges, "DATA_QUALITY_AGENT", "DATA_SYNC_AGENT", "validates_before", "SYNC_SHOULD_CONSIDER_QUALITY_GATES")
+        # 新建任务尚无 Java taskId 时，PRECHECK 需要消费 DATA_SYNC_AGENT 的结构化任务配置；编辑或
+        # 重检既有任务的波次不会包含 DATA_SYNC_AGENT，因此仍可直接按 taskId 读取确定性控制面事实。
+        # 协作边与 execution_plan_rules.depends_on_roles 使用同一条件，避免可视图和真实调度顺序分叉。
+        if {"DATA_SYNC_AGENT", "PRECHECK_AGENT"}.issubset(roles):
+            append_edge(
+                edges,
+                "DATA_SYNC_AGENT",
+                "PRECHECK_AGENT",
+                "provides_configuration_to",
+                "PRECHECK_NEEDS_SYNC_PLAN",
+            )
+        if {"KNOWLEDGE_AGENT", "RECOVERY_AGENT"}.issubset(roles):
+            # 只有恢复场景明确需要案例证据时，调度器才会同时放入这两个角色；RAG 不会成为全局首步。
+            append_edge(
+                edges,
+                "KNOWLEDGE_AGENT",
+                "RECOVERY_AGENT",
+                "provides_evidence_to",
+                "RECOVERY_NEEDS_CASE_EVIDENCE",
+            )
+        if {"MONITOR_AGENT", "RECOVERY_AGENT"}.issubset(roles):
+            # A concrete failed execution is observed before a recovery proposal is generated.  The
+            # edge mirrors ``depends_on_roles`` so the UI graph and the actual coordinator cannot
+            # disagree about whether RECOVERY_AGENT consumed a trusted monitor dependency.
+            append_edge(
+                edges,
+                "MONITOR_AGENT",
+                "RECOVERY_AGENT",
+                "provides_runtime_facts_to",
+                "RECOVERY_NEEDS_MONITORING_FACTS",
+            )
+        # MONITOR_AGENT 是独立只读观察者，只需主 Agent 提供低敏定位和委派范围；它不等待任何可能
+        # 进入补参、审批或失败状态的领域 Agent。
         if "PERMISSION_AGENT" in roles:
             for role in sorted(roles - {"PERMISSION_AGENT"}):
                 append_edge(edges, role, "PERMISSION_AGENT", "guarded_by", "SIDE_EFFECT_BOUNDARY_GUARDED")
         if "MEMORY_AGENT" in roles:
             for role in sorted(roles - {"MEMORY_AGENT"}):
                 append_edge(edges, "MEMORY_AGENT", role, "supports_context", "MEMORY_CONTEXT_AVAILABLE_AS_SUMMARY")
-        if "KNOWLEDGE_AGENT" in roles:
-            for role in sorted(roles - {"MASTER_ORCHESTRATOR", "KNOWLEDGE_AGENT"}):
-                append_edge(edges, "KNOWLEDGE_AGENT", role, "supports_context", "RAG_EVIDENCE_AVAILABLE_AS_SUMMARY")
         if "OPS_AGENT" in roles:
             for role in sorted(roles - {"OPS_AGENT"}):
                 append_edge(edges, role, "OPS_AGENT", "observed_by", "RUNTIME_DEGRADATION_OBSERVED")
@@ -364,7 +394,11 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
         role = string_value(agent.get("role")) or "UNKNOWN"
         mode = string_value(agent.get("participationMode")) or "UNKNOWN"
         agent_status = string_value(agent.get("status")) or state.get("schedulingStatus") or "UNKNOWN"
-        handoff_required = bool(agent.get("requiresHandoff")) or bool(state.get("handoffRequired"))
+        # ``state.handoffRequired`` 是整个工具计划的副作用门禁，不能复制到
+        # 每个 Specialist。数据源、同步规划、预检查和监控仍然可以先完成
+        # 只读/草案工作，只有当前角色明确声明 requiresHandoff 时才等待
+        # 人工或 Java 控制面事实。
+        handoff_required = bool(agent.get("requiresHandoff"))
         status = work_item_status(state.get("schedulingStatus") or "UNKNOWN", agent_status, handoff_required)
         return MultiAgentExecutionWorkItem(
             agent_role=role,

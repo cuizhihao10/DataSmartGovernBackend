@@ -215,6 +215,287 @@ class PermissionDecisionSupportTest {
     }
 
     /**
+     * 普通用户查询专业 Agent session 事实时必须命中 AI_RUNTIME + VIEW，而不是通用 CREATE/EXECUTE。
+     *
+     * <p>这个测试模拟 Flyway V48 落库后的核心判定结果。数据范围仍然是 SELF，且项目成员快照会被
+     * 物化给 Gateway；agent-runtime 会继续用事实表中的 userId 做第二次对象归属过滤。</p>
+     */
+    @Test
+    void ordinaryUserShouldViewOwnSpecialistSessionFactsInsideSelfScope() {
+        PermissionDecisionRequest request = decisionRequest("ORDINARY_USER");
+        request.setHttpMethod("GET");
+        request.setRequestPath("/api/agent/specialist-turn-facts/sessions/session-1");
+        request.setAction("VIEW");
+        when(querySupport.listRoutePolicies(10L, "ORDINARY_USER"))
+                .thenReturn(List.of(specialistFactViewPolicy(
+                        "ORDINARY_USER",
+                        "/api/agent/specialist-turn-facts/sessions/*",
+                        978)));
+        when(querySupport.listDataScopePolicies(10L, "ORDINARY_USER", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope(
+                        "ORDINARY_USER",
+                        "AI_RUNTIME",
+                        "SELF",
+                        "actor_id = ${actorId} AND project_id IN ${actorProjectIds}")));
+        when(querySupport.listActorProjectRoles(10L, 1001L))
+                .thenReturn(List.of(new PlatformAuthorizedProjectRole(101L, "READER")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-specialist-session-view");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getMatchedRoutePolicyId()).isEqualTo(978L);
+        assertThat(result.getDataScopeLevel()).isEqualTo("SELF");
+        assertThat(result.getDataScopeExpression())
+                .isEqualTo("actor_id = ${actorId} AND project_id IN ${actorProjectIds}");
+        assertThat(result.getAuthorizedProjectIds()).containsExactly(101L);
+    }
+
+    /** run 查询与 session 查询必须使用同一 VIEW 语义，不能因为定位符不同退化成另一套范围。 */
+    @Test
+    void projectOwnerShouldViewOwnSpecialistRunFactsInsideSelfScope() {
+        PermissionDecisionRequest request = decisionRequest("PROJECT_OWNER");
+        request.setHttpMethod("GET");
+        request.setRequestPath("/api/agent/specialist-turn-facts/runs/run-1");
+        request.setAction("VIEW");
+        when(querySupport.listRoutePolicies(10L, "PROJECT_OWNER"))
+                .thenReturn(List.of(specialistFactViewPolicy(
+                        "PROJECT_OWNER",
+                        "/api/agent/specialist-turn-facts/runs/*",
+                        988)));
+        when(querySupport.listDataScopePolicies(10L, "PROJECT_OWNER", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope(
+                        "PROJECT_OWNER",
+                        "AI_RUNTIME",
+                        "SELF",
+                        "actor_id = ${actorId} AND project_id IN ${actorProjectIds}")));
+        when(querySupport.listActorProjectRoles(10L, 1001L))
+                .thenReturn(List.of(new PlatformAuthorizedProjectRole(101L, "OWNER")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-specialist-run-view");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getMatchedRoutePolicyId()).isEqualTo(988L);
+        assertThat(result.getDataScopeLevel()).isEqualTo("SELF");
+        assertThat(result.getAuthorizedProjectIds()).containsExactly(101L);
+    }
+
+    /**
+     * 普通用户即使把专业事实 POST 的请求动作伪装成 EXECUTE，也必须命中 V48 的显式 DENY。
+     *
+     * <p>这条用例和 agent-runtime 的 token 守卫互补：权限中心先拒绝人类主体，服务内部即使绕过
+     * Gateway 访问 Java Controller，也还要通过 source-service + internal token 才能登记。</p>
+     */
+    @Test
+    void ordinaryUserShouldNotRegisterSpecialistTurnFacts() {
+        PermissionDecisionRequest request = decisionRequest("ORDINARY_USER");
+        request.setRequestPath("/api/agent/specialist-turn-facts");
+        request.setAction("EXECUTE");
+        when(querySupport.listRoutePolicies(10L, "ORDINARY_USER"))
+                .thenReturn(List.of(specialistFactRegistrationPolicy(
+                        "ORDINARY_USER", "DENY", 1100,
+                        "/api/agent/specialist-turn-facts/**")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-specialist-register-deny");
+
+        assertThat(result.getAllowed()).isFalse();
+        assertThat(result.getRouteEffect()).isEqualTo("DENY");
+        assertThat(result.getReason()).contains("显式拒绝");
+    }
+
+    /**
+     * V48 的人类主体 DENY 必须压过未来可能新增的、更高优先级通用 Agent ALLOW。
+     *
+     * <p>权限系统的默认拒绝只能保护“没有规则”的今天，无法保护未来有人为了开放普通 Agent 功能新增
+     * {@code /api/agent/**} 的场景。这里同时放入优先级更高的通用允许和 V48 专用拒绝，固定
+     * deny-overrides 的 fail-closed 语义，防止普通用户伪造专业 Agent 低敏事实。</p>
+     */
+    @Test
+    void humanSpecialistFactDenyShouldOverrideGenericAgentAllow() {
+        PermissionDecisionRequest request = decisionRequest("ORDINARY_USER");
+        request.setRequestPath("/api/agent/specialist-turn-facts");
+        request.setAction("EXECUTE");
+        PermissionRoutePolicy genericAgentAllow = specialistFactRegistrationPolicy(
+                "ORDINARY_USER", "ALLOW", 1200, "/api/agent/**");
+        genericAgentAllow.setPolicyName("普通 Agent 通用执行入口");
+        PermissionRoutePolicy specialistDeny = specialistFactRegistrationPolicy(
+                "ORDINARY_USER", "DENY", 1100, "/api/agent/specialist-turn-facts/**");
+        when(querySupport.listRoutePolicies(10L, "ORDINARY_USER"))
+                .thenReturn(List.of(genericAgentAllow, specialistDeny));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-specialist-deny-priority");
+
+        assertThat(result.getAllowed()).isFalse();
+        assertThat(result.getRouteEffect()).isEqualTo("DENY");
+        assertThat(result.getMatchedRoutePolicyId()).isEqualTo(1100L);
+    }
+
+    /**
+     * 受信服务账号登记事实时使用独立 EXECUTE 动作，并继承已有 AI_RUNTIME 租户范围。
+     *
+     * <p>此处只验证权限中心策略，不把“命中 SERVICE_ACCOUNT”当作事实写入成功的充分条件；
+     * Controller 仍要求共享 token，事实本身仍要求完整 tenant/project/user 责任链。</p>
+     */
+    @Test
+    void trustedServiceAccountShouldExecuteSpecialistTurnFactRegistration() {
+        PermissionDecisionRequest request = decisionRequest("SERVICE_ACCOUNT");
+        request.setRequestPath("/api/agent/specialist-turn-facts");
+        request.setAction("EXECUTE");
+        when(querySupport.listRoutePolicies(10L, "SERVICE_ACCOUNT"))
+                .thenReturn(List.of(specialistFactRegistrationPolicy(
+                        "SERVICE_ACCOUNT", "ALLOW", 989,
+                        "/api/agent/specialist-turn-facts")));
+        when(querySupport.listDataScopePolicies(10L, "SERVICE_ACCOUNT", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope(
+                        "SERVICE_ACCOUNT",
+                        "AI_RUNTIME",
+                        "TENANT",
+                        "tenant_id = ${tenantId}")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-specialist-register-service");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getRouteEffect()).isEqualTo("ALLOW");
+        assertThat(result.getDataScopeLevel()).isEqualTo("TENANT");
+        assertThat(result.getReason()).contains("专业 Agent");
+    }
+
+    /**
+     * 租户管理员、审计员和运营人员目前没有“用户 Agent session/run 详情”专用 VIEW 策略，
+     * 因此访问该敏感事实入口应保持默认拒绝，而不是因为角色名字看起来较高就自动获得跨用户事实。
+     *
+     * <p>这些角色已有的 Agent 运行事件/诊断入口不受本迁移影响；如果未来要开放项目级或租户级事实审计，
+     * 应新增独立的 AUDIT/DIAGNOSE 路由和对应数据范围，不应复用普通用户 session/run 入口。</p>
+     */
+    @Test
+    void administrativeRolesWithoutDedicatedSpecialistFactViewShouldRemainDenied() {
+        for (String role : List.of("TENANT_ADMINISTRATOR", "AUDITOR", "OPERATOR")) {
+            PermissionDecisionRequest request = decisionRequest(role);
+            request.setHttpMethod("GET");
+            request.setRequestPath("/api/agent/specialist-turn-facts/runs/run-1");
+            request.setAction("VIEW");
+            when(querySupport.listRoutePolicies(10L, role)).thenReturn(List.of());
+
+            PermissionDecisionResult result = decisionSupport.evaluate(
+                    request, "trace-specialist-admin-deny-" + role);
+
+            assertThat(result.getAllowed()).as("role=%s", role).isFalse();
+            assertThat(result.getReason()).as("role=%s", role).contains("没有命中任何启用的路由策略");
+        }
+    }
+
+    /**
+     * 审计员和运营员已有的 Agent 运行事件入口不能因为 V48 的专业事实 metadata 而被误判为无权。
+     *
+     * <p>两条入口故意使用历史动作 VIEW_EVENTS/DIAGNOSE，而不是把它们改写为专业事实 VIEW；
+     * 这样既保持原有审计/运维语义，也避免通过旧入口扩大专业 turn 事实的对象范围。</p>
+     */
+    @Test
+    void existingAuditorAndOperatorAgentEventQueriesShouldRemainAllowed() {
+        PermissionRoutePolicy auditorPolicy = routePolicy("AUDITOR", "ALLOW", 113);
+        auditorPolicy.setHttpMethod("GET");
+        auditorPolicy.setPathPattern("/api/agent/runtime-events/**");
+        auditorPolicy.setAction("VIEW_EVENTS");
+        auditorPolicy.setPolicyName("审计员查看 Agent 运行事件");
+
+        PermissionDecisionRequest auditorRequest = decisionRequest("AUDITOR");
+        auditorRequest.setHttpMethod("GET");
+        auditorRequest.setRequestPath("/api/agent/runtime-events/run-1");
+        auditorRequest.setAction("VIEW_EVENTS");
+        when(querySupport.listRoutePolicies(10L, "AUDITOR")).thenReturn(List.of(auditorPolicy));
+
+        PermissionDecisionResult auditorResult = decisionSupport.evaluate(
+                auditorRequest, "trace-existing-auditor-agent-events");
+
+        assertThat(auditorResult.getAllowed()).isTrue();
+        assertThat(auditorResult.getMatchedRoutePolicyId()).isEqualTo(113L);
+
+        PermissionRoutePolicy operatorPolicy = routePolicy("OPERATOR", "ALLOW", 137);
+        operatorPolicy.setHttpMethod("GET");
+        operatorPolicy.setPathPattern("/api/agent/runtime-events/**");
+        operatorPolicy.setAction("DIAGNOSE");
+        operatorPolicy.setPolicyName("运营人员诊断 Agent 运行事件");
+
+        PermissionDecisionRequest operatorRequest = decisionRequest("OPERATOR");
+        operatorRequest.setHttpMethod("GET");
+        operatorRequest.setRequestPath("/api/agent/runtime-events/diagnostics");
+        operatorRequest.setAction("DIAGNOSE");
+        when(querySupport.listRoutePolicies(10L, "OPERATOR")).thenReturn(List.of(operatorPolicy));
+
+        PermissionDecisionResult operatorResult = decisionSupport.evaluate(
+                operatorRequest, "trace-existing-operator-agent-events");
+
+        assertThat(operatorResult.getAllowed()).isTrue();
+        assertThat(operatorResult.getMatchedRoutePolicyId()).isEqualTo(137L);
+    }
+
+    /**
+     * 平台管理员已有平台级 GET 兜底策略，新增专用 Gateway metadata 不应改变这条既有语义。
+     *
+     * <p>但因为没有显式 AI_RUNTIME 数据范围，这里只能得到“路由允许、范围未扩大”的结果；
+     * agent-runtime 收到空范围后会退回当前 actor SELF 查询，不能仅凭 PLATFORM_ADMINISTRATOR
+     * 角色直接读取其他项目或其他租户的专业事实。</p>
+     */
+    @Test
+    void platformAdministratorGenericAgentViewShouldRemainAllowedWithoutExpandingObjectScope() {
+        PermissionDecisionRequest request = decisionRequest("PLATFORM_ADMINISTRATOR");
+        request.setHttpMethod("GET");
+        request.setRequestPath("/api/agent/specialist-turn-facts/sessions/session-1");
+        request.setAction("VIEW");
+
+        PermissionRoutePolicy platformFallback = new PermissionRoutePolicy();
+        platformFallback.setId(1000L);
+        platformFallback.setTenantId(0L);
+        platformFallback.setPolicyName("平台管理员全平台权限");
+        platformFallback.setRoleCode("PLATFORM_ADMINISTRATOR");
+        platformFallback.setHttpMethod("ANY");
+        platformFallback.setPathPattern("/api/**");
+        platformFallback.setEffect("ALLOW");
+        platformFallback.setPriority(1000);
+        platformFallback.setEnabled(true);
+        when(querySupport.listRoutePolicies(10L, "PLATFORM_ADMINISTRATOR"))
+                .thenReturn(List.of(platformFallback));
+        when(querySupport.listDataScopePolicies(10L, "PLATFORM_ADMINISTRATOR", "AI_RUNTIME"))
+                .thenReturn(List.of());
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-specialist-platform-view");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getDataScopeLevel()).isNull();
+        assertThat(result.getAuthorizedProjectIds()).isEmpty();
+    }
+
+    /** 平台管理员原有 Agent runtime-events GET 兜底仍可命中，专用事实路由不会把通用查询误拒绝。 */
+    @Test
+    void platformAdministratorExistingGenericAgentQueryShouldRemainAllowed() {
+        PermissionDecisionRequest request = decisionRequest("PLATFORM_ADMINISTRATOR");
+        request.setHttpMethod("GET");
+        request.setRequestPath("/api/agent/runtime-events/run-1");
+        request.setAction("VIEW_EVENTS");
+
+        PermissionRoutePolicy platformFallback = new PermissionRoutePolicy();
+        platformFallback.setId(1000L);
+        platformFallback.setTenantId(0L);
+        platformFallback.setPolicyName("平台管理员全平台权限");
+        platformFallback.setRoleCode("PLATFORM_ADMINISTRATOR");
+        platformFallback.setHttpMethod("ANY");
+        platformFallback.setPathPattern("/api/**");
+        platformFallback.setEffect("ALLOW");
+        platformFallback.setPriority(1000);
+        platformFallback.setEnabled(true);
+        when(querySupport.listRoutePolicies(10L, "PLATFORM_ADMINISTRATOR"))
+                .thenReturn(List.of(platformFallback));
+        when(querySupport.listDataScopePolicies(10L, "PLATFORM_ADMINISTRATOR", "AI_RUNTIME"))
+                .thenReturn(List.of());
+
+        PermissionDecisionResult result = decisionSupport.evaluate(
+                request, "trace-platform-existing-agent-events");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getDataScopeLevel()).isNull();
+        assertThat(result.getAuthorizedProjectIds()).isEmpty();
+    }
+
+    /**
      * 验证 PROJECT 数据范围会返回项目 ID 与项目角色双重快照。
      *
      * <p>这条测试保护本轮权限体系收敛的核心语义：
@@ -305,6 +586,7 @@ class PermissionDecisionSupportTest {
         PermissionProject project = new PermissionProject();
         project.setProjectId(101L);
         project.setTenantId(20L);
+        project.setApplicationId(301L);
         project.setStatus("ACTIVE");
         when(projectMapper.selectById(101L)).thenReturn(project);
 
@@ -312,6 +594,7 @@ class PermissionDecisionSupportTest {
 
         assertThat(result.getAllowed()).isTrue();
         assertThat(result.getEffectiveTenantId()).isEqualTo(20L);
+        assertThat(result.getEffectiveApplicationId()).isEqualTo(301L);
     }
 
     @Test
@@ -359,6 +642,31 @@ class PermissionDecisionSupportTest {
         policy.setEffect(effect);
         policy.setPriority(priority);
         policy.setEnabled(true);
+        return policy;
+    }
+
+    /** 构造专业事实读取策略，统一固定 GET + AI_RUNTIME + VIEW 三个语义维度。 */
+    private PermissionRoutePolicy specialistFactViewPolicy(String roleCode, String pathPattern, int priority) {
+        PermissionRoutePolicy policy = routePolicy(roleCode, "ALLOW", priority);
+        policy.setPolicyName("查看专业 Agent turn 事实");
+        policy.setHttpMethod("GET");
+        policy.setPathPattern(pathPattern);
+        policy.setResourceType("AI_RUNTIME");
+        policy.setAction("VIEW");
+        return policy;
+    }
+
+    /** 构造专业事实登记策略，用于同时验证 SERVICE_ACCOUNT allow 和人类角色 deny。 */
+    private PermissionRoutePolicy specialistFactRegistrationPolicy(String roleCode,
+                                                                   String effect,
+                                                                   int priority,
+                                                                   String pathPattern) {
+        PermissionRoutePolicy policy = routePolicy(roleCode, effect, priority);
+        policy.setPolicyName("专业 Agent turn 事实登记策略");
+        policy.setHttpMethod("POST");
+        policy.setPathPattern(pathPattern);
+        policy.setResourceType("AI_RUNTIME");
+        policy.setAction("EXECUTE");
         return policy;
     }
 

@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentPostConfirmContinuationRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentPostConfirmContinuationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
@@ -18,6 +19,7 @@ import com.czh.datasmart.govern.agent.service.continuation.AgentPostConfirmConti
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.specialist.SpecialistTurnFactService;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,8 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,6 +49,7 @@ class AgentRunConfirmedExecutionServiceTest {
     private AgentToolExecutionAuditService auditService;
     private AgentToolExecutionResultQueryService resultQueryService;
     private AgentPostConfirmContinuationClient continuationClient;
+    private SpecialistTurnFactService specialistTurnFactService;
     private AgentSessionMemoryStore sessionStore;
     private AgentSessionRecord session;
 
@@ -82,13 +87,15 @@ class AgentRunConfirmedExecutionServiceTest {
         auditService = mock(AgentToolExecutionAuditService.class);
         resultQueryService = mock(AgentToolExecutionResultQueryService.class);
         continuationClient = mock(AgentPostConfirmContinuationClient.class);
+        specialistTurnFactService = mock(SpecialistTurnFactService.class);
         service = new AgentRunConfirmedExecutionService(
                 sessionStore,
                 sessionService,
                 auditService,
                 resultQueryService,
                 new DeterministicAgentExecutionResultAnswerGenerator(),
-                continuationClient
+                continuationClient,
+                Optional.of(specialistTurnFactService)
         );
     }
 
@@ -99,6 +106,7 @@ class AgentRunConfirmedExecutionServiceTest {
                 "run-confirm",
                 new AgentRunConfirmedExecutionRequest(true, "确认"),
                 10L,
+                201L,
                 101L,
                 "1002",
                 "ORDINARY_USER",
@@ -115,6 +123,7 @@ class AgentRunConfirmedExecutionServiceTest {
                 "run-confirm",
                 new AgentRunConfirmedExecutionRequest(true, "确认"),
                 10L,
+                201L,
                 101L,
                 "1001",
                 "ORDINARY_USER",
@@ -175,6 +184,7 @@ class AgentRunConfirmedExecutionServiceTest {
                 "run-confirm",
                 new AgentRunConfirmedExecutionRequest(true, "确认"),
                 10L,
+                201L,
                 101L,
                 "1001",
                 "ORDINARY_USER",
@@ -195,6 +205,21 @@ class AgentRunConfirmedExecutionServiceTest {
                 org.mockito.ArgumentMatchers.eq("session-confirm"),
                 any(com.czh.datasmart.govern.agent.service.session.AgentConversationMessageRecord.class));
         verify(continuationClient).continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class));
+    }
+
+    @Test
+    void shouldRejectDuplicateConfirmationAfterRunBecomesTerminal() {
+        stubConfirmedSuccessfulTool(
+                "audit-idempotent-confirm",
+                "datasource.source.catalog.search",
+                Map.of("count", 1)
+        );
+
+        confirmCurrentRun();
+        clearInvocations(sessionService, auditService, resultQueryService, continuationClient);
+
+        assertThrows(PlatformBusinessException.class, this::confirmCurrentRun);
+        verifyNoInteractions(sessionService, auditService, resultQueryService, continuationClient);
     }
 
     @Test
@@ -254,6 +279,7 @@ class AgentRunConfirmedExecutionServiceTest {
                 "run-confirm",
                 new AgentRunConfirmedExecutionRequest(true, "确认"),
                 10L,
+                201L,
                 101L,
                 "1001",
                 "ORDINARY_USER",
@@ -287,18 +313,56 @@ class AgentRunConfirmedExecutionServiceTest {
         when(succeededAudit.toolCode()).thenReturn("sync.task.run");
         when(succeededAudit.state()).thenReturn("SUCCEEDED");
         AgentToolExecutionResultView executed = new AgentToolExecutionResultView(
-                succeededAudit, Map.of("taskId", 901L, "state", "QUEUED")
+                succeededAudit, Map.of("taskId", 901L, "executionId", 1901L, "state", "QUEUED")
         );
         when(auditService.listByRun("session-confirm", "run-confirm"))
                 .thenReturn(List.of(waiting), List.of(planned), List.of(succeededAudit));
         when(sessionService.executeToolExecution("session-confirm", "run-confirm", "audit-run", "trace-confirm"))
                 .thenReturn(executed);
+        when(resultQueryService.listRunToolExecutionResults("session-confirm", "run-confirm"))
+                .thenReturn(List.of(executed));
+        when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
+                .thenReturn(new AgentPostConfirmContinuationView(
+                        "datasmart.post-confirm-continuation.v1",
+                        "BUSINESS_GOAL_REACHED",
+                        false,
+                        "post-confirm-request",
+                        "session-confirm",
+                        "run-confirm",
+                        null,
+                        false,
+                        "TASK_SUBMITTED_OR_SCHEDULED",
+                        "同步任务已经创建并提交执行；提交后预检查与运行监控已完成复核。",
+                        Map.of(),
+                        Map.of(),
+                        Map.of(),
+                        Map.of("status", "COMPLETED"),
+                        Map.of(
+                                "status", "EXECUTED",
+                                "taskId", "901",
+                                "executionId", "1901",
+                                "executedRoles", List.of("PRECHECK_AGENT", "MONITOR_AGENT")
+                        ),
+                        "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
+                        null
+                ));
+        when(specialistTurnFactService.hasTerminalSuccessfulEvidenceForRoles(
+                10L,
+                201L,
+                101L,
+                "1001",
+                "session-confirm",
+                "run-confirm",
+                session.getDelegation().getDelegationId(),
+                Set.of("PRECHECK_AGENT", "MONITOR_AGENT")
+        )).thenReturn(true);
 
         var response = service.confirmAndExecute(
                 "session-confirm",
                 "run-confirm",
                 new AgentRunConfirmedExecutionRequest(true, "确认"),
                 10L,
+                201L,
                 101L,
                 "1001",
                 "ORDINARY_USER",
@@ -309,8 +373,12 @@ class AgentRunConfirmedExecutionServiceTest {
 
         assertEquals("BUSINESS_GOAL_REACHED", response.continuation().status());
         assertEquals("RESERVED_NOT_INVOKED", response.modelProviderStatus());
-        org.junit.jupiter.api.Assertions.assertTrue(response.assistantReply().contains("已提交真实 worker 执行链路"));
-        verifyNoInteractions(resultQueryService, continuationClient);
+        org.junit.jupiter.api.Assertions.assertTrue(response.assistantReply().contains("提交执行"));
+        var requestCaptor = forClass(AgentPostConfirmContinuationRequest.class);
+        verify(continuationClient).continueAfterConfirmedTools(requestCaptor.capture());
+        assertEquals("201", requestCaptor.getValue().applicationId());
+        assertEquals(session.getDelegation().getDelegationId(), requestCaptor.getValue().delegationId());
+        assertEquals(1901L, requestCaptor.getValue().toolResults().getFirst().output().get("executionId"));
     }
 
     @Test
@@ -366,6 +434,7 @@ class AgentRunConfirmedExecutionServiceTest {
                 "run-confirm",
                 new AgentRunConfirmedExecutionRequest(true, "确认"),
                 10L,
+                201L,
                 101L,
                 "1001",
                 "ORDINARY_USER",
@@ -378,6 +447,164 @@ class AgentRunConfirmedExecutionServiceTest {
         assertEquals(null, response.continuation().nextRunId());
         assertEquals("NEXT_RUN_NOT_DURABLE", response.continuation().stoppedReason());
         assertEquals("DUPLICATE_TASK_NAME", response.continuation().repairProposal().get("kind"));
+    }
+
+    /**
+     * 远端不能仅凭一个 {@code status=EXECUTED} 就宣布任务完成；两类后置专业 Agent 都必须留下执行证据。
+     *
+     * <p>测试刻意保留 Java 本地的 {@code sync.task.run} 成功事实，证明失败来自 continuation 契约而不是
+     * 工具执行本身。这样未来即使 Python 返回 2xx，少了 MONITOR_AGENT 也不会让前端把任务显示为已完成。</p>
+     */
+    @Test
+    void shouldRejectBusinessGoalWithoutBothPostBridgeSpecialistRoles() {
+        stubConfirmedSuccessfulTool(
+                "audit-post-bridge-missing-role",
+                "sync.task.run",
+                Map.of("taskId", 901L, "executionId", 1901L, "state", "QUEUED")
+        );
+        when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
+                .thenReturn(businessGoalContinuation(Map.of(
+                        "status", "EXECUTED",
+                        "executedRoles", List.of("PRECHECK_AGENT")
+                )));
+
+        var response = confirmCurrentRun();
+
+        assertEquals("SUCCEEDED", response.runState());
+        assertEquals("FAILED_RETRYABLE", response.continuation().status());
+        assertEquals("CONTINUATION_CONTRACT_INVALID", response.continuation().stoppedReason());
+        assertEquals(null, response.continuation().nextRunId());
+        org.junit.jupiter.api.Assertions.assertTrue(response.assistantReply().contains("契约校验"));
+    }
+
+    /**
+     * continuation 只能代表当前请求的 session/run，不能利用一个看似合法的 nextRunId 把浏览器引到别的会话。
+     */
+    @Test
+    void shouldRejectContinuationWithDifferentSessionBeforeCheckingNextRunDurability() {
+        stubConfirmedSuccessfulTool(
+                "audit-continuation-scope",
+                "datasource.source.catalog.search",
+                Map.of("count", 1)
+        );
+        when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
+                .thenReturn(new AgentPostConfirmContinuationView(
+                        "datasmart.post-confirm-continuation.v1",
+                        "WAITING_CONFIRMATION",
+                        true,
+                        "request-wrong-session",
+                        "another-session",
+                        "run-confirm",
+                        "run-from-another-session",
+                        true,
+                        "WAITING_APPROVAL",
+                        "等待确认。",
+                        Map.of(),
+                        Map.of(),
+                        Map.of(),
+                        "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
+                        null
+                ));
+
+        var response = confirmCurrentRun();
+
+        assertEquals("FAILED_RETRYABLE", response.continuation().status());
+        assertEquals("CONTINUATION_CONTRACT_INVALID", response.continuation().stoppedReason());
+        assertEquals(null, response.continuation().nextRunId());
+    }
+
+    /**
+     * 即使 Python 给出完整的 PRECHECK/MONITOR 角色列表，也不能跳过 Java 已记录的任务发布/提交边界。
+     */
+    @Test
+    void shouldRejectBusinessGoalWithoutLocalTaskSubmissionBoundary() {
+        stubConfirmedSuccessfulTool(
+                "audit-no-submission",
+                "sync.task.draft.save",
+                Map.of("taskId", 901L, "state", "DRAFT")
+        );
+        when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
+                .thenReturn(businessGoalContinuation(Map.of(
+                        "status", "EXECUTED",
+                        "executedRoles", List.of("PRECHECK_AGENT", "MONITOR_AGENT")
+                )));
+
+        var response = confirmCurrentRun();
+
+        assertEquals("FAILED_RETRYABLE", response.continuation().status());
+        assertEquals("CONTINUATION_CONTRACT_INVALID", response.continuation().stoppedReason());
+        assertEquals(null, response.continuation().nextRunId());
+    }
+
+    /**
+     * 为后确认契约测试准备一条已批准、已执行的单工具批次。
+     *
+     * <p>该 helper 严格模拟真实服务的三次审计读取顺序：等待审批、可执行、最终成功。结果查询返回同一条
+     * 已落库工具输出，因此 continuation 看到的是 Java 事实，而不是测试直接拼接的远端输入。</p>
+     */
+    private void stubConfirmedSuccessfulTool(
+            String auditId,
+            String toolCode,
+            Map<String, Object> output) {
+        AgentToolExecutionAuditView waiting = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView planned = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView succeededAudit = mock(AgentToolExecutionAuditView.class);
+        when(waiting.auditId()).thenReturn(auditId);
+        when(waiting.toolCode()).thenReturn(toolCode);
+        when(waiting.state()).thenReturn("WAITING_APPROVAL");
+        when(planned.auditId()).thenReturn(auditId);
+        when(planned.toolCode()).thenReturn(toolCode);
+        when(planned.state()).thenReturn("PLANNED");
+        when(succeededAudit.auditId()).thenReturn(auditId);
+        when(succeededAudit.toolCode()).thenReturn(toolCode);
+        when(succeededAudit.state()).thenReturn("SUCCEEDED");
+        AgentToolExecutionResultView executed = new AgentToolExecutionResultView(succeededAudit, output);
+        when(auditService.listByRun("session-confirm", "run-confirm"))
+                .thenReturn(List.of(waiting), List.of(planned), List.of(succeededAudit));
+        when(sessionService.executeToolExecution("session-confirm", "run-confirm", auditId, "trace-confirm"))
+                .thenReturn(executed);
+        when(resultQueryService.listRunToolExecutionResults("session-confirm", "run-confirm"))
+                .thenReturn(List.of(executed));
+    }
+
+    /** 构造满足 Python 协议形状的业务完成响应，调用方只需提供不同的后置复核证据。 */
+    private AgentPostConfirmContinuationView businessGoalContinuation(Map<String, Object> postBridgeVerification) {
+        return new AgentPostConfirmContinuationView(
+                "datasmart.post-confirm-continuation.v1",
+                "BUSINESS_GOAL_REACHED",
+                false,
+                "post-confirm-request",
+                "session-confirm",
+                "run-confirm",
+                null,
+                false,
+                "TASK_SUBMITTED_OR_SCHEDULED",
+                "同步任务已经创建并提交执行。",
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of("status", "COMPLETED"),
+                postBridgeVerification,
+                "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
+                null
+        );
+    }
+
+    /** 以当前测试中的合法委托身份确认源 Run。 */
+    private AgentRunConfirmedExecutionResponse confirmCurrentRun() {
+        return service.confirmAndExecute(
+                "session-confirm",
+                "run-confirm",
+                new AgentRunConfirmedExecutionRequest(true, "确认"),
+                10L,
+                201L,
+                101L,
+                "1001",
+                "ORDINARY_USER",
+                "USER",
+                "101:MANAGER",
+                "trace-confirm"
+        );
     }
 
     /**

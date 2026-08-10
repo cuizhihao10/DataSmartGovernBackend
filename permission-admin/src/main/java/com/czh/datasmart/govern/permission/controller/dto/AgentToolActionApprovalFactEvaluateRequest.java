@@ -24,17 +24,29 @@ public class AgentToolActionApprovalFactEvaluateRequest {
     /** 当前任务所属租户，用于校验审批事实不能跨租户复用。 */
     private Long tenantId;
 
+    /** Current product application boundary; required for an approval fact to match. */
+    private Long applicationId;
+
     /** 当前任务所属项目，用于校验审批事实不能跨项目复用。 */
     private Long projectId;
 
+    /** Human identity represented by the current Agent action. */
+    private String userId;
+
     /** 当前受控动作代表的上游 actor。 */
     private String actorId;
+
+    /** Executing Agent identity, checked independently from the human user. */
+    private String agentId;
 
     /** 当前 Agent session ID。 */
     private String sessionId;
 
     /** 当前 Agent run ID。 */
     private String runId;
+
+    /** Delegation evidence that binds the human user and Agent for the current run. */
+    private String delegationId;
 
     /** 当前受控工具动作 commandId。 */
     private String commandId;

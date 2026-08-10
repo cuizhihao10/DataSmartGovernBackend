@@ -680,7 +680,6 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual("http://model-gateway.local/v1", agent_route.endpoint)
         self.assertEqual(45, agent_route.timeout_seconds)
 
-
 class FakeHttpResponse:
     def __init__(self, payload: dict | None = None, lines: tuple[bytes, ...] = ()) -> None:
         self._payload = payload

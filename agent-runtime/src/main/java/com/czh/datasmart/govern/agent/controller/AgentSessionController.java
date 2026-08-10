@@ -61,12 +61,14 @@ public class AgentSessionController {
     public PlatformApiResponse<AgentSessionView> createSession(
             @Valid @RequestBody CreateAgentSessionRequest request,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.APPLICATION_ID, required = false) Long applicationId,
             @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success("Agent 会话创建成功",
-                agentSessionService.createSession(request, access(tenantId, projectId, actorId, actorRole)), traceId);
+                agentSessionService.createSession(request,
+                        access(tenantId, applicationId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -211,5 +213,14 @@ public class AgentSessionController {
      */
     private AgentSessionAccessContext access(Long tenantId, Long projectId, String actorId, String actorRole) {
         return new AgentSessionAccessContext(tenantId, projectId, actorId, actorRole);
+    }
+
+    private AgentSessionAccessContext access(Long tenantId,
+                                             Long applicationId,
+                                             Long projectId,
+                                             String actorId,
+                                             String actorRole) {
+        return new AgentSessionAccessContext(
+                tenantId, applicationId, projectId, actorId, actorRole, null, List.of(), List.of());
     }
 }

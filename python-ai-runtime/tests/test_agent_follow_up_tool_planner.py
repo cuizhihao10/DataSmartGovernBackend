@@ -38,6 +38,52 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             objective="Create and run a governed full synchronization task.",
         )
 
+    def test_preserves_low_sensitive_intake_rejection_code(self) -> None:
+        """未知或未暴露工具必须保留稳定原因码，不能退化成泛化治理失败。
+
+        Follow-up Planner 的结果会跨越 Specialist bridge 并进入 API 摘要，因此这里只保留
+        机器可读的 issue code；模型参数和可能包含业务对象名的原始 message 不得进入摘要。
+        """
+
+        result = self.planner.govern(
+            request=self.request,
+            plan=self._plan(ToolPlan(tool_name="knowledge.rag.query", reason="parent context")),
+            tool_calls=(self._call("call-hidden", "sync.task.run", {}),),
+            visible_tools=self._visible("sync.task.precheck"),
+        )
+
+        self.assertFalse(result.continues)
+        self.assertEqual(("MODEL_TOOL_CALL_NOT_EXPOSED",), result.intake_issue_codes)
+        self.assertEqual(
+            ("MODEL_TOOL_CALL_NOT_EXPOSED",),
+            result.to_summary()["intakeIssueCodes"],
+        )
+
+    def test_reports_repeat_guard_separately_from_schema_and_state_rejections(self) -> None:
+        """相同工具和参数被重复提交时必须能明确识别为幂等拦截。"""
+
+        repeated_call = self._call("call-repeat", "sync.execution.diagnose", {
+            "taskId": 76,
+            "executionId": 1805,
+        })
+        parent = self._plan(ToolPlan(
+            tool_name="sync.execution.diagnose",
+            reason="already submitted",
+            arguments={"taskId": 76, "executionId": 1805},
+        ))
+
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(repeated_call,),
+            visible_tools=self._visible("sync.execution.diagnose"),
+        )
+
+        self.assertFalse(result.continues)
+        self.assertEqual(1, result.repeated_count)
+        self.assertEqual(("sync.execution.diagnose",), result.repeated_tool_names)
+        self.assertEqual((), result.intake_issue_codes)
+
     def test_injects_durable_draft_reference_before_schema_validation(self) -> None:
         parent = self._plan(ToolPlan(tool_name="sync.task.draft.save", reason="draft"))
         visible = self._visible("sync.task.precheck")

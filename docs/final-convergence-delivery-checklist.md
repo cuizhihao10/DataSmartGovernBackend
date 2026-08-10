@@ -208,7 +208,57 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
   `npm run build` 全部通过；V4 在 PostgreSQL 回滚事务中验证为回填 `5 + 11` 个 Run 来源并清理 `11` 条重复
   USER 消息，事务已回滚后再由容器 Flyway 正式执行。
 
-## 8. 最新总闸门入口（2026-07-05）
+## 7.5 2026-08-06 六专业 Agent 受治理闭环交付审查
+
+本次审查针对当前工作区的未提交多 Agent 候选改动；未将未提交内容表述为已发布版本，也未修改业务源代码。当前可执行 specialist roster 为六个角色：`KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`RECOVERY_AGENT` 和 `MONITOR_AGENT`。长期八专项 Agent 表仍是产品蓝图，不能作为本轮六 Agent 已全部上线的证据。
+
+已核对的闭环事实：
+
+- Python `SpecialistAgentRegistry` 和 `SpecialistAgentCoordinator` 按角色、checkpoint、租户/项目/操作者范围、delegation 和工具白名单 fail-closed 调度；依赖波次通过低敏 handoff 传递，不把 prompt、SQL、工具参数、凭据、样本或模型原文交给 Java fact store。
+- `DATA_SYNC_AGENT` 只生成配置/ToolPlan 草案，必须经过 Java ToolPlan bridge；Java 控制面负责权限、审批、outbox、worker receipt 和执行反馈；成功反馈再触发 PRECHECK/MONITOR 资源复核。
+- `RECOVERY_AGENT` 只读取失败事实和 RAG 证据生成待审批方案，Recovery 验收要求停在 Java handoff/审批等待态，不自动批准或执行。单项只读预览缺少可验证配置时以 `RECOVERY_ACTION_INPUT_INCOMPLETE` 跳过该项，其他完整只读预览仍可继续；没有任何完整动作时明确等待补参，不创建不可执行 ToolPlan。
+- Agent Runtime `V5__specialist_agent_turn_facts.sql` 提供按 session/run 的低敏 durable fact，记录角色、状态、范围、checkpoint 和 handoff/bridge 引用，不保存 prompt、SQL、工具参数、凭据、样本或模型原文；permission-admin `V48__specialist_agent_turn_fact_route_policy.sql` 提供对应内部登记和只读查询路由策略，Compose overlay 已启用 fact fail-closed、数据源/data-sync 控制面地址和相关依赖。
+- Java ToolPlan bridge 只接收 `DATA_SYNC_AGENT`/`RECOVERY_AGENT` 的受控候选，Java 负责权限、审批、outbox、worker receipt 和反馈；反馈含可信 `taskId`/`executionId` 后，才在独立只读波次运行 `PRECHECK_AGENT`/`MONITOR_AGENT`。
+
+本次验证证据：
+
+- `python -m pytest python-ai-runtime\tests -q` 全量 `1044 passed`，无失败；六 Agent 定向测试包含在内。
+- Java Reactor `593` 个测试通过，未出现失败或错误。
+- `git diff --check` 退出码 `0`；`docker compose -f docker-compose.yml -f docker-compose.application.yml config --quiet` 退出码 `0`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-governed-e2e.ps1 -RunSpecialistStatusAggregationRegressionTest` 通过；该回归只使用脚本内低敏夹具验证首轮失败可由同角色后置成功恢复的聚合语义，不访问 Keycloak、Agent API 或 Docker。
+- `local-six-agent-governed-e2e.ps1` PowerShell AST 错误数为 `0`，默认 `-PlanOnly` 未访问 Keycloak/Agent API；本次变更文件的敏感模式扫描无命中，审查输出未记录任何凭据值。
+
+尚未解除的阻塞项：
+
+- 当前回归证据不等同于 Docker 黑盒 E2E：本次未运行 `local-six-agent-governed-e2e.ps1 -Execute`，也未在已启动 Compose 服务、已应用迁移和非 dry-run provider 环境中完成 Success/Recovery 两场景。因此不能声称六 Agent Docker 黑盒 E2E 已通过。
+- 当前多个本次变更的 Java/Python/测试/脚本文件超过仓库既有的单文件 500 行控制线，其中多个 specialist、bridge 和验收脚本达到千行级；需要拆分并重新做结构审查后再冻结交付。
+- Compose 的开发默认共享凭据仍不适合生产；正式环境必须注入并轮换内部服务 token、Gateway 签名密钥和模型 API key。
+
+## 7.6 2026-08-09 双仓迁移后最终复核
+
+本轮以当前 Backend/Frontend dirty worktree、当前源码构建镜像和本机真实服务为证据，未读取或重放旧 Codex 对话。Backend `docs/` 的 38 份 Markdown 已逐份复核，并按其对本轮审查的约束归类如下：
+
+- 迁移/架构：`agent-runtime-postgresql-data-migration.md`、`ai-memory-postgresql-data-migration.md`、`ai-memory-postgresql-schema.md`、`data-quality-postgresql-data-migration.md`、`datasource-management-postgresql-data-migration.md`、`data-sync-postgresql-data-migration.md`、`development-jdk21.md`、`gateway-oidc-keycloak-integration.md`、`permission-admin-postgresql-data-migration.md`、`postgresql-migration-roadmap.md`、`python-ai-runtime-package-layout.md`、`task-management-postgresql-data-migration.md`。
+- Agent/RAG：`agent-skill-publication-manifest.md`、`langgraph-postgresql-durable-checkpointer.md`、`mcp-client-integration.md`、`rag-command-worker-implementation.md`、`rag-pipeline-implementation.md`。
+- 生产运维：`backup-restore-runbook.md`、`capacity-baseline-runbook.md`、`containerized-application-deployment.md`、`failure-drill-runbook.md`、`kubernetes-helm-deployment.md`、`local-e2e-docker-troubleshooting.md`、`observability-agent-runtime-runbook.md`、`observability-data-sync-runbook.md`、`production-environment-values.md`、`production-hardening-runbook.md`、`tenant-onboarding-flashsync.md`。
+- 最终收敛：`codex-migration-handoff-2026-08-09.md`、`final-convergence-delivery-checklist.md`、`final-delivery-closure-runbook.md`、`final-platform-closure-audit.md`、`local-e2e-closure-runbook.md`。
+- 产品与学习资料：`ai-agent-interview-answers.md`、`ai-agent-project-technical-learning-path.md`、`ai-agent-resume-project-experience.md`、`ai-agent-technology-radar.md`、`platform-product-roadmap.md`。
+
+这些文档直接限定了本轮代码审查：PostgreSQL/pgvector 是持久化目标，Kafka 保持 Java/Python 异步边界，JDK 21/Spring Boot 3.5.11 不漂移；六 Specialist 必须在 durable checkpoint、权限、双主体审批、审计、幂等和低敏可观测性边界内运行；RAG 证据、LangGraph checkpoint 与 Specialist turn fact 必须可持久化且按 application/tenant/project/session/run 范围隔离；Recovery 只能形成受治理 handoff，不能自动批准；Gateway、data-sync 与前端 API/WebSocket 必须消费同一合同。生产资料把备份恢复、容量、故障演练、Keycloak、Secret 注入和监控保持为发布门禁；产品/学习资料仅解释长期八 Agent 蓝图，不能覆盖本轮真实六角色 roster 或被当作上线证据。
+
+本轮验证证据（2026-08-10 最终复跑）：
+
+- Java 全 Reactor `mvn test` 为 `BUILD SUCCESS`；Surefire 汇总 `1321 tests`、`0 failures`、`0 errors`、`9 skipped`。
+- Python Runtime 全量 `1087 passed`，只有一条 Starlette/TestClient 弃用警告。
+- Frontend `npm run lint`、`npm run build`（含 `tsc -b`）和 `package.json` 中 5 个 Agent/data-sync 合同脚本全部通过；Vite 仅提示主包 `2120.77 kB`、gzip `641.08 kB`，属于后续性能治理项。
+- 当前源码构建的 Gateway、permission-admin、task-management、datasource-management、data-sync、agent-runtime、python-ai-runtime 镜像均健康；Agent Runtime V5-V7 与 permission-admin V48-V52 已由 Flyway 应用。
+- `local-data-sync-platform-e2e.ps1 -UseContainerJdbcUrls -SkipDependencyStart -Strict` 通过：目标表 20 行、失败分片选择性重试、dirty-row `PRIMARY_KEY_EQ` replay、权限审计均通过；human 对 worker/scheduler 内部入口返回预期 403。
+- 六 Agent 聚合回归和退出码回归通过，`PlanOnly=0`、聚合成功 `=0`、本地受控失败 `=1`，避免 CI 把终端 `[FAIL]` 误判为成功。
+- Compose 已显式设置 `DATASMART_LANGGRAPH_CHECKPOINT_STORE=postgresql` 和 `FAIL_OPEN=false`。Gateway RAG 查询返回 `HTTP 200`、2 条 citation，并在 `ai_memory.langgraph_thread_checkpoint`/`langgraph_checkpoint_event` 各写入 3 条 `retrieve -> evidence_gate -> grounded_answer_completed` 记录；重启 Python Runtime 后，经 Gateway latest/events 仍返回 version 3 和 3 个事件。同项目另一 actor 读取同一 thread 返回 `403`，证明 V52、Gateway HMAC 和 Python tenant/project/actor 二次校验同时生效。
+
+当前唯一阻止六 Agent 黑盒门禁关闭的外部条件是模型 Provider 授权。Success 请求 `six-agent-success-20260810-checkpoint-final` 已运行到 `DATASOURCE_AGENT=COMPLETED`，并在 `DATA_SYNC_AGENT=FAILED/DATA_SYNC_SPECIALIST_MODEL_FAILED` 停止；Recovery 请求 `six-agent-recovery-20260810-checkpoint-final` 针对 `76/1805` 已运行 `KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`PRECHECK_AGENT`、`MONITOR_AGENT`，并在 `RECOVERY_AGENT=FAILED/RECOVERY_PLANNING_MODEL_FAILED` 停止。对应 turn durable facts 已落库，最近窗口和全库审批事实均为 `0`。Runtime 等价 Provider 探测返回 HTTP 401，健康诊断显示 `xckjj-gpt56-sol-responses` 最近 4 次调用错误率 100%、连续失败 4 次。Runtime 继续使用 `gpt-5.6-sol`/`xhigh`，未降级 dry-run，未创建/启动同步任务，未自动批准 Recovery，也未产生恢复副作用。取得有效 Provider 凭据后必须重跑 Success/Recovery 并让脚本所有断言通过；在此之前不得声称真实六 Agent success/recovery E2E 已全部通过。
+
+## 8. 总闸门入口（2026-08-06）
 
 当前项目已经从“持续补功能”进入“闭环交付候选”阶段。后续不建议再分散记忆多条验收命令，而应优先使用最终交付总闸门：
 

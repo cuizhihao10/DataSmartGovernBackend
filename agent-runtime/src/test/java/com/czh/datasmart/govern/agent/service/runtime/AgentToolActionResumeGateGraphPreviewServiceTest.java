@@ -11,11 +11,15 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactBu
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeGateGraphQueryResponse;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
 import com.czh.datasmart.govern.agent.event.command.InMemoryAgentAsyncTaskCommandOutboxStore;
+import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -132,9 +136,11 @@ class AgentToolActionResumeGateGraphPreviewServiceTest {
         AgentToolActionResumeFactBundleProperties properties = new AgentToolActionResumeFactBundleProperties();
         InMemoryAgentAsyncTaskCommandOutboxStore outboxStore = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
         InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolActionWorkerReceiptIndexService receiptIndexService = new AgentToolActionWorkerReceiptIndexService(
                 new InMemoryAgentToolActionWorkerReceiptIndexStore(100)
         );
+        sessionStore.save(approvalSession());
         AgentToolActionResumeFactBundleService factBundleService = new AgentToolActionResumeFactBundleService(
                 properties,
                 evaluator,
@@ -143,7 +149,8 @@ class AgentToolActionResumeGateGraphPreviewServiceTest {
                 new AgentToolActionResumeLocatorIndexService(new InMemoryAgentToolActionResumeLocatorIndexStore()),
                 new AgentToolActionClarificationFactEvaluator(new InMemoryAgentToolActionClarificationFactStore(properties)),
                 new AgentToolActionWorkerReceiptFactEvaluator(receiptIndexService, projectionStore),
-                new AgentToolActionResumeFactBundleDiagnosticPublisher(projectionStore)
+                new AgentToolActionResumeFactBundleDiagnosticPublisher(projectionStore),
+                sessionStore
         );
         return new TestHarness(
                 new AgentToolActionResumeGateGraphPreviewService(factBundleService),
@@ -240,11 +247,27 @@ class AgentToolActionResumeGateGraphPreviewServiceTest {
     private AgentRuntimeEventQueryAccessContext projectOwnerContext() {
         return new AgentRuntimeEventQueryAccessContext(
                 10L,
+                30L,
                 1001L,
                 "PROJECT_OWNER",
                 "trace-resume",
                 "PROJECT",
                 List.of(20L)
+        );
+    }
+
+    private AgentSessionRecord approvalSession() {
+        return new AgentSessionRecord(
+                "session-resume",
+                10L,
+                20L,
+                30L,
+                "1001",
+                "WEB",
+                "approval-fact-resume-session",
+                WorkspaceIsolationLevel.PROJECT,
+                "tenant:10:project:20",
+                LocalDateTime.now()
         );
     }
 

@@ -62,6 +62,14 @@ public class GatewayPermissionDecisionResult {
     private Long effectiveTenantId;
 
     /**
+     * permission-admin 根据所选项目主数据解析出的可信应用 ID。
+     *
+     * <p>该字段不能由浏览器 Header 直接继承。gateway 只在权限中心确认项目归属后，才会把它
+     * 重建为下游服务的应用上下文，从而让租户/应用/项目三层隔离在 Agent 专项事实读写链路中保持一致。</p>
+     */
+    private Long effectiveApplicationId;
+
+    /**
      * permission-admin 已经计算出的项目授权快照。
      *
      * <p>网关不理解项目成员表，也不解析 `${actorProjectIds}` 占位符。

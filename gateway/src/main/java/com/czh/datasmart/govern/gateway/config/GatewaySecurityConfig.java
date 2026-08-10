@@ -1,6 +1,7 @@
 package com.czh.datasmart.govern.gateway.config;
 
 import com.czh.datasmart.govern.gateway.authentication.GatewayJwtAudienceValidator;
+import com.czh.datasmart.govern.gateway.authentication.GatewayWebSocketBearerTokenConverter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -74,7 +75,9 @@ public class GatewaySecurityConfig {
         });
 
         if (oidcEnabled) {
-            security.oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
+            security.oauth2ResourceServer(oauth2 -> oauth2
+                    .bearerTokenConverter(new GatewayWebSocketBearerTokenConverter())
+                    .jwt(Customizer.withDefaults()));
         }
         return security.build();
     }

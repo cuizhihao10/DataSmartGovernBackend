@@ -14,6 +14,9 @@
     5. 如需进一步验证“认证后的统一 gateway 入口 -> Python AI Runtime 与 Java Agent Runtime 低敏诊断/指标接口”链路，
        可传入 -CheckAgentGatewayDiagnostics。该探针会复用本地样例服务账号获取 Bearer token，
        只调用 GET 诊断/只读端点，不读取响应正文、不打印 token、不触发工具执行或数据同步。
+    6. Agent 会话入口的匿名直连和服务账号探针以 HTTP 401/403 为通过条件：这证明入口仍受保护，
+       不应为了 Smoke Check 放宽后端策略。会话成功态 E2E 必须使用 project-owner 的 OIDC 用户身份
+       与已授权项目上下文执行，不能由 sync-service 服务账号替代。
 
     安全边界：
     - 不打印 access token、refresh token、client secret、数据库密码、SQL、样本数据或内部请求正文。
@@ -25,6 +28,8 @@
       不打印 Prometheus 文本正文，避免未来新增指标时把高基数字段或业务排障内容带入终端日志。
     - Java agent-runtime 控制面探针只调用 GET 查询和 diagnostics，不调用 publish/refresh/dispatch/requeue/ack/enqueue，
       因此不会创建会话、写 runtime event、派发 outbox、确认消费游标或触发任何真实工具副作用。
+    - 匿名直连 `/agent-runtime/sessions` 和 sync-service 经 gateway 调用 `/api/agent/sessions` 的 401/403
+      表示 fail-closed 访问边界仍然生效；它们不是 project-owner 用户态会话成功链路的替代证据。
 #>
 param(
     [switch]$Strict,
@@ -304,7 +309,7 @@ function Invoke-AgentGatewayDiagnosticsProbe {
             @{ Name = "Gateway Agent Skill Manifest diagnostics"; Path = "/api/agent/skills/publication/diagnostics"; Meaning = "统一 gateway 能以认证身份访问 Skill Manifest 缓存与刷新诊断" },
             @{ Name = "Gateway Agent inference optimization diagnostics"; Path = "/api/agent/models/inference-optimization/diagnostics"; Meaning = "统一 gateway 能以认证身份访问模型推理优化控制面诊断" },
             @{ Name = "Gateway Agent Prometheus metrics"; Path = "/api/agent/metrics"; Meaning = "统一 gateway 能以认证身份访问 Python Runtime 低基数 Prometheus 指标入口" },
-            @{ Name = "Gateway Agent Runtime sessions query"; Path = "/api/agent/sessions"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 会话只读列表入口" },
+            @{ Name = "Gateway Agent Runtime sessions service-account protection"; Path = "/api/agent/sessions"; ExpectedStatusCodes = @(401, 403); ExpectedStatusDetail = "sync-service 未携带 project-owner 用户身份和已授权项目上下文时被正确拒绝，受保护入口通过；会话成功态 E2E 请使用 project-owner 的 OIDC 用户 token 与已授权项目上下文，期望 HTTP 200" },
             @{ Name = "Gateway Agent Runtime tool descriptors"; Path = "/api/agent/tools/descriptors"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 工具描述符入口" },
             @{ Name = "Gateway Agent Runtime Skill publication manifest"; Path = "/api/agent/skills/publication/manifest"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime Skill Manifest" },
             @{ Name = "Gateway Agent Runtime model routes"; Path = "/api/agent/models/routes"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 模型路由控制面" },
@@ -316,6 +321,16 @@ function Invoke-AgentGatewayDiagnosticsProbe {
 
         foreach ($endpoint in $diagnosticEndpoints) {
             $url = "$GatewayBaseUrl$($endpoint.Path)"
+            $expectedStatusCodes = if ($endpoint.ContainsKey("ExpectedStatusCodes")) {
+                @($endpoint.ExpectedStatusCodes)
+            } else {
+                @(200)
+            }
+            $expectedStatusDetail = if ($endpoint.ContainsKey("ExpectedStatusDetail")) {
+                $endpoint.ExpectedStatusDetail
+            } else {
+                $endpoint.Meaning
+            }
             try {
                 $response = Invoke-WebRequest -UseBasicParsing -Method GET `
                     -Uri $url `
@@ -325,10 +340,10 @@ function Invoke-AgentGatewayDiagnosticsProbe {
                         "X-DataSmart-Trace-Id" = "local-smoke-agent-diagnostics"
                     }
                 $statusCode = [int]$response.StatusCode
-                if ($statusCode -eq 200) {
-                    Add-Check -Name $endpoint.Name -Status "PASS" -Detail "HTTP 200；$($endpoint.Meaning)"
+                if ($expectedStatusCodes -contains $statusCode) {
+                    Add-Check -Name $endpoint.Name -Status "PASS" -Detail "HTTP $statusCode；$expectedStatusDetail"
                 } else {
-                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；期望 HTTP 200，未输出诊断响应正文"
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；期望 HTTP $($expectedStatusCodes -join ',')，未输出诊断响应正文"
                 }
             } catch {
                 $statusCode = $null
@@ -339,12 +354,14 @@ function Invoke-AgentGatewayDiagnosticsProbe {
                         $statusCode = $null
                     }
                 }
-                if ($statusCode -eq 401 -or $statusCode -eq 403) {
+                if ($statusCode -ne $null -and ($expectedStatusCodes -contains $statusCode)) {
+                    Add-Check -Name $endpoint.Name -Status "PASS" -Detail "HTTP $statusCode；$expectedStatusDetail"
+                } elseif ($statusCode -eq 401 -or $statusCode -eq 403) {
                     Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；认证或授权未通过，请检查 Keycloak claim、audience、gateway OIDC 和 permission-admin 路由策略"
                 } elseif ($statusCode -eq 502 -or $statusCode -eq 503) {
                     Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；gateway 无法到达下游 Runtime，请检查 Python 8090、Java agent-runtime 8091、路由顺序和服务地址"
                 } elseif ($statusCode -ne $null) {
-                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；期望 HTTP 200，未输出诊断响应正文"
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；期望 HTTP $($expectedStatusCodes -join ',')，未输出诊断响应正文"
                 } else {
                     Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "无法访问 $url；请确认 gateway、permission-admin、Keycloak 和 Python Runtime 均已启动"
                 }
@@ -359,7 +376,8 @@ function Invoke-HttpProbe {
     param(
         [string]$Name,
         [string]$Url,
-        [int[]]$ExpectedStatusCodes = @(200)
+        [int[]]$ExpectedStatusCodes = @(200),
+        [string]$ExpectedStatusDetail
     )
 
     if ($SkipHttp) {
@@ -371,7 +389,12 @@ function Invoke-HttpProbe {
         $response = Invoke-WebRequest -UseBasicParsing -Method GET -Uri $Url -TimeoutSec $TimeoutSeconds
         $statusCode = [int]$response.StatusCode
         if ($ExpectedStatusCodes -contains $statusCode) {
-            Add-Check -Name $Name -Status "PASS" -Detail "HTTP $statusCode $Url"
+            $detail = if ([string]::IsNullOrWhiteSpace($ExpectedStatusDetail)) {
+                "HTTP $statusCode $Url"
+            } else {
+                "HTTP $statusCode；$ExpectedStatusDetail"
+            }
+            Add-Check -Name $Name -Status "PASS" -Detail $detail
         } else {
             Add-Check -Name $Name -Status "FAIL" -Detail "HTTP $statusCode，期望 $($ExpectedStatusCodes -join ',')：$Url"
         }
@@ -385,7 +408,12 @@ function Invoke-HttpProbe {
             }
         }
         if ($statusCode -ne $null -and ($ExpectedStatusCodes -contains $statusCode)) {
-            Add-Check -Name $Name -Status "PASS" -Detail "HTTP $statusCode $Url"
+            $detail = if ([string]::IsNullOrWhiteSpace($ExpectedStatusDetail)) {
+                "HTTP $statusCode $Url"
+            } else {
+                "HTTP $statusCode；$ExpectedStatusDetail"
+            }
+            Add-Check -Name $Name -Status "PASS" -Detail $detail
         } elseif ($statusCode -ne $null) {
             Add-Check -Name $Name -Status "FAIL" -Detail "HTTP $statusCode，期望 $($ExpectedStatusCodes -join ',')：$Url"
         } else {
@@ -450,7 +478,9 @@ Invoke-HttpProbe -Name "Data Sync health" -Url "$DataSyncBaseUrl/actuator/health
 Invoke-HttpProbe -Name "Data Sync connector capabilities" -Url "$DataSyncBaseUrl/sync-connectors/capabilities"
 Invoke-HttpProbe -Name "Permission Admin health" -Url "$PermissionAdminBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Agent Runtime health" -Url "$AgentRuntimeBaseUrl/actuator/health"
-Invoke-HttpProbe -Name "Agent Runtime sessions query" -Url "$AgentRuntimeBaseUrl/agent-runtime/sessions"
+Invoke-HttpProbe -Name "Agent Runtime sessions anonymous direct protection" -Url "$AgentRuntimeBaseUrl/agent-runtime/sessions" `
+    -ExpectedStatusCodes @(401, 403) `
+    -ExpectedStatusDetail "匿名直连被正确拒绝，受保护入口通过；会话成功态 E2E 请使用 project-owner 的 OIDC 用户 token 与已授权项目上下文，期望 HTTP 200"
 Invoke-HttpProbe -Name "Agent Runtime tool descriptors" -Url "$AgentRuntimeBaseUrl/agent-runtime/tools/descriptors"
 Invoke-HttpProbe -Name "Agent Runtime Skill publication manifest" -Url "$AgentRuntimeBaseUrl/agent-runtime/skills/publication/manifest"
 Invoke-HttpProbe -Name "Agent Runtime model routes" -Url "$AgentRuntimeBaseUrl/agent-runtime/models/routes"

@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.gateway.filter;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import com.czh.datasmart.govern.gateway.authentication.GatewayWebSocketBearerTokenConverter;
 import com.czh.datasmart.govern.gateway.config.GatewayAgentEventWebSocketProperties;
 import com.czh.datasmart.govern.gateway.monitoring.GatewayAgentEventWebSocketMetrics;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -28,6 +29,8 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -114,7 +117,9 @@ public class GatewayAgentEventWebSocketGuardFilter implements GlobalFilter, Orde
                     traceId, "Agent 实时事件入口只接受 WebSocket Upgrade 请求。");
         }
 
-        ConnectionIdentity identity = resolveIdentity(request);
+        ServerHttpRequest sanitizedRequest = stripBearerSubprotocol(request);
+        ServerWebExchange sanitizedExchange = exchange.mutate().request(sanitizedRequest).build();
+        ConnectionIdentity identity = resolveIdentity(sanitizedRequest);
         ConnectionAcquireResult acquireResult = tryAcquire(identity);
         if (!acquireResult.acquired()) {
             metrics.recordRejected(acquireResult.reason());
@@ -133,7 +138,7 @@ public class GatewayAgentEventWebSocketGuardFilter implements GlobalFilter, Orde
          * 对 WebSocket 来说，chain.filter(exchange) 返回的 Mono 通常会在连接关闭、异常或取消时结束。
          * doFinally 能覆盖完成、错误、取消三类信号，确保计数不会因为客户端断开或下游异常而泄漏。
          */
-        return chain.filter(exchange)
+        return chain.filter(sanitizedExchange)
                 .doFinally(signalType -> {
                     release(identity);
                     metrics.recordClosed(signalType.name());
@@ -179,6 +184,31 @@ public class GatewayAgentEventWebSocketGuardFilter implements GlobalFilter, Orde
         String tenantId = valueOrUnknown(headers.getFirst(PlatformContextHeaders.TENANT_ID), "UNKNOWN_TENANT");
         String actorId = valueOrUnknown(headers.getFirst(PlatformContextHeaders.ACTOR_ID), "UNKNOWN_ACTOR");
         return new ConnectionIdentity(tenantId, actorId);
+    }
+
+    /** Remove the credential-bearing subprotocol before proxying to Python. */
+    private ServerHttpRequest stripBearerSubprotocol(ServerHttpRequest request) {
+        List<String> safeProtocols = new ArrayList<>();
+        List<?> protocolHeaders = request.getHeaders().get(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL);
+        for (Object rawHeader : protocolHeaders == null ? List.of() : protocolHeaders) {
+            String header = String.valueOf(rawHeader);
+            for (String protocol : header.split(",")) {
+                String normalized = protocol.trim();
+                if (!normalized.startsWith(GatewayWebSocketBearerTokenConverter.BEARER_PROTOCOL_PREFIX)) {
+                    safeProtocols.add(normalized);
+                }
+            }
+        }
+        if (safeProtocols.isEmpty()
+                && !request.getHeaders().containsKey(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL)) {
+            return request;
+        }
+        return request.mutate().headers(headers -> {
+            headers.remove(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL);
+            if (!safeProtocols.isEmpty()) {
+                headers.set(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL, String.join(", ", safeProtocols));
+            }
+        }).build();
     }
 
     /**

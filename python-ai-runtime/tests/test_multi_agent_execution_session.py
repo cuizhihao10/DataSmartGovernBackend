@@ -55,6 +55,126 @@ class MultiAgentExecutionSessionTest(unittest.TestCase):
         self.assertNotIn("secret-datasource-id", serialized)
         self.assertNotIn("select * from customer", serialized.lower())
 
+    def test_second_turn_completed_does_not_mark_unexecuted_specialists_complete(self) -> None:
+        """全局第二轮完成只代表主控汇总，未执行 Specialist 仍必须可推进。
+
+        如果把全局 Durable phase 直接复制给每个 work item，协调器会跳过
+        尚未获得 turn 的 Specialist。这个用例锁住“主控已汇总”和“专业角色
+        已实际执行”之间的区别，防止 API 展示出假的完成状态。
+        """
+
+        session = MultiAgentExecutionSessionService().build(
+            request=_request(),
+            plan=_plan(),
+            scheduling={},
+            collaboration_execution_plan={
+                "planStatus": "SECOND_TURN_COMPLETED",
+                "workItems": (
+                    {"agentRole": "MASTER_ORCHESTRATOR", "participationMode": "PRIMARY"},
+                    {"agentRole": "PRECHECK_AGENT", "participationMode": "SPECIALIST"},
+                ),
+            },
+            durable_loop={"phase": "second_turn_completed", "runId": "run-second-turn"},
+        )
+
+        summary = session.to_summary()
+        by_role = {item["agentRole"]: item for item in summary["workItems"]}
+        self.assertEqual("COMPLETED_OR_SUMMARIZED", by_role["MASTER_ORCHESTRATOR"]["sessionStatus"])
+        self.assertEqual("READY_FOR_AGENT_TURN", by_role["PRECHECK_AGENT"]["sessionStatus"])
+
+    def test_plan_created_allows_checkpointed_specialist_turn_without_legacy_tool_feedback(self) -> None:
+        """A read-only Specialist can start when no legacy Java ToolPlan is awaiting feedback."""
+
+        session = MultiAgentExecutionSessionService().build(
+            request=_request(),
+            plan=_plan(),
+            scheduling={
+                "agentTiers": {"KNOWLEDGE_AGENT": "must_do"},
+                "scheduledAgents": ("KNOWLEDGE_AGENT",),
+            },
+            collaboration_execution_plan={
+                "workItems": (
+                    {"agentRole": "KNOWLEDGE_AGENT", "participationMode": "SPECIALIST"},
+                ),
+            },
+            durable_loop={"phase": "plan_created", "runId": "run-specialist-rag"},
+        )
+
+        summary = session.to_summary()
+        self.assertEqual("READY_FOR_AGENT_TURNS", summary["status"])
+        self.assertEqual("READY_FOR_AGENT_TURN", summary["workItems"][0]["sessionStatus"])
+
+    def test_waiting_master_tool_does_not_block_independent_specialist_analysis(self) -> None:
+        """Specialists may analyze trusted context while a separate master ToolPlan awaits feedback.
+
+        The global Durable phase describes the master loop, not proof that every Specialist needs the
+        same tool receipt. Releasing only SPECIALIST/OBSERVER turns prevents a recovery deadlock while
+        keeping the master coordinator and all eventual side effects behind the Java control plane.
+        """
+
+        session = MultiAgentExecutionSessionService().build(
+            request=_request(),
+            plan=_plan(),
+            scheduling={},
+            collaboration_execution_plan={
+                "workItems": (
+                    {"agentRole": "MASTER_ORCHESTRATOR", "participationMode": "PRIMARY"},
+                    {"agentRole": "KNOWLEDGE_AGENT", "participationMode": "SPECIALIST"},
+                    {"agentRole": "RECOVERY_AGENT", "participationMode": "SPECIALIST"},
+                    {"agentRole": "MONITOR_AGENT", "participationMode": "OBSERVER"},
+                ),
+            },
+            durable_loop={"phase": "waiting_control_plane", "runId": "run-recovery-bootstrap"},
+        )
+
+        summary = session.to_summary()
+        by_role = {item["agentRole"]: item for item in summary["workItems"]}
+        self.assertEqual(
+            "WAITING_CONTROL_PLANE_FEEDBACK",
+            by_role["MASTER_ORCHESTRATOR"]["sessionStatus"],
+        )
+        self.assertEqual("READY_FOR_AGENT_TURN", by_role["KNOWLEDGE_AGENT"]["sessionStatus"])
+        self.assertEqual("READY_FOR_AGENT_TURN", by_role["RECOVERY_AGENT"]["sessionStatus"])
+        self.assertEqual("READY_FOR_AGENT_TURN", by_role["MONITOR_AGENT"]["sessionStatus"])
+
+    def test_specialist_turn_runs_before_its_high_risk_tool_handoff(self) -> None:
+        """高风险输出需要审批，但 Specialist 的规划 turn 仍应先执行。
+
+        DATA_SYNC_AGENT 需要先生成对象映射、字段映射和受控 ToolPlan，Java
+        控制面才能向用户展示待审批内容。若在生成方案前就因为最终写工具
+        需要审批而阻断，该审批页不会有任何可审核内容。
+        """
+
+        session = MultiAgentExecutionSessionService().build(
+            request=_request(),
+            plan=_plan(),
+            scheduling={},
+            collaboration_execution_plan={
+                "planStatus": "WAITING_HUMAN_OR_PERMISSION_HANDOFF",
+                "workItems": (
+                    {
+                        "agentRole": "MASTER_ORCHESTRATOR",
+                        "participationMode": "PRIMARY",
+                        "status": "WAITING_HUMAN_OR_PERMISSION_HANDOFF",
+                        "handoffRequired": True,
+                    },
+                    {
+                        "agentRole": "DATA_SYNC_AGENT",
+                        "participationMode": "SPECIALIST",
+                        "status": "WAITING_HUMAN_OR_PERMISSION_HANDOFF",
+                        "handoffRequired": True,
+                    },
+                ),
+            },
+            durable_loop={"phase": "second_turn_completed", "runId": "run-high-risk-sync"},
+        )
+
+        summary = session.to_summary()
+        by_role = {item["agentRole"]: item for item in summary["workItems"]}
+        self.assertEqual("WAITING_APPROVAL_OR_HANDOFF", by_role["MASTER_ORCHESTRATOR"]["sessionStatus"])
+        self.assertEqual("READY_FOR_AGENT_TURN", by_role["DATA_SYNC_AGENT"]["sessionStatus"])
+        self.assertTrue(by_role["DATA_SYNC_AGENT"]["handoffRequired"])
+
     def test_falls_back_to_session_scheduling_when_execution_plan_disabled(self) -> None:
         """LangGraph 执行前计划禁用时，会话层应回退到调度视图而不是丢失多 Agent 骨架。"""
 

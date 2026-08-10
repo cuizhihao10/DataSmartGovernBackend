@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from datasmart_ai_runtime.api.gateway.signature import GatewaySignatureVerificationError
+from datasmart_ai_runtime.api.gateway.trusted_context import (
+    enrich_rag_query_payload_from_trusted_headers,
+)
 from datasmart_ai_runtime.services.agent_execution import LangGraphDurableCheckpointerService
 from datasmart_ai_runtime.services.rag import (
     LANGGRAPH_RAG_GRAPH_NAME,
@@ -23,6 +27,10 @@ def register_rag_routes(
     *,
     rag_pipeline: RagPipeline,
     langgraph_checkpointer_service: LangGraphDurableCheckpointerService | None = None,
+    request_type: Any | None = None,
+    gateway_signature_nonce_store: Any | None = None,
+    gateway_signature_error_factory: Any | None = None,
+    request_validation_error_factory: Any | None = None,
 ) -> None:
     """注册 RAG 查询与诊断路由。
 
@@ -38,9 +46,7 @@ def register_rag_routes(
     - 这样 RAG 能逐步纳入 Agent 状态机，而不是作为旁路 HTTP 能力游离在 durable loop 外。
     """
 
-    @app.post("/agent/rag/query")
-    @app.post("/api/agent/rag/query")
-    def query_governance_rag(payload: dict[str, Any]) -> dict[str, Any]:
+    def query_governance_rag(payload: dict[str, Any], http_request: Any = None) -> dict[str, Any]:
         """执行一次治理 RAG 查询。
 
         响应包含：
@@ -51,7 +57,33 @@ def register_rag_routes(
         - `retrievalSummary/modelSummary`：检索和模型调用治理摘要。
         """
 
-        query = rag_query_from_payload(payload)
+        headers = getattr(http_request, "headers", {}) if http_request is not None else {}
+        try:
+            trusted_payload = enrich_rag_query_payload_from_trusted_headers(
+                payload,
+                headers,
+                nonce_store=gateway_signature_nonce_store,
+            )
+        except GatewaySignatureVerificationError as exc:
+            detail = {
+                "code": "GATEWAY_SIGNATURE_INVALID",
+                "message": "Gateway 内部签名校验失败，RAG 查询已拒绝。",
+                "reason": exc.reason,
+            }
+            if gateway_signature_error_factory is not None:
+                raise gateway_signature_error_factory(detail) from exc
+            raise
+        except PermissionError as exc:
+            detail = {
+                "code": "AGENT_RAG_TRUSTED_CONTEXT_FORBIDDEN",
+                "message": "当前 RAG 项目上下文未通过权限校验，查询已拒绝。",
+                "reason": str(exc),
+            }
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(403, detail) from exc
+            raise
+
+        query = rag_query_from_payload(trusted_payload)
         result = rag_pipeline.answer(query)
         response = result.to_summary()
         response["langGraphCheckpoint"] = (
@@ -65,6 +97,15 @@ def register_rag_routes(
             else None
         )
         return response
+
+    # `request_type` is injected by the optional FastAPI bootstrap.  Assigning
+    # the concrete class after defining the closure keeps FakeApp/unit tests
+    # dependency-free while allowing FastAPI to recognize a real Request (the
+    # future-annotations string cannot resolve a closure-local type reliably).
+    if request_type is not None:
+        query_governance_rag.__annotations__["http_request"] = request_type
+    app.post("/agent/rag/query")(query_governance_rag)
+    app.post("/api/agent/rag/query")(query_governance_rag)
 
     @app.get("/agent/rag/diagnostics")
     @app.get("/api/agent/rag/diagnostics")

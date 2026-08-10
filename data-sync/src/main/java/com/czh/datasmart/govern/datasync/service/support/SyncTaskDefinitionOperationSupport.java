@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskDefinitionExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
@@ -64,11 +65,13 @@ public class SyncTaskDefinitionOperationSupport {
     );
 
     private final SyncTaskMapper taskMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncTaskStateMachineSupport stateMachineSupport;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncTaskScheduleConfigSupport scheduleConfigSupport;
     private final SyncTaskDefinitionValidationSupport taskDefinitionValidationSupport;
     private final SyncTaskDefinitionExecutionPrecheckSupport taskDefinitionExecutionPrecheckSupport;
+    private final SyncTaskDefinitionMetadataAwarePrecheckSupport metadataAwarePrecheckSupport;
     private final SyncQuerySupport querySupport;
     private final SyncAuditSupport auditSupport;
 
@@ -158,13 +161,16 @@ public class SyncTaskDefinitionOperationSupport {
         SyncTaskPublishRequest safeRequest = request == null ? new SyncTaskPublishRequest() : request;
         stateMachineSupport.assertCanPublishDefinition(task.getCurrentState());
         taskDefinitionValidationSupport.validateDefinition(definition);
-        SyncTaskDefinitionExecutionPrecheckResponse precheck = taskDefinitionExecutionPrecheckSupport.precheck(definition);
+        SyncTaskDefinitionExecutionPrecheckResponse precheck =
+                taskDefinitionExecutionPrecheckSupport.precheck(definition, actorContext);
         if (!precheck.canCreateTaskDraft()) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "同步任务发布前预检查未通过，precheckStatus=" + precheck.precheckStatus()
                             + "，issueCodes=" + precheck.issueCodes()
                             + "，recommendedActions=" + precheck.recommendedActions());
         }
+
+        persistMetadataResolvedExecutionFacts(definition, actorContext);
 
         boolean scheduled = resolveScheduledOnPublish(definition, task, safeRequest);
         String targetState = resolvePublishedTaskState(scheduled);
@@ -202,6 +208,31 @@ public class SyncTaskDefinitionOperationSupport {
                 SyncAuditActionType.PUBLISH_TASK, actorContext,
                 buildPublishAuditPayload(task, precheck, targetState, scheduleEnabled, nextFireTime, safeRequest));
         return new SyncTaskOperationResult(task.getId(), targetState, "同步任务已发布，当前状态=" + targetState);
+    }
+
+    /**
+     * 持久化发布时由真实目标元数据解析出的执行键事实。
+     *
+     * <p>该步骤位于“带用户上下文的真实预检查”之后、任务状态变为 CONFIGURED/SCHEDULED 之前。
+     * 它不会信任页面手填的主键，也不会把字段名写入审计摘要；只把 metadata-aware precheck 已确认的
+     * {@code targetPrimaryKey} 标记写回任务定义，供后续 worker 构造受控 UPSERT 请求。这样 Agent 创建、
+     * 手工创建、历史草稿恢复都共享同一执行语义。</p>
+     */
+    private void persistMetadataResolvedExecutionFacts(SyncTaskDefinition definition,
+                                                        SyncActorContext actorContext) {
+        String currentConfig = definition.getFieldMappingConfig();
+        String enrichedConfig = metadataAwarePrecheckSupport.enrichExecutionPrimaryKeyFacts(definition, actorContext);
+        if (Objects.equals(currentConfig, enrichedConfig)) {
+            return;
+        }
+        definition.setFieldMappingConfig(enrichedConfig);
+        definition.setUpdateTime(LocalDateTime.now());
+        int updated = taskDefinitionMapper.updateById(definition);
+        if (updated == 0) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "同步任务发布前无法保存目标主键执行事实，taskId=" + definition.getId());
+        }
     }
 
     private String resolveName(String currentName, String requestedName) {

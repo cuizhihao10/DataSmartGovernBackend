@@ -32,6 +32,14 @@ Copy-Item .env.application.example .env.application
 
 示例密码只用于本地学习。生产环境必须外置 MySQL、Neo4j、MinIO、Grafana、Keycloak、Gateway HMAC 和模型 Provider 密钥，禁止把真实值提交到 Git。应用 Compose 默认保持任务 worker、Agent outbox dispatcher 和真实工具提交关闭，避免平台启动时自动消费历史任务或修改客户数据。
 
+六专业 Agent 的容器联调还需要显式理解以下装配条件：
+
+- `DATASMART_DATASOURCE_MANAGEMENT_BASE_URL` 和 `DATASMART_DATA_SYNC_BASE_URL` 指向 overlay 内的 Java 服务 DNS；`DATASMART_AGENT_RUNTIME_SPECIALIST_TURN_FACT_ENABLED=true` 与 `DATASMART_AGENT_RUNTIME_SPECIALIST_TURN_FACT_FAIL_CLOSED=true` 才会把每个 specialist turn 作为低敏 durable fact 纳入审计门禁。
+- `DATASMART_LANGGRAPH_CHECKPOINT_STORE=postgresql`、受限于 `ai_memory` search path 的 `DATASMART_LANGGRAPH_CHECKPOINT_POSTGRESQL_DSN` 与 `DATASMART_LANGGRAPH_CHECKPOINT_FAIL_OPEN=false` 必须成组配置；全平台 Compose 已提供该组合，防止容器重启后丢失状态或数据库异常时静默回退内存。
+- `DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL`、`DATASMART_AI_OPENAI_COMPATIBLE_API_KEY` 和 `DATASMART_AI_AGENT_REASONING_MODEL` 必须共同指向真实可用的 reasoning provider。没有真实模型时，Python Runtime 会按依赖条件跳过 `DATA_SYNC_AGENT`、`PRECHECK_AGENT` 和 `RECOVERY_AGENT` 的生产装配，不能把 dry-run 结果当成六 Agent 闭环通过。
+- Agent Runtime 的 PostgreSQL `V5__specialist_agent_turn_facts.sql` 与 permission-admin 的 `V48__specialist_agent_turn_fact_route_policy.sql` 必须由 Flyway 成功应用；只看到 Python 返回角色摘要而没有 durable fact，不构成交付证据。
+- 本地默认值仅用于隔离联调，正式环境必须由 Secret Manager/Vault/服务网格注入内部服务 token、Gateway 签名密钥和模型 API key，并在发布前轮换，不能沿用 Compose 的开发默认值。
+
 ## 4. 一键构建与启动
 
 先执行交付契约检查：
@@ -67,6 +75,8 @@ docker compose --env-file .env.application `
 ```
 
 如果此前通过 IDE 或 `mvn spring-boot:run` 启动了 8080-8091 端口上的服务，应先停止这些进程，避免宿主机端口冲突。
+
+完整六 Agent 验收不由 `up -d` 自动触发。先运行 `scripts/local-six-agent-governed-e2e.ps1 -PlanOnly` 查看低敏计划，再按 [本地端到端闭环 Runbook](local-e2e-closure-runbook.md) 分别执行 Success 和 Recovery；Recovery 的高风险动作必须停在用户审批/Java handoff，不得用跳过断言开关替代正式验收。
 
 ## 5. 服务寻址与认证
 

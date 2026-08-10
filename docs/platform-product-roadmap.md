@@ -16217,3 +16217,31 @@ push 边界如何消费 5.29 的 task runtime event 契约。当前仍不接受�
 - 验证证据：Python Runtime 全量 `860` 个测试通过，Java 自动执行与计划接入相关测试分别 `7` 个和 `17` 个通过，
   前端 ESLint/TypeScript/Vite 构建通过；本地 Compose 重建后所有核心服务健康，真实历史会话页面成功恢复两端
   数据源、2 条表映射、10 条字段映射以及 Agent 诊断和人工接管入口。
+
+## 2026-08-06 追加落地进展：六专业 Agent 受治理闭环交付候选审查
+
+- 当前可执行 specialist roster 收敛为 `KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、
+  `PRECHECK_AGENT`、`RECOVERY_AGENT` 和 `MONITOR_AGENT`。根 README 中的八专项列表保留为长期产品蓝图，
+  不再被解释为本轮八角色全部上线。
+- Python `SpecialistAgentCoordinator` 依据真实 checkpoint、租户/项目/操作者范围、delegation、依赖波次和
+  工具白名单调度 specialist；低敏 handoff 进入 `DATA_SYNC_AGENT` 的 Java ToolPlan bridge，Java 控制面继续
+  负责权限、审批、outbox、worker receipt 和执行反馈。成功反馈后再由 `PRECHECK_AGENT` 与 `MONITOR_AGENT`
+  对真实 task/execution 做后置复核。
+- `KNOWLEDGE_AGENT` 为 Recovery 提供受范围控制的 RAG/历史案例证据；`RECOVERY_AGENT` 只能生成待审批恢复
+  方案，不自动批准或执行。每个 turn 通过 Agent Runtime `V5__specialist_agent_turn_facts.sql` 记录低敏
+  durable fact，按 session/run 保留角色、状态、范围、checkpoint 和 handoff/bridge 引用；permission-admin
+  `V48__specialist_agent_turn_fact_route_policy.sql` 提供对应访问策略，事实不保存 prompt、SQL、工具参数、凭据、样本或模型原文。
+- Compose overlay 已补齐 specialist fact fail-closed、datasource-management/data-sync 服务寻址和启动依赖。
+  `DATA_SYNC_AGENT`/`RECOVERY_AGENT` 仅把受控候选交给 Java ToolPlan bridge，Java 继续承接权限、审批、outbox、worker receipt
+  与反馈；反馈产生可信资源定位后，独立只读的 `PRECHECK_AGENT`/`MONITOR_AGENT` 才进行后置复核。
+- Recovery 的每项动作独立校验。缺少可验证配置的只读预览以 `RECOVERY_ACTION_INPUT_INCOMPLETE` 记录并跳过，
+  不阻断同批其他完整只读预览；若没有任何完整动作，状态停在补参等待，不创建不可执行 ToolPlan。高风险动作仍只生成
+  Java handoff/审批候选。
+- 真实六 Agent 黑盒入口为 `scripts/local-six-agent-governed-e2e.ps1`，Success 与 Recovery 两个场景合并
+  覆盖六角色，详细矩阵见 `docs/local-e2e-closure-runbook.md`。
+- 回归记录：`python -m pytest python-ai-runtime\tests -q` 为 `1044 passed`，Java Reactor 为 `593` 个测试通过，
+  `local-six-agent-governed-e2e.ps1 -RunSpecialistStatusAggregationRegressionTest` 的角色状态聚合回归通过；Compose 配置、
+  PowerShell 语法、`git diff --check` 和本次变更文件敏感模式扫描通过。
+- 当前仍不能冻结为 Docker 黑盒 E2E 通过：本轮没有执行 `local-six-agent-governed-e2e.ps1 -Execute`，也没有以已启动的
+  Compose 服务、已应用迁移和非 dry-run provider 完成 Success/Recovery 两场景。生产共享凭据仍必须由 Secret Manager 注入并轮换；
+  另外多个 specialist、bridge 和验收脚本超过既有单文件 500 行控制线，仍需拆分并进行结构审查。

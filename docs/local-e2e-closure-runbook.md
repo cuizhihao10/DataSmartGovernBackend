@@ -390,6 +390,55 @@ GET http://localhost:8090/agent/metrics
 
 当前默认闭环套件仍然不是“完整多服务启动型 E2E”。它不会自动启动 `data-sync`、`datasource-management`、`task-management` 的真实服务进程；平台/API 级 E2E 是显式 opt-in 阶段，要求服务进程已由 `local-e2e-start-runtime.ps1` 或手动方式启动。这样设计是为了把低副作用守门和真实写入验收分开，避免开发者只想快速回归时意外触发 worker loop 或覆盖测试表。
 
+### 4.7 六专业 Agent 受治理闭环验收
+
+六专业 Agent 的黑盒入口是：
+
+```powershell
+.\scripts\local-six-agent-governed-e2e.ps1 -PlanOnly
+```
+
+`-PlanOnly` 不访问 Keycloak、不调用 Agent API、不创建任务，适合先核对脚本模式。真实验收必须满足以下前置条件：
+
+- 应用 overlay 已启动，Gateway、Keycloak、permission-admin、agent-runtime、datasource-management、data-sync 和 Python Runtime 均健康；
+- Python Runtime 使用真实 `agent_reasoning` provider，且 `DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL`、`DATASMART_AI_OPENAI_COMPATIBLE_API_KEY`、`DATASMART_AI_AGENT_REASONING_MODEL` 均已由当前环境注入；空值或 dry-run provider 只支持启动诊断，不支持六 Agent 验收；
+- Agent Runtime `V5__specialist_agent_turn_facts.sql` 与 permission-admin `V48__specialist_agent_turn_fact_route_policy.sql` 已成功迁移；
+- 应用 Compose 显式使用 `DATASMART_LANGGRAPH_CHECKPOINT_STORE=postgresql`、受限于 `ai_memory` search path 的 DSN 和 `DATASMART_LANGGRAPH_CHECKPOINT_FAIL_OPEN=false`；permission-admin V52 已应用，checkpoint latest/events 读取必须同时通过 Gateway HMAC 与 Python 对象范围校验；
+- project-owner 可见的源/目标数据源名称、真实表映射和同步模式写入参数已经准备好。密码只放在当前进程的凭据环境中，不放进 objective、脚本输出或文档。
+
+六个角色按业务相关性分两类场景验收，不要求一次请求调用无关角色：
+
+|场景|本场景必须实际执行的角色|关键通过条件|
+|---|---|---|
+|Success|`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`MONITOR_AGENT`|数据源和元数据经授权读取；DATA_SYNC bridge 接受 Java ToolPlan；Java 的权限/审批/outbox/worker receipt 反馈产生可信 task/execution 后，再执行只读 PRECHECK/MONITOR；每个实际 turn 有 durable fact|
+|Recovery|`KNOWLEDGE_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`|失败事实与 grounded RAG 证据进入 Recovery；恢复 bridge 进入审批/Java handoff 等待态；`directExecution=false` 且未接受审批；缺参动作跳过但完整只读预览可继续；实际 turn 有 durable fact|
+
+Success 和 Recovery 应针对隔离的本地验收数据、且可关联到同一项目范围的真实控制面事实；Recovery 需要已有失败 `TaskId` 或 `ExecutionId`，不会自动制造或批准恢复动作。执行时只设置 `DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD` 等本地凭据变量，脚本会把 token、响应正文、prompt、SQL、工具参数和连接信息收敛为低敏摘要。
+
+脚本按阶段选择 durable fact 门禁：Success 的 Planning 只要求 `DATASOURCE_AGENT` 和 `DATA_SYNC_AGENT`，显式确认并取得真实资源后才要求四个 Success 角色；Recovery 只要求知识、恢复、监控三个相关角色。每项 durable fact 按 session/run 的角色、状态、范围、checkpoint 和 handoff/bridge 引用回放，不读取或打印事实正文。Recovery bridge 对每项动作独立校验：缺少可验证配置时产生 `RECOVERY_ACTION_INPUT_INCOMPLETE` 并跳过该项，其他完整只读预览继续；若没有任何完整动作，则停在补参等待态而不创建 Java ToolPlan。
+
+当前可复现的回归命令与结果口径：
+
+```powershell
+python -m pytest python-ai-runtime\tests -q
+# 1087 passed；1 Starlette/TestClient deprecation warning
+
+.\mvnw test
+# Java Reactor: BUILD SUCCESS；Surefire 1321 tests，0 failures，0 errors，9 skipped
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-governed-e2e.ps1 -RunSpecialistStatusAggregationRegressionTest
+# PASS: 脚本内低敏夹具的 specialist 状态聚合回归
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-governed-e2e-exit-code-regression.ps1
+# PASS: PlanOnly/状态聚合成功为 0；本地参数 FAIL 为非 0；子进程输出不含凭据测试哨兵
+```
+
+上述第三、四条不访问 Keycloak、Agent API 或 Docker，前两条是测试回归口径。第四条只使用一个不是真实密码的进程内测试哨兵，子进程输出只用于断言且不会被回显；它保护 CI 的退出码契约，而不构成 Docker 黑盒 E2E 通过证据。只有在满足本节前置条件后显式运行 `-Execute`，并完成 Success 与 Recovery 两场景，才可以记录真实黑盒验收结果。
+
+2026-08-10 当前源码镜像已在健康的 Compose 环境中再次执行 Success 与 Recovery：Success 请求 `six-agent-success-20260810-checkpoint-final` 的 `DATASOURCE_AGENT` 完成后，`DATA_SYNC_AGENT` 在模型调用处以 `DATA_SYNC_SPECIALIST_MODEL_FAILED` 停止；Recovery 请求 `six-agent-recovery-20260810-checkpoint-final` 对已有任务/执行 `76/1805` 完成 KNOWLEDGE、DATASOURCE、PRECHECK、MONITOR 后，`RECOVERY_AGENT` 以 `RECOVERY_PLANNING_MODEL_FAILED` 停止。两轮 turn durable facts 已落库，审批事实最近窗口和全库计数均为 0。Runtime 等价请求携带同一 User-Agent 对 `/responses` 探测返回 Provider HTTP 401，Provider 健康摘要为 degraded、最近 4 次错误率 100%、连续失败 4 次。当前代码保持 `gpt-5.6-sol`/`xhigh` 和 fail-closed，不会把 Provider 凭据失败降级为 dry-run 成功，也没有创建/启动 Success 同步任务或执行 Recovery 审批/副作用。有效 Provider 凭据恢复后，必须重新执行两个场景并让所有脚本断言通过，才能关闭该黑盒门禁。
+
+同一轮还完成了 RAG/LangGraph 持久化恢复实测：Gateway `POST /api/agent/rag/query` 在项目 101 返回 2 条 citation，PostgreSQL 为 thread `rag-e2e-postgresql-20260810` 写入 3 个 checkpoint 和 3 个 event；重启 Python Runtime 后，project-owner 经 Gateway `latest/events` 仍读到最终 version 3 和 3 个事件，而同项目其他 actor 返回 403。该结果验证持久化、路由策略、HMAC 和对象级范围，不能替代模型 Provider 恢复后的六 Agent success/recovery 复跑。
+
 ## 5. Smoke Check
 
 仓库提供了只读 smoke 脚本：

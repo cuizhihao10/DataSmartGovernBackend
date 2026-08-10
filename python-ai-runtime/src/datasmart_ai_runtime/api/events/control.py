@@ -75,6 +75,8 @@ def build_event_replay_response(
 def build_event_control_response(
     payload: dict[str, Any],
     session_manager: RuntimeEventSessionManager,
+    *,
+    access_context: RuntimeEventAccessContext | None = None,
 ) -> dict[str, Any]:
     """处理实时事件控制消息。
 
@@ -84,9 +86,17 @@ def build_event_control_response(
 
     handler = RuntimeEventControlHandler(session_manager)
     message = control_message_from_payload(payload)
-    access_context = _access_context_from_payload(payload)
+    # Direct helper callers may still provide a test-only accessContext for
+    # offline compatibility. Production HTTP/WebSocket routes pass the
+    # verified Gateway context explicitly and never use the body fallback.
+    explicit_access_context = access_context is not None
+    effective_access_context = access_context or _access_context_from_payload(payload)
     try:
-        return handler.handle(message, access_context=access_context)
+        return handler.handle(
+            message,
+            access_context=effective_access_context,
+            override_request_identity=explicit_access_context,
+        )
     except RuntimeEventControlMessageError as exc:
         return {
             "accepted": False,
@@ -101,10 +111,16 @@ def build_event_control_response(
 def build_event_websocket_payloads(
     payload: dict[str, Any],
     session_manager: RuntimeEventSessionManager,
+    *,
+    access_context: RuntimeEventAccessContext | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """把一条控制消息转换成适合 WebSocket 下发的 payload 序列。"""
 
-    control_response = build_event_control_response(payload, session_manager)
+    control_response = build_event_control_response(
+        payload,
+        session_manager,
+        access_context=access_context,
+    )
     frames = build_websocket_frames_from_control_response(control_response)
     return frames_to_payloads(frames)
 

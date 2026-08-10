@@ -308,7 +308,7 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 #### 技术方案
 
-1. 智能体管理：支持8个专项智能体的创建、启动、停止、扩容，维护智能体生命周期；
+1. 智能体管理：长期蓝图支持8个专项智能体的创建、启动、停止、扩容，维护智能体生命周期；当前可验收交付的真实 specialist roster 是六个专业 Agent，具体边界见下方“当前可验收的六专业 Agent 受治理闭环”；
 
 2. 技能插件市场：集中管理工具与技能，支持插件注册、卸载、升级，实现技能复用；
 
@@ -330,7 +330,7 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 5. 多智能体协同需避免死锁，支持超时机制（单任务超时时间可配置）。
 
-#### 8个专项智能体设计（核心，AI需明确各智能体职责）
+#### 8个专项智能体设计（长期目标蓝图，当前交付范围见下）
 
 |智能体名称|核心职责|技术方案|设计需求|
 |---|---|---|---|
@@ -342,6 +342,25 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 |合规脱敏智能体|敏感数据识别、分级分类、脱敏方案生成、合规审计|Qwen2-7B微调（敏感数据识别方向）、脱敏算法库|1. 敏感数据识别准确率≥99%；2. 脱敏方案符合合规要求；3. 支持脱敏审计日志|
 |运维告警智能体|指标监控、异常告警、自动恢复、运维复盘|Qwen2-7B微调（运维方向）、Prometheus指标采集|1. 告警响应≤10秒；2. 支持简单故障自动恢复；3. 定期生成运维复盘报告|
 |反思优化智能体|任务复盘、规则优化、智能体能力迭代、技能插件升级|Qwen2-7B微调（反思学习方向）、DPO微调|1. 复盘报告需有针对性优化建议；2. 支持智能体能力迭代；3. 可自动优化技能插件参数|
+
+#### 3.3.1 当前可验收的六专业 Agent 受治理闭环
+
+长期八专项表是产品扩展蓝图，不代表八个角色都已进入本轮可执行交付。当前工作区的真实 specialist roster 为：
+
+|角色|当前职责|副作用边界|
+|---|---|---|
+|`KNOWLEDGE_AGENT`|RAG、历史案例和证据引用|只读检索与低敏证据摘要|
+|`DATASOURCE_AGENT`|在当前项目授权范围内消歧并发现源/目标数据源|只读目录和元数据入口，不读取连接凭据|
+|`DATA_SYNC_AGENT`|读取两端元数据并生成同步配置与生命周期 ToolPlan 草案|结果必须进入 Java ToolPlan bridge，不直接保存或执行任务|
+|`PRECHECK_AGENT`|在 Java 已返回可信 `taskId`/`executionId` 后执行确定性预检查并解释结果|仅在 bridge 后的独立只读复核波次运行，不改变任务或数据|
+|`RECOVERY_AGENT`|读取失败事实和 RAG 证据，提出受审批约束的恢复方案|只能生成待审批 handoff，不能自动批准或执行恢复|
+|`MONITOR_AGENT`|在 Java 已返回可信资源定位后读取任务、执行和进度状态并生成低敏观察摘要|仅在 bridge 后的独立只读复核波次运行，不提供 retry/stop/replay 写操作|
+
+闭环顺序是 `Master/主编排 -> durable checkpoint -> SpecialistCoordinator -> 依赖波次与低敏 handoff -> specialist turn -> Java ToolPlan/权限/审批/outbox/worker -> feedback -> PRECHECK/MONITOR 后置复核 -> second turn/replay`。每个 specialist turn 都按 session/run、角色、状态、范围、checkpoint 和 handoff/bridge 引用写入 Java `agent-runtime` durable fact；该事实不包含 prompt、SQL、工具参数、凭据、样本和模型原文。`DATA_SYNC_AGENT` 与 `RECOVERY_AGENT` 的 handoff 只形成 Java 可治理的 ToolPlan 或审批候选，Java 控制面才负责权限、审批、outbox、worker receipt 和执行反馈；只有反馈给出可信资源定位后，才运行后置的只读 `PRECHECK_AGENT`/`MONITOR_AGENT`。
+
+Recovery 的每项建议独立经过工具白名单和可验证配置校验。某一只读预览动作缺参时记录 `RECOVERY_ACTION_INPUT_INCOMPLETE` 并跳过该动作，不阻断同批其他完整只读预览；若没有任何完整动作，闭环明确停在补参等待态，绝不创建不可执行的 Java ToolPlan。高风险 Recovery 始终在用户审批前停止。
+
+角色按依赖条件 fail-closed 装配：`DATASOURCE_AGENT` 和 `MONITOR_AGENT` 需要对应 Java 控制面地址，`DATA_SYNC_AGENT`、`PRECHECK_AGENT` 和 `RECOVERY_AGENT` 还需要真实的 `agent_reasoning` 模型路由；dry-run provider 不能伪装成六 Agent 已上线。本轮已记录的回归口径是 `python -m pytest python-ai-runtime\tests -q` 的 `1059 passed`、Java Reactor 的 `594` 个 Agent Runtime 测试及全 Reactor 通过，以及 `local-six-agent-governed-e2e.ps1` 的聚合/退出码回归通过。当前源码镜像的 Success 与 Recovery Docker 黑盒链路均已实际执行：前者在 `DATA_SYNC_AGENT`、后者在 `RECOVERY_AGENT` 的真实模型调用处收到 Provider HTTP 401 并 fail-closed，未越过 Java 审批边界；这证明链路已运行到外部 Provider 授权边界，但不能声称六 Agent success/recovery 已端到端通过。执行入口、证据口径和剩余事项见 [本地端到端闭环 Runbook](docs/local-e2e-closure-runbook.md) 与 [最终收敛交付清单](docs/final-convergence-delivery-checklist.md)。
 ### 3.4 Python AI算法层（核心支撑模块）
 
 #### 模块定位

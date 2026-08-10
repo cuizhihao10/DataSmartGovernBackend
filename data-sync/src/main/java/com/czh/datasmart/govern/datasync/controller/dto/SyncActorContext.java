@@ -41,7 +41,8 @@ public record SyncActorContext(Long tenantId,
                                String dataScopeExpression,
                                List<Long> authorizedProjectIds,
                                List<PlatformAuthorizedProjectRole> authorizedProjectRoles,
-                               Boolean approvalRequired) {
+                               Boolean approvalRequired,
+                               Long applicationId) {
 
     /**
      * record 主构造的轻量规整。
@@ -64,6 +65,23 @@ public record SyncActorContext(Long tenantId,
      */
     public SyncActorContext(Long tenantId, Long actorId, String actorRole, String traceId) {
         this(tenantId, null, null, actorId, actorRole, traceId, null, null, List.of(), List.of(), null);
+    }
+
+    /** 保留旧的完整上下文签名；旧 worker/测试没有应用边界时明确保持 null。 */
+    public SyncActorContext(Long tenantId,
+                            Long projectId,
+                            Long workspaceId,
+                            Long actorId,
+                            String actorRole,
+                            String traceId,
+                            String dataScopeLevel,
+                            String dataScopeExpression,
+                            List<Long> authorizedProjectIds,
+                            List<PlatformAuthorizedProjectRole> authorizedProjectRoles,
+                            Boolean approvalRequired) {
+        this(tenantId, projectId, workspaceId, actorId, actorRole, traceId,
+                dataScopeLevel, dataScopeExpression, authorizedProjectIds,
+                authorizedProjectRoles, approvalRequired, null);
     }
 
     /**

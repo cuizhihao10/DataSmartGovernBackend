@@ -3,6 +3,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -24,6 +25,22 @@ from datasmart_ai_runtime.services.agent_plan_ingestion_client import (
 )
 
 
+class _HttpResponse:
+    """支持 ``urlopen`` 上下文管理协议的最小成功响应。"""
+
+    def __init__(self, payload: dict) -> None:
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
 class JavaAgentPlanIngestionClientTest(unittest.TestCase):
     """验证 Python AgentPlan 与 Java agent-runtime 控制面之间的接入契约。
 
@@ -33,6 +50,88 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
     - Java 创建 session/run/toolAudit 后，Python 必须能把真实 auditId 回写到 ToolPlan，
       否则 4.05 的真实工具结果 Provider 就无法查询 Java 执行结果。
     """
+
+    @patch("datasmart_ai_runtime.services.agent_plan_ingestion_client.urlopen")
+    def test_ingest_sends_internal_token_and_trusted_application_id_only_in_headers(
+        self,
+        mocked_urlopen,
+    ) -> None:
+        """内部凭证和应用边界不得进入 AgentPlan 正文、响应或对象 repr。"""
+
+        service_token = "plan-ingestion-secret"
+        request_context = self._request()
+        request_context.variables["trustedControlPlane"]["requestContext"]["applicationId"] = "3001"
+        mocked_urlopen.return_value = _HttpResponse(self._success_response())
+        client = JavaAgentPlanIngestionClient(
+            base_url="http://agent-runtime.test",
+            service_token=service_token,
+        )
+
+        result = client.ingest(request_context, self._plan(), trace_id="trace-001")
+
+        sent_request = mocked_urlopen.call_args.args[0]
+        sent_headers = dict(sent_request.header_items())
+        sent_body = sent_request.data.decode("utf-8")
+        self.assertEqual(service_token, sent_headers["X-datasmart-internal-service-token"])
+        self.assertEqual("3001", sent_headers["X-datasmart-application-id"])
+        self.assertNotIn(service_token, sent_body)
+        self.assertNotIn(service_token, json.dumps(result.raw_response))
+        self.assertNotIn(service_token, repr(client))
+
+    @patch("datasmart_ai_runtime.services.agent_plan_ingestion_client.urlopen")
+    def test_ingest_omits_internal_headers_when_trusted_values_are_absent(
+        self,
+        mocked_urlopen,
+    ) -> None:
+        """空 token 与缺失 applicationId 都不能被伪造为请求正文或 projectId。"""
+
+        mocked_urlopen.return_value = _HttpResponse(self._success_response())
+        client = JavaAgentPlanIngestionClient(
+            base_url="http://agent-runtime.test",
+            service_token="  ",
+        )
+
+        client.ingest(self._request(), self._plan())
+
+        sent_request = mocked_urlopen.call_args.args[0]
+        sent_headers = dict(sent_request.header_items())
+        self.assertNotIn("X-datasmart-internal-service-token", sent_headers)
+        self.assertNotIn("X-datasmart-application-id", sent_headers)
+        self.assertNotIn("applicationId", json.loads(sent_request.data.decode("utf-8")))
+
+    @patch("datasmart_ai_runtime.services.agent_plan_ingestion_client.urlopen")
+    def test_ingest_rejects_invalid_trusted_application_id_before_network_call(
+        self,
+        mocked_urlopen,
+    ) -> None:
+        """可信上下文携带非法 applicationId 时必须 fail-closed，且不能用 projectId 代替。"""
+
+        request_context = self._request()
+        request_context.variables["trustedControlPlane"]["requestContext"]["applicationId"] = "0"
+        client = JavaAgentPlanIngestionClient(base_url="http://agent-runtime.test")
+
+        with self.assertRaisesRegex(AgentPlanIngestionClientError, "applicationId"):
+            client.ingest(request_context, self._plan())
+
+        mocked_urlopen.assert_not_called()
+
+    @patch("datasmart_ai_runtime.services.agent_plan_ingestion_client.urlopen")
+    def test_transport_error_redacts_internal_token(self, mocked_urlopen) -> None:
+        """传输层即使回显请求凭证，对外异常也只能暴露脱敏文本。"""
+
+        service_token = "plan-ingestion-secret"
+        mocked_urlopen.side_effect = RuntimeError(f"request rejected: {service_token}")
+        client = JavaAgentPlanIngestionClient(
+            base_url="http://agent-runtime.test",
+            service_token=service_token,
+        )
+
+        with self.assertRaises(AgentPlanIngestionClientError) as captured:
+            client.ingest(self._request(), self._plan())
+
+        self.assertNotIn(service_token, str(captured.exception))
+        self.assertIn("<redacted>", str(captured.exception))
+        self.assertIsNone(captured.exception.__cause__)
 
     def test_build_payload_serializes_agent_plan_for_java_ingestion(self) -> None:
         request = self._request()
@@ -349,6 +448,17 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
             response_summary="已生成受控工具计划，等待 Java 控制面接入审计。",
             next_actions=("提交 Java agent-runtime 创建 session/run/toolAudit。",),
         )
+
+    @staticmethod
+    def _success_response() -> dict:
+        return {
+            "code": 0,
+            "data": {
+                "session": {"sessionId": "ags-http"},
+                "run": {"runId": "agr-http"},
+                "toolAudits": [],
+            },
+        }
 
 
 if __name__ == "__main__":

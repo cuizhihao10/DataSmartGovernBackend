@@ -28,6 +28,11 @@ public class AgentSessionRecord {
     /** 实际执行 Agent 身份，与发起会话的 user actor 共同构成双主体审计。 */
     private final String agentId;
     private final Long tenantId;
+    /**
+     * Gateway 解析出的产品应用边界。它不能从 projectId 推导，工具下游会把该值作为
+     * 受信 Header 继续传递，避免同租户多应用之间共享错误的 Agent 资源。
+     */
+    private Long applicationId;
     private final Long projectId;
     private final Long workspaceId;
     private final String actorId;
@@ -186,6 +191,31 @@ public class AgentSessionRecord {
 
     public Long getTenantId() {
         return tenantId;
+    }
+
+    /**
+     * 返回当前会话所属的产品应用。空值只代表旧数据或未接入应用 Header 的兼容会话，
+     * 不能被下游解释成全局范围。
+     */
+    public Long getApplicationId() {
+        return applicationId;
+    }
+
+    /**
+     * 绑定一次由 Gateway/可信 Python 控制面注入的应用边界。
+     * 已绑定的会话不允许被另一个应用覆盖，防止跨应用复用 sessionId。
+     */
+    public void bindApplicationId(Long applicationId) {
+        if (applicationId == null) {
+            return;
+        }
+        if (applicationId <= 0) {
+            throw new IllegalArgumentException("applicationId 必须是正整数");
+        }
+        if (this.applicationId != null && !this.applicationId.equals(applicationId)) {
+            throw new IllegalArgumentException("Agent 会话不能切换 applicationId");
+        }
+        this.applicationId = applicationId;
     }
 
     public Long getProjectId() {

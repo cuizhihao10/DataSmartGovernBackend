@@ -11,6 +11,7 @@ from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.event_transport import RuntimeEventConnectionState
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
+from datasmart_ai_runtime.services.runtime_events.runtime_event_authorization import RuntimeEventAccessContext
 from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 from datasmart_ai_runtime.services.runtime_events.runtime_event_session import RuntimeEventSessionManager
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import InMemoryRuntimeEventStore
@@ -18,6 +19,41 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import
 
 
 class RuntimeEventWebSocketAdapterTest(unittest.TestCase):
+    def test_explicit_trusted_access_context_overrides_forged_control_body(self) -> None:
+        """生产路由传入的认证上下文必须优先于正文自报的租户、项目、角色。"""
+
+        manager = RuntimeEventSessionManager()
+        payloads = build_event_websocket_payloads(
+            {
+                "type": "subscribe",
+                "subscription": {
+                    "clientId": "browser-a",
+                    "tenantId": "999",
+                    "projectId": "999",
+                    "actorId": "forged",
+                    "roles": ["PLATFORM_ADMIN"],
+                },
+                "accessContext": {
+                    "tenantId": "999",
+                    "projectId": "999",
+                    "actorId": "forged",
+                    "roles": ["PLATFORM_ADMIN"],
+                },
+            },
+            manager,
+            access_context=RuntimeEventAccessContext(
+                tenant_id="10",
+                project_id="101",
+                actor_id="1001",
+                roles=("PROJECT_OWNER",),
+            ),
+        )
+
+        self.assertEqual(1, len(payloads))
+        self.assertEqual("101", payloads[0]["payload"]["subscription"]["projectId"])
+        self.assertEqual("1001", payloads[0]["payload"]["subscription"]["actorId"])
+        self.assertEqual(("PROJECT_OWNER",), tuple(payloads[0]["payload"]["subscription"]["roles"]))
+
     def test_subscribe_message_is_split_into_control_and_event_frames(self) -> None:
         store = InMemoryRuntimeEventStore()
         store.append_many(self._events())

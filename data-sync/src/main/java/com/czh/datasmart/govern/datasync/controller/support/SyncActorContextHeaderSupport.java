@@ -58,7 +58,8 @@ public final class SyncActorContextHeaderSupport {
                 firstHeader(headers, PlatformContextHeaders.DATA_SCOPE_EXPRESSION),
                 parseAuthorizedProjectIds(firstHeader(headers, PlatformContextHeaders.AUTHORIZED_PROJECT_IDS)),
                 parseAuthorizedProjectRoles(firstHeader(headers, PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES)),
-                Boolean.valueOf(firstHeader(headers, PlatformContextHeaders.APPROVAL_REQUIRED)));
+                Boolean.valueOf(firstHeader(headers, PlatformContextHeaders.APPROVAL_REQUIRED)),
+                parseLongHeader(headers, PlatformContextHeaders.APPLICATION_ID));
     }
 
     /**

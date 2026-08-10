@@ -42,6 +42,7 @@ class SyncActorContextHeaderSupportTest {
         headers.set(PlatformContextHeaders.DATA_SCOPE_EXPRESSION, "project_id IN ${actorProjectIds}");
         headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, "101, 102, abc, 0, -7, 102, 205");
         headers.set(PlatformContextHeaders.APPROVAL_REQUIRED, "true");
+        headers.set(PlatformContextHeaders.APPLICATION_ID, "3001");
 
         SyncActorContext context = SyncActorContextHeaderSupport.fromHeaders(
                 7L, 1001L, "PROJECT_OWNER", "trace-001", headers);
@@ -50,6 +51,7 @@ class SyncActorContextHeaderSupportTest {
         assertEquals("project_id IN ${actorProjectIds}", context.dataScopeExpression());
         assertEquals(List.of(101L, 102L, 205L), context.authorizedProjectIds());
         assertTrue(context.approvalRequired());
+        assertEquals(3001L, context.applicationId());
     }
 
     /**

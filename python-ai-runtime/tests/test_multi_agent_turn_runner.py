@@ -93,6 +93,49 @@ class MultiAgentTurnRunnerTest(unittest.TestCase):
         self.assertNotIn("select * from hidden_customer", serialized)
         self.assertNotIn("toolArguments", serialized)
 
+    def test_candidate_selection_keeps_specialists_after_concurrency_window(self) -> None:
+        """候选生成不能把并发窗口误当成角色截断窗口。
+
+        execution wave 会在真正 dispatch 时限制并发；turn runner 先保留
+        全部候选，才能让后续波次看到排在窗口之后的 PRECHECK/MONITOR。
+        """
+
+        workflow = LangGraphMultiAgentTurnRunnerWorkflow(
+            langgraph_api=LangGraphApi(state_graph=FakeStateGraph, start="START", end="END")
+        )
+        roles = (
+            "MASTER_ORCHESTRATOR",
+            "KNOWLEDGE_AGENT",
+            "DATASOURCE_AGENT",
+            "DATA_SYNC_AGENT",
+            "PRECHECK_AGENT",
+            "RECOVERY_AGENT",
+            "MONITOR_AGENT",
+        )
+        diagnostics = workflow.run(
+            request=_request(),
+            plan=_plan(),
+            execution_session={
+                "status": "READY_FOR_CONTROL_PLANE_HANDOFF",
+                "durablePhase": "ready_for_second_turn",
+                "workItems": tuple(
+                    {
+                        "agentRole": role,
+                        "participationMode": "PRIMARY" if role == "MASTER_ORCHESTRATOR" else "SPECIALIST",
+                        "sessionStatus": "READY_FOR_AGENT_TURN",
+                        "plannedToolNames": ("sync.task.precheck",),
+                    }
+                    for role in roles
+                ),
+            },
+            command_proposal_templates=_command_templates(),
+            durable_loop={"runId": "run-all-candidates", "phase": "ready_for_second_turn"},
+        )
+
+        summary = diagnostics.to_summary()
+        self.assertEqual(7, summary["turnAttemptCount"])
+        self.assertEqual(roles, tuple(item["agentRole"] for item in summary["turnAttempts"]))
+
     def test_knowledge_agent_turn_binds_rag_capability_contract(self) -> None:
         """KNOWLEDGE_AGENT 参与时，turn runner 应输出 RAG 可调度能力合同。
 

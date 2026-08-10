@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.datasync.service.support;
 import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceRunOnceProperties;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionPartialSuccessRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
@@ -44,6 +45,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -147,7 +149,58 @@ class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
         verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
     }
 
-    private SyncOfflineRunnerDispatchService dispatchService(FakeDatasourceRunOnceClient datasourceClient,
+    /**
+     * 验证同一父 execution 经过选择性重试后，再次失败不会复用上一运行代次的 FAIL 幂等键。
+     *
+     * <p>真实问题发生在“第一次所有分片失败 → 用户修复后选择性重试 → 第二次仍存在脏数据”的场景。
+     * 选择性重试为了复用分片账本不会创建新 executionId；如果第二次 FAIL 仍使用第一次的幂等键，
+     * 生命周期层会把它识别成旧回调重放，父 execution 将长期残留在 RUNNING。本测试让两个分片在两轮
+     * 执行中都稳定失败，并模拟 worker 重新 claim 时刷新 leaseExpireTime，断言两次终态键必须不同。</p>
+     */
+    @Test
+    void partitionShardRetryGenerationShouldUseDistinctFailureIdempotencyKey() {
+        DatasourceRunOnceClient datasourceClient = (request, actorContext) -> failedResponse();
+        ObjectExecutionMapperFixture objectMapperFixture = objectExecutionMapperFixture();
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncOfflineRunnerDispatchService dispatchService =
+                dispatchService(datasourceClient, objectMapperFixture.mapper(), lifecycleSupport, receiptPublisher);
+        SyncObjectExecutionOperationSupport retrySupport = retrySupport(objectMapperFixture.mapper());
+        SyncExecution execution = execution(SyncExecutionState.RUNNING);
+        SyncTask task = task(SyncTaskState.RUNNING.name());
+        SyncTaskDefinition definition = partitionedSingleObjectDefinition();
+
+        SyncOfflineRunnerDispatchResult firstResult =
+                dispatchService.dispatchOffline(execution, task, definition, workerPlan(), actor());
+        assertThat(firstResult.failed()).isTrue();
+        assertThat(objectMapperFixture.rows())
+                .allSatisfy(row -> assertThat(row.getObjectState()).isEqualTo(SyncObjectExecutionState.FAILED.name()));
+
+        execution.setExecutionState(SyncExecutionState.FAILED.name());
+        task.setCurrentState(SyncTaskState.FAILED.name());
+        SyncObjectRetryRequest retryRequest = new SyncObjectRetryRequest();
+        retryRequest.setRetryAttemptBudget(1);
+        retryRequest.setResetAttemptCount(true);
+        retryRequest.setReason("retry failed partition shards in a new worker lease generation");
+        retrySupport.retryFailedObjects(task, execution, retryRequest, actor());
+
+        execution.setExecutionState(SyncExecutionState.RUNNING.name());
+        execution.setLeaseExpireTime(execution.getLeaseExpireTime().plusMinutes(5));
+        task.setCurrentState(SyncTaskState.RETRYING.name());
+        SyncOfflineRunnerDispatchResult retryResult =
+                dispatchService.dispatchOffline(execution, task, definition, workerPlan(), actor());
+        assertThat(retryResult.failed()).isTrue();
+
+        ArgumentCaptor<SyncExecutionFailRequest> failCaptor =
+                ArgumentCaptor.forClass(SyncExecutionFailRequest.class);
+        verify(lifecycleSupport, times(2)).failExecution(eq(task), eq(execution),
+                failCaptor.capture(), any(SyncActorContext.class));
+        assertThat(failCaptor.getAllValues())
+                .extracting(SyncExecutionFailRequest::getIdempotencyKey)
+                .doesNotHaveDuplicates();
+    }
+
+    private SyncOfflineRunnerDispatchService dispatchService(DatasourceRunOnceClient datasourceClient,
                                                             SyncObjectExecutionMapper objectExecutionMapper,
                                                             SyncExecutionLifecycleSupport lifecycleSupport,
                                                             DataSyncTaskManagementReceiptPublisher receiptPublisher) {

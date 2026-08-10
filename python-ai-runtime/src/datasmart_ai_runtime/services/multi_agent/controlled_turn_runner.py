@@ -324,9 +324,14 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
 
         updated = self._append_trace(state, "langgraph.multi_agent_turn.select_turn_candidates")
         route_hints = tuple(state.get("javaProposalRoutes") or ())
+        # This node records every eligible candidate.  It must not apply the
+        # execution-wave concurrency limit here: SpecialistAgentCoordinator
+        # applies that limit when it dispatches the actual controlled turns.
+        # Slicing here would silently remove later roles such as PRECHECK and
+        # MONITOR from the run, making an unattempted specialist look complete.
         attempts = tuple(
             self._turn_attempt(raw_item=item, index=index, route_hints=route_hints, state=state)
-            for index, item in enumerate(tuple(state.get("workItems") or ())[: int(state.get("maxConcurrentAgentTurns") or 1)])
+            for index, item in enumerate(tuple(state.get("workItems") or ()))
         )
         updated["turnAttempts"] = attempts
         return updated

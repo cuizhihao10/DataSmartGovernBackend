@@ -12,7 +12,11 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+
+import java.time.Duration;
 
 /**
  * Agent 业务工具下游 HTTP 公共支持。
@@ -23,6 +27,18 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class AgentToolDownstreamHttpSupport {
+
+    /**
+     * Python Runtime 当前由 Uvicorn 提供 HTTP/1.1 服务，不接受 Java HTTP 客户端发起的明文 h2c 升级。
+     * 使用独立常量而不是按 URL 字符串猜测服务类型，避免部署地址变化后协议保护静默失效。
+     */
+    private static final String PYTHON_AI_RUNTIME_SERVICE = "python-ai-runtime";
+
+    /**
+     * Agent 同步工具属于控制面短调用：连接失败应快速释放执行线程，而一次 RAG 检索允许保留合理的模型处理窗口。
+     */
+    private static final Duration PYTHON_CONNECT_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration PYTHON_READ_TIMEOUT = Duration.ofSeconds(60);
 
     private final AgentRuntimeProperties properties;
 
@@ -36,6 +52,34 @@ public class AgentToolDownstreamHttpSupport {
     }
 
     /**
+     * 基于调用方注入的 Spring Boot {@link RestClient.Builder} 创建一次服务范围内的客户端。
+     *
+     * <p>这里先 clone builder，原因是自动装配的 builder 会被多个工具适配器共享。若直接修改其 base URL
+     * 或 request factory，一个 RAG 调用就可能把后续 data-sync、datasource-management 请求也改写成同一
+     * 连接策略。clone 后仍会继承 Spring Boot 已安装的 JSON converter、观测与测试 request factory，
+     * 但每次调用的目标地址和协议选择彼此隔离。</p>
+     *
+     * <p>Python Runtime 使用 {@link SimpleClientHttpRequestFactory} 强制走稳定的 HTTP/1.1 路径。
+     * 默认 Apache/JDK 客户端在明文连接上可能发送 {@code Upgrade: h2c}；Uvicorn 拒绝升级时，带 body 的
+     * POST 可能被拆成“无 body 请求 + 无效后续字节”，最终表现为 FastAPI 422。该设置不是绕过 422 校验，
+     * 而是保证 Java 发出的 JSON body 能完整到达 Python 的既有请求合同。</p>
+     *
+     * @param template Spring Boot 管理的客户端构建器模板
+     * @param targetService 受控工具目录中的目标服务编码
+     * @return 仅服务于本次下游调用的 RestClient
+     */
+    public RestClient serviceClient(RestClient.Builder template, String targetService) {
+        RestClient.Builder scopedBuilder = template.clone().baseUrl(baseUrl(targetService));
+        if (PYTHON_AI_RUNTIME_SERVICE.equals(targetService)) {
+            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+            requestFactory.setConnectTimeout(PYTHON_CONNECT_TIMEOUT);
+            requestFactory.setReadTimeout(PYTHON_READ_TIMEOUT);
+            scopedBuilder.requestFactory(requestFactory);
+        }
+        return scopedBuilder.build();
+    }
+
+    /**
      * 将当前用户身份与项目范围透传给业务服务。
      *
      * <p>SOURCE_SERVICE 表达调用链由 Agent Host 代理发起；ACTOR_ID、ACTOR_ROLE、ACTOR_TYPE 和项目角色快照
@@ -46,9 +90,16 @@ public class AgentToolDownstreamHttpSupport {
      */
     public void applyUserDelegationHeaders(HttpHeaders headers, AgentToolExecutionContext context) {
         headers.set(PlatformContextHeaders.TENANT_ID, String.valueOf(context.session().getTenantId()));
+        if (context.session().getApplicationId() != null) {
+            headers.set(PlatformContextHeaders.APPLICATION_ID,
+                    String.valueOf(context.session().getApplicationId()));
+        }
         if (context.session().getProjectId() != null) {
             headers.set(PlatformContextHeaders.PROJECT_ID, String.valueOf(context.session().getProjectId()));
             headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, String.valueOf(context.session().getProjectId()));
+        }
+        if (context.session().getWorkspaceKey() != null && !context.session().getWorkspaceKey().isBlank()) {
+            headers.set(PlatformContextHeaders.WORKSPACE_ID, context.session().getWorkspaceKey());
         }
         headers.set(PlatformContextHeaders.ACTOR_ID, context.session().getActorId());
         headers.set(PlatformContextHeaders.ACTOR_ROLE, delegatedActorRole(context));
@@ -67,6 +118,19 @@ public class AgentToolDownstreamHttpSupport {
         headers.set(PlatformContextHeaders.DATA_SCOPE_LEVEL, "PROJECT");
         headers.set(PlatformContextHeaders.TRACE_ID,
                 context.traceId() == null ? context.audit().getTraceId() : context.traceId());
+    }
+
+    /**
+     * 为 Java Agent Host -> Python Runtime 的直连工具调用附加服务间凭证。
+     *
+     * <p>该凭证不能跟随所有业务下游请求传播，否则会扩大秘密暴露面；调用方只在 RAG 这类
+     * Python 专用入口上显式调用本方法。未配置时不伪造任何值，让 Python Runtime 继续 fail-closed。</p>
+     */
+    public void applyPythonRuntimeInternalServiceToken(HttpHeaders headers) {
+        String token = System.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN");
+        if (token != null && !token.isBlank()) {
+            headers.set(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, token);
+        }
     }
 
     public long numericActorId(AgentToolExecutionContext context) {

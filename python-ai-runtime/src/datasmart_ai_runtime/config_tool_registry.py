@@ -121,6 +121,17 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
                         "resolution": "model_optional",
                         "description": "用户明确指定的表名或安全模式，用于只读取任务相关对象并避免大目录截断。",
                     },
+                    "tableNames": {
+                        "type": "array",
+                        "required": False,
+                        "sensitive": False,
+                        "resolution": "model_optional",
+                        "description": (
+                            "用户明确指定的多个精确表名。Java Agent Runtime 会逐表读取并合并为一个"
+                            "受审计元数据事实，避免大目录分页截断。"
+                        ),
+                        "items": {"type": "string"},
+                    },
                 } if "metadata.read" in name else {}),
             },
             read_only=True,

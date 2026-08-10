@@ -165,10 +165,12 @@ class JavaAgentPlanIngestionClient:
         base_url: str,
         timeout_seconds: int = 5,
         ingestion_path: str = "/agent-runtime/plan-ingestions",
+        service_token: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._ingestion_path = ingestion_path
+        self._service_token = self._optional_string(service_token)
 
     def ingest(
         self,
@@ -180,15 +182,21 @@ class JavaAgentPlanIngestionClient:
 
         payload = self.build_payload(request_context, plan)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            "X-DataSmart-Trace-Id": trace_id or plan.request_id,
+            "X-DataSmart-Source-Service": "python-ai-runtime",
+        }
+        if self._service_token is not None:
+            headers["X-DataSmart-Internal-Service-Token"] = self._service_token
+        application_id = self._trusted_application_id(request_context.variables or {})
+        if application_id is not None:
+            headers["X-DataSmart-Application-Id"] = str(application_id)
         request = Request(
             url=f"{self._base_url}{self._ingestion_path}",
             data=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json; charset=utf-8",
-                "X-DataSmart-Trace-Id": trace_id or plan.request_id,
-                "X-DataSmart-Source-Service": "python-ai-runtime",
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -207,7 +215,14 @@ class JavaAgentPlanIngestionClient:
                 f"Java AgentPlan 控制面拒绝请求（HTTP {exc.code}），且未返回可解析的错误详情。"
             ) from exc
         except Exception as exc:  # pragma: no cover - 网络错误在集成环境覆盖
-            raise AgentPlanIngestionClientError(f"提交 Python AgentPlan 到 Java 控制面失败：{exc}") from exc
+            # urllib/代理实现可能把请求摘要放进异常文本。内部 token 只允许存在于传输 Header，
+            # 因此对外错误既不串联原异常，也不传播可能含凭证的原始文本。
+            error_detail = str(exc)
+            if self._service_token is not None:
+                error_detail = error_detail.replace(self._service_token, "<redacted>")
+            raise AgentPlanIngestionClientError(
+                f"提交 Python AgentPlan 到 Java 控制面失败：{error_detail or type(exc).__name__}"
+            ) from None
         return self.parse_platform_response(response_payload)
 
     @staticmethod
@@ -325,6 +340,19 @@ class JavaAgentPlanIngestionClient:
             return {}
         request_context = trusted.get("requestContext")
         return dict(request_context) if isinstance(request_context, dict) else {}
+
+    @classmethod
+    def _trusted_application_id(cls, variables: dict[str, Any]) -> int | None:
+        """读取 Gateway 已验证的应用边界，不接受业务正文或 projectId 代替。"""
+
+        request_context = cls._trusted_request_context(variables)
+        raw_application_id = request_context.get("applicationId")
+        if raw_application_id is None or str(raw_application_id).strip() == "":
+            return None
+        application_id = cls._optional_long(raw_application_id, "applicationId")
+        if application_id is None or application_id <= 0:
+            raise AgentPlanIngestionClientError("applicationId 必须是正整数")
+        return application_id
 
     @classmethod
     def parse_platform_response(cls, payload: dict[str, Any]) -> AgentPlanIngestionResult:

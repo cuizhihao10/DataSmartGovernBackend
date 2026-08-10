@@ -20,6 +20,7 @@
 - `/agent/langgraph/checkpoints/resume`：携带低敏 `resumeFacts` 恢复 thread。
 - `/agent/langgraph/checkpoints/fork`：从指定 checkpoint 派生分支 thread，用于重试、修复或人工确认路径。
 - `/agent/langgraph/checkpoints/recover/multi-agent`：恢复最新 checkpoint 中的多 Agent 角色状态摘要。
+- Gateway 只公开 `/api/agent/langgraph/checkpoints/latest` 与 `/events` 两个读取入口，动作是 `VIEW_CHECKPOINT`；permission-admin V52、Gateway HMAC 和 Python tenant/project/workspace/actor 校验必须同时通过。`pause/resume/fork` 不向浏览器开放，避免绕过 Java 双主体审批、ToolPlan、outbox 和 worker receipt 闭环。
 
 ## 设计原则
 
@@ -42,7 +43,7 @@ DATASMART_LANGGRAPH_CHECKPOINT_CONNECT_TIMEOUT_SECONDS=3
 DATASMART_LANGGRAPH_CHECKPOINT_FAIL_OPEN=false
 ```
 
-本地默认是 `in-memory`，保证离线单测和学习环境零依赖。准生产和生产建议 `postgresql + fail_open=false`，避免 Agent 暂停/恢复现场在进程重启后丢失。
+Python 进程未配置时默认是 `in-memory`，保证离线单测和学习环境零依赖；全平台 `docker-compose.application.yml` 已显式使用 `postgresql + fail_open=false`。准生产和生产也必须保持该组合，避免 Agent 暂停/恢复现场在进程重启后丢失或数据库异常时静默降级。
 
 ## 下一步迁入顺序
 
@@ -54,6 +55,6 @@ DATASMART_LANGGRAPH_CHECKPOINT_FAIL_OPEN=false
 6. 已完成：`agentTurnRunnerCheckpoint` 的 threadId/checkpointId/graph/node/status/role summary 已进入 Python runtime event，并可由 Java `agent-runtime` turn runner projection 查询。
 7. 已完成：`ToolActionExecutionGraphRunner` 可显式调用 Java outbox writer，并把 `WAITING_OUTBOX_CONFIRMATION`、`OUTBOX_CLIENT_DISABLED`、`OUTBOX_ENQUEUED`、`OUTBOX_WRITE_BLOCKED` 等状态映射为可恢复执行图节点。
 8. 已完成：RAG 专用 worker receipt helper 已能把 `knowledge.rag.query` 结果裁剪为低敏 Java receipt payload，只保留 `queryRef`、计数和 artifact 引用，不保存 question、answer、compressedContext 或文档正文。
-9. 下一步：做 PostgreSQL store smoke 与真实 outbox dispatcher/worker 消费，让 checkpoint、outbox commandId、worker receipt index 和 RAG artifact 形成真实 E2E。
+9. 已完成 PostgreSQL store 的真实 Gateway RAG smoke：项目范围查询写入 3 个 checkpoint/3 个 event，Runtime 重启后 latest/events 仍可读取，同项目其他 actor 被对象级 403 拒绝。下一步只剩将同类证据扩展到真实 outbox dispatcher/worker 消费，使 checkpoint、outbox commandId、worker receipt index 和 RAG artifact 形成统一回放链。
 10. 将现有 `DurableAgentLoopService` 的 Redis/内存 checkpoint 逐步迁到 LangGraph checkpointer，保留兼容查询期。
 11. 完成 MCP 大结果 MinIO artifact writer 与全平台 E2E，进入项目最终闭环验收。
