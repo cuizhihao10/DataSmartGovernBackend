@@ -437,6 +437,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-go
 
 2026-08-10 当前源码镜像已在健康的 Compose 环境中再次执行 Success 与 Recovery：Success 请求 `six-agent-success-20260810-checkpoint-final` 的 `DATASOURCE_AGENT` 完成后，`DATA_SYNC_AGENT` 在模型调用处以 `DATA_SYNC_SPECIALIST_MODEL_FAILED` 停止；Recovery 请求 `six-agent-recovery-20260810-checkpoint-final` 对已有任务/执行 `76/1805` 完成 KNOWLEDGE、DATASOURCE、PRECHECK、MONITOR 后，`RECOVERY_AGENT` 以 `RECOVERY_PLANNING_MODEL_FAILED` 停止。两轮 turn durable facts 已落库，审批事实最近窗口和全库计数均为 0。Runtime 等价请求携带同一 User-Agent 对 `/responses` 探测返回 Provider HTTP 401，Provider 健康摘要为 degraded、最近 4 次错误率 100%、连续失败 4 次。当前代码保持 `gpt-5.6-sol`/`xhigh` 和 fail-closed，不会把 Provider 凭据失败降级为 dry-run 成功，也没有创建/启动 Success 同步任务或执行 Recovery 审批/副作用。有效 Provider 凭据恢复后，必须重新执行两个场景并让所有脚本断言通过，才能关闭该黑盒门禁。
 
+同日又以新的 Recovery 幂等请求号、同一失败任务/执行 `76/1805`，通过独立 `powershell.exe -File` 子进程执行真实 Gateway/Keycloak/Runtime 链路，并将子进程业务输出完全收敛后只读取进程退出码。目标 `gpt-5.6-sol` 路由的失败样本由 4 增至 5、错误率仍为 100%，子进程返回退出码 `1`；permission-admin 审批事实和 agent-runtime 审批确认事实全库计数仍均为 `0`。这证明 Provider 失败不会被外层 PowerShell 包装误报为成功，`Complete-E2EProcess` 无需再改；它仍不是六 Agent 业务成功证据。
+
 同一轮还完成了 RAG/LangGraph 持久化恢复实测：Gateway `POST /api/agent/rag/query` 在项目 101 返回 2 条 citation，PostgreSQL 为 thread `rag-e2e-postgresql-20260810` 写入 3 个 checkpoint 和 3 个 event；重启 Python Runtime 后，project-owner 经 Gateway `latest/events` 仍读到最终 version 3 和 3 个事件，而同项目其他 actor 返回 403。该结果验证持久化、路由策略、HMAC 和对象级范围，不能替代模型 Provider 恢复后的六 Agent success/recovery 复跑。
 
 ## 5. Smoke Check

@@ -258,6 +258,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 当前唯一阻止六 Agent 黑盒门禁关闭的外部条件是模型 Provider 授权。Success 请求 `six-agent-success-20260810-checkpoint-final` 已运行到 `DATASOURCE_AGENT=COMPLETED`，并在 `DATA_SYNC_AGENT=FAILED/DATA_SYNC_SPECIALIST_MODEL_FAILED` 停止；Recovery 请求 `six-agent-recovery-20260810-checkpoint-final` 针对 `76/1805` 已运行 `KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`PRECHECK_AGENT`、`MONITOR_AGENT`，并在 `RECOVERY_AGENT=FAILED/RECOVERY_PLANNING_MODEL_FAILED` 停止。对应 turn durable facts 已落库，最近窗口和全库审批事实均为 `0`。Runtime 等价 Provider 探测返回 HTTP 401，健康诊断显示 `xckjj-gpt56-sol-responses` 最近 4 次调用错误率 100%、连续失败 4 次。Runtime 继续使用 `gpt-5.6-sol`/`xhigh`，未降级 dry-run，未创建/启动同步任务，未自动批准 Recovery，也未产生恢复副作用。取得有效 Provider 凭据后必须重跑 Success/Recovery 并让脚本所有断言通过；在此之前不得声称真实六 Agent success/recovery E2E 已全部通过。
 
+补充退出码证据：同日使用新的 Recovery 幂等请求号在独立 `powershell.exe -File` 子进程中重走真实链路后，目标模型路由的失败样本增至 5、错误率仍为 100%，E2E 子进程明确返回 `1`；审批事实与审批确认事实全库计数仍均为 `0`。因此失败退出码契约已经由真实 Provider 故障验证，不再存在 CI 把该外部失败误判为通过的问题。
+
 ## 8. 总闸门入口（2026-08-06）
 
 当前项目已经从“持续补功能”进入“闭环交付候选”阶段。后续不建议再分散记忆多条验收命令，而应优先使用最终交付总闸门：
