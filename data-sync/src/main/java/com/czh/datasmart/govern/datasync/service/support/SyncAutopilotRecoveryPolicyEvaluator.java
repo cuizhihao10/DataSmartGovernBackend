@@ -148,6 +148,11 @@ public class SyncAutopilotRecoveryPolicyEvaluator {
             return attention("RECOVERY_EVIDENCE_MISSING", authorizationDigest, policyDigest,
                     policy.maxCycles(), deadlineAt);
         }
+        if (request.action() == SyncAutopilotRecoveryAction.RETRY_EXECUTION
+                && !request.automaticRetryFactsVerified()) {
+            return attention("RECOVERY_AUTOMATIC_RETRY_FACTS_REQUIRED", authorizationDigest, policyDigest,
+                    policy.maxCycles(), deadlineAt);
+        }
         if (request.confidenceScore() < policy.minimumConfidence() || request.confidenceScore() > 100) {
             return attention("RECOVERY_CONFIDENCE_TOO_LOW", authorizationDigest, policyDigest,
                     policy.maxCycles(), deadlineAt);

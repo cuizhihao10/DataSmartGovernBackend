@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -20,6 +21,7 @@ from datasmart_ai_runtime.services.agent_execution.autopilot_recovery_investigat
 from datasmart_ai_runtime.services.agent_plan_ingestion_client import (
     AgentPlanIngestionResult,
     AgentToolAuditReference,
+    JavaAgentPlanIngestionClient,
 )
 from datasmart_ai_runtime.services.agent_follow_up_tool_planner import AgentFollowUpToolPlanner
 from datasmart_ai_runtime.services.agent_gateway.session_models import AgentSessionRole
@@ -33,23 +35,40 @@ from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
 class _FakeIngestionClient:
-    """返回 Java audit 引用的最小接入替身，并记录阶段幂等键。"""
+    """模拟 Java AgentPlan 接入端的幂等回放与冲突保护。
+
+    真实 Java 控制面会保存“幂等键 -> 请求指纹 -> 首次接入结果”。同一键再次收到完全相同的请求时，
+    它返回首次创建的 session/run/audit；同一键对应不同请求时则拒绝。本替身复用生产
+    ``build_payload`` 生成跨语言请求形状，使测试能够在不启动 Java 容器时复现该关键合同。
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.payloads: list[dict[str, Any]] = []
+        self._results_by_key: dict[str, tuple[dict[str, Any], AgentPlanIngestionResult]] = {}
         self._sequence = 0
 
     def ingest(self, request: AgentRequest, plan: AgentPlan, trace_id: str | None = None) -> AgentPlanIngestionResult:
-        """为每个 plan 生成稳定形状的 session/run/audit 绑定，不执行任何工具。"""
+        """回放相同请求，并在同一幂等键承载不同请求时立即让测试失败。"""
 
-        self._sequence += 1
+        idempotency_key = str(request.variables.get("idempotencyKey"))
+        payload = JavaAgentPlanIngestionClient.build_payload(request, plan)
         self.calls.append(
             (
-                str(request.variables.get("idempotencyKey")),
+                idempotency_key,
                 tuple(item.tool_name for item in plan.tool_plans),
             )
         )
-        return AgentPlanIngestionResult(
+        self.payloads.append(payload)
+        replay = self._results_by_key.get(idempotency_key)
+        if replay is not None:
+            first_payload, first_result = replay
+            if first_payload != payload:
+                raise AssertionError("同一 AgentPlan 幂等键收到了不同请求")
+            return first_result
+
+        self._sequence += 1
+        result = AgentPlanIngestionResult(
             session_id="java-session-1",
             run_id=f"java-run-{self._sequence}",
             tool_audit_references=tuple(
@@ -66,6 +85,8 @@ class _FakeIngestionClient:
             ),
             raw_response={},
         )
+        self._results_by_key[idempotency_key] = (payload, result)
+        return result
 
 
 class _FakeFeedbackCollector:
@@ -122,11 +143,15 @@ class _FakeFeedbackCollector:
         )
 
 
-def _autopilot_request() -> AutopilotRecoveryRequest:
+def _autopilot_request(
+    *,
+    event_id: str = "autopilot-trigger:investigation-test",
+    cycle: int = 1,
+) -> AutopilotRecoveryRequest:
     """构造 Java 已验证的低敏 Autopilot 请求。"""
 
     return AutopilotRecoveryRequest(
-        event_id="autopilot-trigger:investigation-test",
+        event_id=event_id,
         root_session_id="session-1",
         root_run_id="run-1",
         tenant_id="10",
@@ -140,7 +165,7 @@ def _autopilot_request() -> AutopilotRecoveryRequest:
         sync_task_id="31",
         root_execution_id="41",
         current_execution_id="41",
-        cycle=1,
+        cycle=cycle,
         max_recovery_cycles=5,
         deadline_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
         error_fingerprint="b" * 64,
@@ -249,3 +274,136 @@ def test_investigation_never_treats_missing_real_receipt_as_success() -> None:
             specialist_result=_specialist_result(request),
             action_type="PREVIEW_QUARANTINE",
         )
+
+
+def test_investigation_replays_same_event_and_strategy_when_model_metadata_changes() -> None:
+    """Kafka 重投后模型瞬态字段变化，不得改变同一调查策略的 Java 请求。"""
+
+    request = _autopilot_request()
+    first = _specialist_result(request)
+    replayed = replace(
+        first,
+        public_summary="模型重算后的另一段公开摘要",
+        structured_output={
+            "repairActions": ({
+                "actionId": "preview-generated-again",
+                "actionType": "PREVIEW_QUARANTINE",
+                "reason": "重新组织过的模型说明",
+            },),
+            "actionFingerprint": "sha256:" + "d" * 64,
+            "evidenceAudit": {
+                "evidenceCount": 2,
+                "evidenceRecords": ({"evidenceId": "transient-evidence"},),
+            },
+            "diagnosticEvidenceGate": {"satisfied": True},
+            "modelConfidence": 0.73,
+        },
+    )
+    client = _FakeIngestionClient()
+    collaborator = _collaborator(client, _FakeFeedbackCollector())
+
+    first_result = collaborator.investigate(
+        request=request,
+        specialist_result=first,
+        action_type="PREVIEW_QUARANTINE",
+    )
+    replay_result = collaborator.investigate(
+        request=request,
+        specialist_result=replayed,
+        action_type="PREVIEW_QUARANTINE",
+    )
+
+    assert first_result.completed is True
+    assert replay_result.completed is True
+    assert [item[0] for item in client.calls[:2]] == [item[0] for item in client.calls[2:]]
+    assert client.payloads[0] == client.payloads[2]
+    assert client.payloads[1] == client.payloads[3]
+    assert client._sequence == 2
+
+
+def test_investigation_uses_new_idempotency_identity_when_preview_strategy_changes() -> None:
+    """同一事件内预览样本集合变化属于真实策略变化，必须创建新的阶段身份。"""
+
+    request = _autopilot_request()
+    base = _specialist_result(request)
+    first = replace(
+        base,
+        structured_output={
+            **dict(base.structured_output),
+            "repairActions": ({
+                "actionId": "preview-first",
+                "actionType": "PREVIEW_QUARANTINE",
+                "proposedValues": {"errorSampleIds": [9, 3]},
+            },),
+        },
+    )
+    changed = replace(
+        base,
+        structured_output={
+            **dict(base.structured_output),
+            "repairActions": ({
+                "actionId": "preview-second",
+                "actionType": "PREVIEW_QUARANTINE",
+                "proposedValues": {"errorSampleIds": [10, 4]},
+            },),
+        },
+    )
+    client = _FakeIngestionClient()
+    collaborator = _collaborator(client, _FakeFeedbackCollector())
+
+    collaborator.investigate(
+        request=request,
+        specialist_result=first,
+        action_type="PREVIEW_QUARANTINE",
+    )
+    collaborator.investigate(
+        request=request,
+        specialist_result=changed,
+        action_type="PREVIEW_QUARANTINE",
+    )
+
+    assert client.calls[0][0] == client.calls[2][0]
+    assert client.calls[1][0] != client.calls[3][0]
+    assert client.payloads[0] == client.payloads[2]
+    assert client._sequence == 3
+
+
+def test_investigation_uses_new_idempotency_identity_for_new_recovery_cycle() -> None:
+    """新的恢复循环必须拥有新的诊断和预览身份，不能复用上一循环的审计。"""
+
+    first_request = _autopilot_request()
+    second_request = _autopilot_request(
+        event_id="autopilot-trigger:investigation-test-cycle-2",
+        cycle=2,
+    )
+    client = _FakeIngestionClient()
+    collaborator = _collaborator(client, _FakeFeedbackCollector())
+
+    collaborator.investigate(
+        request=first_request,
+        specialist_result=_specialist_result(first_request),
+        action_type="PREVIEW_QUARANTINE",
+    )
+    collaborator.investigate(
+        request=second_request,
+        specialist_result=_specialist_result(second_request),
+        action_type="PREVIEW_QUARANTINE",
+    )
+
+    assert client.calls[0][0] != client.calls[2][0]
+    assert client.calls[1][0] != client.calls[3][0]
+    assert client._sequence == 4
+
+
+def test_invalid_sample_selector_is_not_silently_broadened_to_all_retryable_samples() -> None:
+    """非法样本 ID 必须保留给下游拒绝，不能被规范化成“选择全部”。"""
+
+    arguments = AutopilotRecoveryInvestigationCollaborator._canonical_model_arguments(
+        "PREVIEW_QUARANTINE",
+        {
+            "actionType": "PREVIEW_QUARANTINE",
+            "proposedValues": {"errorSampleIds": [9, "not-an-id"]},
+        },
+    )
+
+    assert arguments == {"errorSampleIds": [9, "not-an-id"]}

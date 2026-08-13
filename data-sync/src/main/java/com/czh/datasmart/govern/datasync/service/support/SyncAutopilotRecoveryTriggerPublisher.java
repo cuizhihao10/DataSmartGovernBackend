@@ -479,20 +479,19 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Creates the deterministic outbox identity for exactly one authorized failed recovery cycle.
+     * 为一次已授权的失败恢复循环生成确定性的 outbox 事件身份。
      *
-     * <p>The ID binds the authorization session/run lineage, task/execution lineage, cycle, and safe error
-     * fingerprint. It is pure and idempotent, and its result is consumed by a database unique constraint rather
-     * than sent as an authority token. Equivalent failure callbacks therefore share one durable event; changed
-     * cycle, execution, or fingerprint produces a distinct event that is still subject to loop guards.</p>
+     * <p>事件 ID 同时绑定授权会话与运行链路、任务与执行链路、当前循环以及低敏错误指纹。该计算没有
+     * 副作用且可重复：同一失败回调会得到相同事件 ID，并由数据库唯一键完成去重；循环、当前执行或错误
+     * 指纹发生变化时会得到新事件 ID，但新事件仍必须通过最大循环次数、重复错误次数和截止时间门禁。</p>
      *
-     * @param authorization sanitized active authorization facts
-     * @param taskId owning sync task
-     * @param rootExecutionId first execution in the recovery lineage
-     * @param currentExecutionId execution that just failed
-     * @param cycle bounded recovery cycle number
-     * @param errorFingerprint safe failure correlation digest
-     * @return prefixed deterministic event ID suitable for outbox deduplication
+     * @param authorization 已清洗且仍然有效的首次授权事实
+     * @param taskId 所属数据同步任务 ID
+     * @param rootExecutionId 自治恢复链路中的首次执行 ID
+     * @param currentExecutionId 本轮刚刚失败的执行 ID
+     * @param cycle 受最大循环次数约束的恢复轮次
+     * @param errorFingerprint 用于关联同类故障的低敏摘要
+     * @return 带固定前缀、可用于 outbox 去重的确定性事件 ID
      */
     private String eventId(ParsedAuthorization authorization,
                            Long taskId,

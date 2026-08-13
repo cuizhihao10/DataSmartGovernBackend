@@ -40,6 +40,32 @@ public record SyncAutopilotRecoveryEvaluationRequest(
         String receiptId,
         int confidenceScore,
         boolean evidenceAvailable,
+        boolean automaticRetryFactsVerified,
         LocalDateTime evaluatedAt
 ) {
+
+    /**
+     * 保持现有评估器测试和非重试审批流程的源代码兼容性。自动重试调用方必须使用完整构造器，
+     * 以避免意外遗漏 data-sync 持久账本校验。
+     */
+    public SyncAutopilotRecoveryEvaluationRequest(
+            SyncAutopilotExecutionMode executionMode,
+            Long tenantId,
+            Long projectId,
+            Long syncTaskId,
+            int cycle,
+            LocalDateTime deadlineAt,
+            String lastErrorFingerprint,
+            int repeatedErrorCount,
+            SyncAutopilotRecoveryAction action,
+            SyncAutopilotRiskLevel riskLevel,
+            String repairFingerprint,
+            String receiptId,
+            int confidenceScore,
+            boolean evidenceAvailable,
+            LocalDateTime evaluatedAt) {
+        this(executionMode, tenantId, projectId, syncTaskId, cycle, deadlineAt, lastErrorFingerprint,
+                repeatedErrorCount, action, riskLevel, repairFingerprint, receiptId, confidenceScore,
+                evidenceAvailable, false, evaluatedAt);
+    }
 }

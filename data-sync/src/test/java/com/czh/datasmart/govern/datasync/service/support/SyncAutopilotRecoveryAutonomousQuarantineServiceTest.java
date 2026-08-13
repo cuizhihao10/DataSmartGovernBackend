@@ -167,18 +167,18 @@ class SyncAutopilotRecoveryAutonomousQuarantineServiceTest {
                 POLICY,
                 new SyncAutopilotRecoveryEvaluationRequest(
                         com.czh.datasmart.govern.datasync.support.SyncAutopilotExecutionMode.AUTOPILOT,
-                        10L, 20L, 31L, 1, LocalDateTime.now().plusMinutes(30),
+                        10L, 20L, 31L, 1, LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(30),
                         ERROR_FINGERPRINT, 0,
                         com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryAction.APPLY_QUARANTINE,
                         com.czh.datasmart.govern.datasync.support.SyncAutopilotRiskLevel.LOW,
                         ACTION_FINGERPRINT, "event-1:quarantine-apply", 100, true,
-                        LocalDateTime.now()));
+                        LocalDateTime.now(java.time.ZoneOffset.UTC)));
         recoveryCase.setAuthorizationDigest(AUTHORIZATION_DIGEST);
         recoveryCase.setPolicyDigest(policyDecision.policyDigest());
         recoveryCase.setCaseState("AUTO_APPROVED");
         recoveryCase.setCycle(1);
         recoveryCase.setMaxCycles(5);
-        recoveryCase.setDeadlineAt(LocalDateTime.now().plusMinutes(30));
+        recoveryCase.setDeadlineAt(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(30));
         recoveryCase.setRecoveryAction("APPLY_QUARANTINE");
         recoveryCase.setRiskLevel("LOW");
         recoveryCase.setRepairFingerprint(ACTION_FINGERPRINT);
@@ -221,12 +221,12 @@ class SyncAutopilotRecoveryAutonomousQuarantineServiceTest {
                 POLICY,
                 new SyncAutopilotRecoveryEvaluationRequest(
                         com.czh.datasmart.govern.datasync.support.SyncAutopilotExecutionMode.AUTOPILOT,
-                        10L, 20L, 31L, 1, LocalDateTime.now().plusMinutes(30),
+                        10L, 20L, 31L, 1, LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(30),
                         ERROR_FINGERPRINT, 0,
                         com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryAction.APPLY_QUARANTINE,
                         com.czh.datasmart.govern.datasync.support.SyncAutopilotRiskLevel.LOW,
                         ACTION_FINGERPRINT, "event-1:quarantine-apply", 100, true,
-                        LocalDateTime.now())).policyDigest();
+                        LocalDateTime.now(java.time.ZoneOffset.UTC))).policyDigest();
     }
 
     private record Fixture(

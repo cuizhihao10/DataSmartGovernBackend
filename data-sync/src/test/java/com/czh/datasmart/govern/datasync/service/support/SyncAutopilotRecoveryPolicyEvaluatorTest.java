@@ -26,8 +26,8 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
     @Test
     void evaluateShouldAutoApproveOnlyWhitelistedLowRiskRecovery() {
         SyncAutopilotRecoveryPolicyDecision decision = evaluator.evaluate(
-                policy("RESUME_FROM_CHECKPOINT", "RETRY_FAILED_OBJECTS", "REPLAY_FROM_CHECKPOINT"),
-                request(1001L, SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                policy("RETRY_EXECUTION", "RESUME_FROM_CHECKPOINT", "REPLAY_FROM_CHECKPOINT"),
+                request(1001L, SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                         SyncAutopilotRiskLevel.LOW, 1, 0, 95, true));
 
         assertThat(decision.state()).isEqualTo(SyncAutopilotRecoveryCaseState.AUTO_APPROVED);
@@ -73,8 +73,8 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
     @Test
     void evaluateShouldCompareOffsetExpiryAsAnInstantInsteadOfServerLocalTime() {
         SyncAutopilotRecoveryPolicyDecision decision = evaluator.evaluate(
-                policyWithExpiry("2026-08-10T17:00:00+08:00", "RESUME_FROM_CHECKPOINT"),
-                request(1001L, SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                policyWithExpiry("2026-08-10T17:00:00+08:00", "RETRY_EXECUTION"),
+                request(1001L, SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                         SyncAutopilotRiskLevel.LOW, 1, 0, 95, true));
 
         assertThat(decision.state()).isEqualTo(SyncAutopilotRecoveryCaseState.REJECTED);
@@ -84,7 +84,7 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
     @Test
     void evaluateShouldRejectADeadlineBeyondThePolicyWindow() {
         SyncAutopilotRecoveryPolicyDecision decision = evaluator.evaluate(
-                policy("RESUME_FROM_CHECKPOINT"),
+                policy("RETRY_EXECUTION"),
                 new SyncAutopilotRecoveryEvaluationRequest(
                         SyncAutopilotExecutionMode.AUTOPILOT,
                         7L,
@@ -94,13 +94,14 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
                         NOW.plusMinutes(11),
                         FINGERPRINT,
                         0,
-                        SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                         SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                         SyncAutopilotRiskLevel.LOW,
                         FINGERPRINT,
                         "receipt-deadline-boundary",
                         95,
-                        true,
-                        NOW));
+                true,
+                true,
+                NOW));
 
         assertThat(decision.state()).isEqualTo(SyncAutopilotRecoveryCaseState.REJECTED);
         assertThat(decision.deadlineAt()).isEqualTo(NOW.plusMinutes(10));
@@ -110,7 +111,7 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
     @Test
     void evaluateShouldAcceptADeadlineShorterThanThePolicyWindow() {
         SyncAutopilotRecoveryPolicyDecision decision = evaluator.evaluate(
-                policy("RESUME_FROM_CHECKPOINT"),
+                policy("RETRY_EXECUTION"),
                 requestWithDeadline(NOW.plusMinutes(5)));
 
         assertThat(decision.state()).isEqualTo(SyncAutopilotRecoveryCaseState.AUTO_APPROVED);
@@ -145,20 +146,20 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
     @Test
     void evaluateShouldRequireAttentionWhenAutomationEvidenceOrBudgetIsUnsafe() {
         SyncAutopilotRecoveryPolicyDecision repeated = evaluator.evaluate(
-                policy("RESUME_FROM_CHECKPOINT"),
-                request(1001L, SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                policy("RETRY_EXECUTION"),
+                request(1001L, SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                         SyncAutopilotRiskLevel.LOW, 1, 2, 95, true));
         SyncAutopilotRecoveryPolicyDecision lowConfidence = evaluator.evaluate(
-                policy("RESUME_FROM_CHECKPOINT"),
-                request(1001L, SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                policy("RETRY_EXECUTION"),
+                request(1001L, SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                         SyncAutopilotRiskLevel.LOW, 1, 0, 79, true));
         SyncAutopilotRecoveryPolicyDecision missingEvidence = evaluator.evaluate(
-                policy("RESUME_FROM_CHECKPOINT"),
-                request(1001L, SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                policy("RETRY_EXECUTION"),
+                request(1001L, SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                         SyncAutopilotRiskLevel.LOW, 1, 0, 95, false));
         SyncAutopilotRecoveryPolicyDecision exhaustedCycles = evaluator.evaluate(
-                policy("RESUME_FROM_CHECKPOINT"),
-                request(1001L, SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                policy("RETRY_EXECUTION"),
+                request(1001L, SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                         SyncAutopilotRiskLevel.LOW, 4, 0, 95, true));
 
         assertThat(repeated.state()).isEqualTo(SyncAutopilotRecoveryCaseState.ATTENTION_REQUIRED);
@@ -189,6 +190,7 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
                 "receipt-20260810-1",
                 confidenceScore,
                 evidenceAvailable,
+                action == SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                 NOW
         );
     }
@@ -203,11 +205,12 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
                 deadlineAt,
                 FINGERPRINT,
                 0,
-                SyncAutopilotRecoveryAction.RESUME_FROM_CHECKPOINT,
+                SyncAutopilotRecoveryAction.RETRY_EXECUTION,
                 SyncAutopilotRiskLevel.LOW,
                 FINGERPRINT,
                 "receipt-shorter-deadline",
                 95,
+                true,
                 true,
                 NOW);
     }

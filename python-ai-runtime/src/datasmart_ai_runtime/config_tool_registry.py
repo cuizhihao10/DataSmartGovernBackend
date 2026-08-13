@@ -194,11 +194,10 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
                     "type": "object", "required": True, "sensitive": False, "resolution": "derived"
                 },
                 "objectMappings": {
-                    # The Java adapter reduces each mapping to source/target
-                    # schema and table names before the internal probe. It never
-                    # forwards fields, WHERE predicates, SQL, values or credentials,
-                    # so this is project-scoped low-sensitive metadata rather than
-                    # an approval-requiring secret payload.
+                    # Java 适配器会在内部探测前将每个映射收敛为源端/目标端
+                    # schema 和表名。它绝不会转发字段、WHERE 谓词、SQL、值或凭据，
+                    # 因此这是项目范围内的低敏元数据，而不是需要审批的
+                    # 机密载荷。
                     "type": "array", "required": True, "sensitive": False, "resolution": "user_required"
                 },
             },
@@ -459,7 +458,10 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             },
             requires_approval=True,
             idempotent=False,
-            allowed_actions=("RETRY_FAILED_OBJECTS",),
+            # RETRY_EXECUTION 是跨服务的规范动作。保留历史拼写
+            # RETRY_FAILED_OBJECTS 以兼容旧 Specialist 结果，
+            # 同时让新的模型输出与 Java 和 data-sync 保持一致。
+            allowed_actions=("RETRY_EXECUTION", "RETRY_FAILED_OBJECTS"),
             tool_type="DATA_SYNC",
             tenant_scoped=True,
             project_scoped=True,
@@ -620,10 +622,9 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
         ToolDefinition(
             name="datasource.schema.repair.apply",
             description="用户确认后应用同一摘要绑定的白名单结构修复，执行前重新校验目标元数据。",
-            # The operation remains high impact and approval-required, but the
-            # server allow-list forbids drop/rename/narrow/raw DDL.  Keeping it at
-            # HIGH lets the model propose a confirmation card; CRITICAL tools are
-            # intentionally hidden from model-native tool calling by default.
+            # 该操作仍属高影响且需要审批，但服务端允许列表禁止
+            # drop/rename/narrow/raw DDL。保持 HIGH 级别可让模型提出确认卡片；
+            # 默认会有意对模型原生工具调用隐藏 CRITICAL 工具。
             risk_level=ToolRiskLevel.HIGH,
             execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
             required_permissions=("datasource:manage",),

@@ -61,9 +61,8 @@ from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 SPECIALIST_TOOLPLAN_BRIDGE_SCHEMA_VERSION = "datasmart.specialist-toolplan-bridge.v1"
 RECOVERY_JAVA_HANDOFF_SCHEMA_VERSION = "datasmart.recovery-java-toolplan-handoff.v1"
 
-# Java feedback client generates this URI after it has queried a durable tool
-# result.  The bridge only reads the session locator; it never dereferences the
-# URI itself and never accepts a model-authored URL as an identity source.
+# Java feedback client 查询持久工具结果后会生成此 URI。bridge 仅读取会话定位符；
+# 它绝不自行解引用该 URI，也绝不接受由模型编写的 URL 作为身份来源。
 _JAVA_OUTPUT_SESSION_PATTERN = re.compile(
     r"^agent-runtime://sessions/(?P<session>ags_[A-Za-z0-9_-]{8,120})/"
     r"runs/(?P<run>agr_[A-Za-z0-9_-]{8,120})/tool-executions/"
@@ -76,6 +75,9 @@ _JAVA_OUTPUT_SESSION_PATTERN = re.compile(
 # “通用 recovery.execute” 兜底，防止新增模型动作意外获得写权限。
 RECOVERY_ACTION_TOOL_MAP: dict[str, str] = {
     "SEARCH_RECOVERY_KNOWLEDGE": "sync.execution.rag.lookup",
+    # Java/data-sync 使用 RETRY_EXECUTION 作为跨服务规范动作。后两个名称仍被接受，
+    # 因为持久化的 Specialist 输出和旧客户端可能仍使用 failed-object 表述。
+    "RETRY_EXECUTION": "sync.execution.failed-objects.retry",
     "RETRY_FAILED_OBJECTS": "sync.execution.failed-objects.retry",
     "RETRY_FAILED_OBJECT": "sync.execution.failed-objects.retry",
     "RERUN_FAILED_OBJECTS": "sync.execution.failed-objects.retry",
@@ -120,7 +122,7 @@ RECOVERY_MINIMAL_READ_ONLY_DELEGATION_TOOL_NAMES = frozenset({
 # 注册表中的 allowed_actions 绑定起来，防止错误配置的同名工具成为权限绕过入口。
 RECOVERY_TOOL_REQUIRED_ACTION: dict[str, str] = {
     "sync.execution.rag.lookup": "RETRIEVE_RECOVERY_EVIDENCE",
-    "sync.execution.failed-objects.retry": "RETRY_FAILED_OBJECTS",
+    "sync.execution.failed-objects.retry": "RETRY_EXECUTION",
     "sync.dirty-record.quarantine.apply": "APPLY_QUARANTINE",
     "sync.dirty-record.quarantine.preview": "PREVIEW_QUARANTINE",
     "sync.dirty-record.replay": "REPLAY_DIRTY_RECORDS",
@@ -696,10 +698,9 @@ class SpecialistToolPlanBridge:
             tool_name == "sync.dirty-record.quarantine.preview"
             and not self._has_argument_value(arguments.get("errorSampleIds"))
         ):
-            # Dirty-row IDs are intentionally absent from the model contract. A preview with neither
-            # IDs nor this selector is invalid at the data-sync boundary, while selecting all retryable
-            # samples remains read-only and is capped by that service. The exact selected IDs and digest
-            # are returned by Java and any later apply still requires explicit user approval.
+            # 脏数据行 ID 有意不出现在模型合同中。不含 ID 也不含此选择器的 preview 在 data-sync
+            # 边界无效；选择所有可重试样本仍是只读操作，且由该服务限制上限。精确选中的 ID 和 digest
+            # 由 Java 返回，任何后续 apply 仍需要用户显式审批。
             arguments["quarantineAllRetryableInExecution"] = True
         return arguments
 
@@ -1626,12 +1627,11 @@ class SpecialistToolPlanBridge:
         """
 
         fingerprint = SpecialistToolPlanBridge._result_fingerprint(specialist_result)
-        # agentScopeBinding.sessionId identifies the Python Specialist turn and its approval origin;
-        # it is not proof that Java agent-runtime already owns a session with the same identifier.
-        # Only a session recovered from a trusted Java feedback URI may be sent as
-        # ``agentRuntimeSessionId``. On the first Specialist bridge this value is intentionally absent,
-        # so Java creates the controlled session and returns the authoritative locator. Reusing the
-        # Python-only session here would turn a valid first handoff into a 404 "session not found".
+        # agentScopeBinding.sessionId 标识 Python Specialist turn 及其审批来源；它不能证明
+        # Java agent-runtime 已拥有同一标识符的会话。只有从可信 Java feedback URI 恢复的会话
+        # 才能作为 ``agentRuntimeSessionId`` 发送。首次 Specialist bridge 时有意不提供该值，
+        # 以便 Java 创建受控会话并返回权威定位符。在这里复用仅属于 Python 的会话会使原本有效的
+        # 首次 handoff 变为 404 "session not found"。
         runtime_session_id = SpecialistToolPlanBridge._text(
             (scope_binding or {}).get("controlPlaneSessionId")
         )
@@ -1650,10 +1650,9 @@ class SpecialistToolPlanBridge:
                     **({
                         "agentScopeBinding": dict(scope_binding),
                     } if scope_binding else {}),
-                    # The Java output resolver intentionally permits an explicit audit reference only
-                    # inside the same Java Agent session. Once feedback supplies that trusted locator,
-                    # copy it as a first-class ingestion hint while deliberately omitting the old runId:
-                    # lifecycle nodes need a fresh Run but keep reading metadata by sessionId + auditId.
+                    # Java 输出解析器有意只允许在同一 Java Agent 会话中使用显式 audit 引用。一旦
+                    # feedback 提供该可信定位符，就将其复制为一级 ingestion 提示，同时有意省略旧 runId：
+                    # 生命周期节点需要新的 Run，但仍通过 sessionId + auditId 读取元数据。
                     **({
                         "agentRuntimeSessionId": runtime_session_id,
                     } if runtime_session_id else {}),
@@ -1892,16 +1891,13 @@ class SpecialistToolPlanBridge:
     def _trusted_feedback_session_id(
         feedback: AgentControlPlaneFeedbackSnapshot | None,
     ) -> str | None:
-        """Recover one Java session locator from durable feedback references.
+        """从持久 feedback 引用中恢复一个 Java 会话定位符。
 
-        ``AgentControlPlaneFeedbackItem`` intentionally exposes auditId/runId and
-        an opaque output reference rather than duplicating sessionId as a mutable
-        field.  DATA_SYNC bridging nevertheless has to keep the lifecycle Run in
-        the metadata Run's session because Java resolves explicit outputs by
-        ``sessionId + auditId``.  This method therefore accepts only the exact URI
-        shape emitted by ``JavaAgentRuntimeToolFeedbackProvider`` and only when all
-        matching feedback items agree on one session.  Missing, legacy or mixed
-        references return ``None`` and can never broaden the caller's scope.
+        ``AgentControlPlaneFeedbackItem`` 有意暴露 auditId/runId 和不透明输出引用，而非将 sessionId
+        复制为可变字段。尽管如此，DATA_SYNC bridging 仍必须将生命周期 Run 保留在元数据 Run 的会话中，
+        因为 Java 通过 ``sessionId + auditId`` 解析显式输出。因此此方法仅接受
+        ``JavaAgentRuntimeToolFeedbackProvider`` 生成的精确 URI 形式，且仅在所有匹配 feedback 项均同意
+        一个会话时接受。缺失、旧版或混合引用返回 ``None``，且绝不会扩大调用方范围。
         """
 
         if feedback is None:

@@ -61,8 +61,10 @@ public class SyncAgentExecutionDiagnosisSupport {
     public SyncExecutionDiagnosisResponse diagnose(SyncTask task, SyncTaskDefinition definition, Long requestedExecutionId) {
         SyncExecution execution = loadExecution(task, requestedExecutionId);
         List<SyncObjectExecution> allObjects = objectExecutionMapper.selectByExecutionId(execution.getId());
-        List<SyncObjectExecution> failedObjects = allObjects == null ? List.of() : allObjects.stream()
+        List<SyncObjectExecution> allFailedObjects = allObjects == null ? List.of() : allObjects.stream()
                 .filter(item -> "FAILED".equalsIgnoreCase(item.getObjectState()))
+                .toList();
+        List<SyncObjectExecution> failedObjects = allFailedObjects.stream()
                 .limit(MAX_FAILED_OBJECTS)
                 .toList();
         List<SyncErrorSample> samples = errorSampleMapper.selectList(new LambdaQueryWrapper<SyncErrorSample>()
@@ -85,7 +87,7 @@ public class SyncAgentExecutionDiagnosisSupport {
                 execution.getExecutionState(), definition.getSyncMode(), definition.getWriteStrategy(),
                 definition.getSourceConnectorType(), definition.getTargetConnectorType(), definition.getTargetDatasourceId(),
                 zero(execution.getRecordsRead()), zero(execution.getRecordsWritten()),
-                zero(execution.getFailedRecordCount()), failedObjects.size(),
+                zero(execution.getFailedRecordCount()), allFailedObjects.size(),
                 (int) samples.stream().filter(item -> Boolean.TRUE.equals(item.getRetryable()))
                         .filter(item -> !"QUARANTINED".equalsIgnoreCase(item.getResolutionStatus())).count(),
                 (int) samples.stream().filter(item -> "QUARANTINED".equalsIgnoreCase(item.getResolutionStatus())).count(),

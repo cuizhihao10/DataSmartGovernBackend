@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncObjectExecutionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncObjectExecutionState;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -43,6 +44,9 @@ public class SyncObjectExecutionLifecycleSupport {
 
     public static final String WORK_UNIT_TYPE_OBJECT = "OBJECT";
     public static final String WORK_UNIT_TYPE_PARTITION_SHARD = "PARTITION_SHARD";
+    public static final String WORK_UNIT_TYPE_PARTITION_RANGE_PROBE = "PARTITION_RANGE_PROBE";
+
+    private static final String PARTITION_RANGE_PROBE_MARKER = "auto-split-pk-range-probe";
 
     /**
      * 对象级账本是内部控制面事实表；普通公开事件和日志不能直接暴露对象名、字段名、SQL、凭据或行样本。
@@ -53,6 +57,83 @@ public class SyncObjectExecutionLifecycleSupport {
     private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
 
     private final SyncObjectExecutionMapper objectExecutionMapper;
+
+    /**
+     * 将失败的 AUTO_SPLIT_PK 范围探测持久化为可重试的控制面工作单元。
+     *
+     * <p>真正的分片行只有在探测出 min/max 后才能生成，因此传输中断若不留痕，父 execution 会在没有
+     * 失败子行的情况下直接 FAILED。Autopilot 只重试由数据库持久化的失败工作单元；这个范围探测标记
+     * 因此让现有的失败对象重试路径获得一个可重置、受限的持久账本单元。它只包含内部账本允许的对象
+     * 元数据，绝不存储探测到的 min/max 值、SQL、凭据或异常堆栈。</p>
+     *
+     * <p>该操作对终态失败的标记幂等。重试端点将标记重置为 PENDING 后，后续探测失败会记录一次新的
+     * 尝试。ordinal 从既有行之后选择，因此即使恢复此前已初始化的 execution，本方法仍然安全。</p>
+     *
+     * @param task 当前同步任务
+     * @param execution 尝试执行探测的父 execution
+     * @param definition 仅用于内部源端/目标端账本身份的任务定义
+     * @param maxAttemptCount 从有效执行策略中获取的受限重试预算
+     * @param errorCode 低敏瞬态传输错误码
+     * @return 已存在或新持久化的失败探测工作单元
+     */
+    @Transactional
+    public SyncObjectExecution recordPartitionRangeProbeTransportFailure(SyncTask task,
+                                                                          SyncExecution execution,
+                                                                          SyncTaskDefinition definition,
+                                                                          int maxAttemptCount,
+                                                                          String errorCode) {
+        List<SyncObjectExecution> existingRows = safeRows(
+                objectExecutionMapper.selectByExecutionId(execution.getId()));
+        SyncObjectExecution marker = existingRows.stream()
+                .filter(this::isPartitionRangeProbeWorkUnit)
+                .findFirst()
+                .orElse(null);
+        if (marker != null && SyncObjectExecutionState.FAILED.name().equals(marker.getObjectState())) {
+            return marker;
+        }
+        if (marker == null) {
+            marker = new SyncObjectExecution();
+            marker.setTenantId(execution.getTenantId());
+            marker.setProjectId(execution.getProjectId());
+            marker.setWorkspaceId(execution.getWorkspaceId());
+            marker.setSyncTaskId(task.getId());
+            marker.setExecutionId(execution.getId());
+            marker.setObjectOrdinal(nextOrdinal(existingRows));
+            marker.setWorkUnitType(WORK_UNIT_TYPE_PARTITION_RANGE_PROBE);
+            marker.setShardOrPartition(PARTITION_RANGE_PROBE_MARKER);
+            marker.setPartitionStrategy("AUTO_SPLIT_PK");
+            marker.setPartitionField(null);
+            marker.setSourceSchemaName(definition.getSourceSchemaName());
+            marker.setSourceObjectName(definition.getSourceObjectName());
+            marker.setTargetSchemaName(definition.getTargetSchemaName());
+            marker.setTargetObjectName(definition.getTargetObjectName());
+            marker.setAttemptCount(0);
+            marker.setRecordsRead(0L);
+            marker.setRecordsWritten(0L);
+            marker.setFailedRecordCount(0L);
+            marker.setPayloadPolicy(PAYLOAD_POLICY);
+            marker.setCreateTime(LocalDateTime.now());
+        }
+        marker.setObjectState(SyncObjectExecutionState.FAILED.name());
+        marker.setAttemptCount(safeInt(marker.getAttemptCount()) + 1);
+        marker.setMaxAttemptCount(Math.max(1, maxAttemptCount));
+        marker.setRecordsRead(0L);
+        marker.setRecordsWritten(0L);
+        marker.setFailedRecordCount(1L);
+        marker.setLastErrorType("CONNECTOR_TRANSPORT_UNAVAILABLE");
+        marker.setLastErrorCode(firstText(errorCode,
+                "DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE"));
+        marker.setLastErrorMessage("datasource-management range probe transport is temporarily unavailable");
+        marker.setStartedAt(marker.getStartedAt() == null ? LocalDateTime.now() : marker.getStartedAt());
+        marker.setFinishedAt(LocalDateTime.now());
+        marker.setUpdateTime(LocalDateTime.now());
+        if (marker.getId() == null) {
+            objectExecutionMapper.insert(marker);
+        } else {
+            objectExecutionMapper.updateById(marker);
+        }
+        return marker;
+    }
 
     /**
      * 初始化父 execution 下的对象级执行记录。
@@ -137,13 +218,24 @@ public class SyncObjectExecutionLifecycleSupport {
      * @param contract 已解析的分片合同。
      * @return 当前 execution 下完整的分片账本，按 objectOrdinal 排序。
      */
+    @Transactional
     public List<SyncObjectExecution> initializePartitionShardExecutions(SyncTask task,
                                                                         SyncExecution execution,
                                                                         SyncTaskDefinition definition,
                                                                         SyncPartitionShardExecutionContract contract) {
-        List<SyncObjectExecution> existingRows =
-                objectExecutionMapper.selectByExecutionId(execution.getId());
-        Map<Integer, SyncObjectExecution> existingByOrdinal = existingRows == null
+        List<SyncObjectExecution> selectedRows = safeRows(
+                objectExecutionMapper.selectByExecutionId(execution.getId()));
+        /*
+         * 成功的探测已经生成真实分片契约，因此临时失败标记不能再参与汇总计数或占用 ordinal。
+         * 在与分片初始化相同的事务中删除它，可确保插入失败时整体回滚协调，而不会留下半截账本。
+         */
+        selectedRows.stream()
+                .filter(this::isPartitionRangeProbeWorkUnit)
+                .forEach(row -> objectExecutionMapper.deleteById(row.getId()));
+        List<SyncObjectExecution> existingRows = selectedRows.stream()
+                .filter(row -> !isPartitionRangeProbeWorkUnit(row))
+                .toList();
+        Map<Integer, SyncObjectExecution> existingByOrdinal = existingRows.isEmpty()
                 ? Map.of()
                 : existingRows.stream().collect(Collectors.toMap(
                         SyncObjectExecution::getObjectOrdinal,
@@ -331,6 +423,26 @@ public class SyncObjectExecutionLifecycleSupport {
 
     private List<String> distinct(List<String> values) {
         return new ArrayList<>(new LinkedHashSet<>(values));
+    }
+
+    /** 返回非空快照，免得生命周期调用方重复处理 mapper 的 null。 */
+    private List<SyncObjectExecution> safeRows(List<SyncObjectExecution> rows) {
+        return rows == null ? List.of() : rows;
+    }
+
+    /** 仅识别合成的范围探测标记；真实对象和分片行绝不可被协调删除。 */
+    private boolean isPartitionRangeProbeWorkUnit(SyncObjectExecution row) {
+        return row != null && WORK_UNIT_TYPE_PARTITION_RANGE_PROBE.equals(row.getWorkUnitType());
+    }
+
+    /** 在临时范围探测标记的既有工作单元之后，寻找一个空闲且稳定的 ordinal。 */
+    private int nextOrdinal(List<SyncObjectExecution> rows) {
+        return rows.stream()
+                .map(SyncObjectExecution::getObjectOrdinal)
+                .filter(java.util.Objects::nonNull)
+                .max(Integer::compareTo)
+                .map(value -> value + 1)
+                .orElse(0);
     }
 
     private Integer safeInt(Integer value) {

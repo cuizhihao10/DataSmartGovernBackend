@@ -243,6 +243,7 @@ class SyncBatchRunOnceHttpContractE2ETest {
             assertThat(failCaptor.getValue().getSamplePayload()).isNull();
             assertThat(failCaptor.getValue().getSourceRecordKey()).isNull();
             assertThat(failCaptor.getValue().getTargetRecordKey()).isNull();
+            assertThat(failCaptor.getValue().getRetryable()).isFalse();
             assertThat(failCaptor.getValue().getIdempotencyKey())
                     .isEqualTo("datasource-run-once-fail-88-DATASOURCE_RUN_ONCE_UNAVAILABLE");
 
@@ -251,6 +252,55 @@ class SyncBatchRunOnceHttpContractE2ETest {
             verify(lifecycleSupport, never()).completeExecution(any(), any(), any(), any());
             verify(receiptPublisher, never()).publishComplete(any(), any(), any(), any());
         }
+    }
+
+    /**
+     * 验证唯一可进行受限无人值守恢复的远程调用故障。
+     *
+     * <p>服务器分配一个本地端口并在请求前关闭，从而产生真实的连接拒绝，无需依赖 DNS 或外部网络。
+     * 控制面必须持久化一个可重试、低敏的传输错误码。这与上方的禁止响应测试不同：显式 HTTP 拒绝
+     * 仍不可重试，因为它可能表示权限或契约问题。</p>
+     */
+    @Test
+    void transportFailureShouldRemainFailClosedButBeMarkedRetryable() throws Exception {
+        String unavailableBaseUrl;
+        try (java.net.ServerSocket socket = new java.net.ServerSocket(
+                0, 1, java.net.InetAddress.getLoopbackAddress())) {
+            unavailableBaseUrl = "http://127.0.0.1:" + socket.getLocalPort();
+        }
+
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncBatchRunOnceDispatchService service = dispatchService(
+                unavailableBaseUrl, lifecycleSupport, receiptPublisher);
+        SyncExecution execution = execution();
+        SyncTask task = task();
+
+        SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(
+                execution, task, fullCustomerDefinition(), workerPlan(), actor());
+
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failed()).isTrue();
+        assertThat(result.dispatchStatus()).isEqualTo("DISPATCHED_AND_FAILED_BY_CLIENT_EXCEPTION");
+        assertThat(result.issueCodes()).containsExactly("DATASOURCE_RUN_ONCE_TRANSPORT_UNAVAILABLE");
+
+        ArgumentCaptor<SyncExecutionFailRequest> failCaptor =
+                ArgumentCaptor.forClass(SyncExecutionFailRequest.class);
+        verify(lifecycleSupport).failExecution(eq(task), eq(execution),
+                failCaptor.capture(), any(SyncActorContext.class));
+        assertThat(failCaptor.getValue().getErrorType())
+                .isEqualTo("CONNECTOR_RUNTIME_RUN_ONCE_CALL_FAILED");
+        assertThat(failCaptor.getValue().getErrorCode())
+                .isEqualTo("DATASOURCE_RUN_ONCE_TRANSPORT_UNAVAILABLE");
+        assertThat(failCaptor.getValue().getRetryable()).isTrue();
+        assertThat(failCaptor.getValue().getErrorMessage())
+                .doesNotContain("127.0.0.1")
+                .doesNotContain("http")
+                .doesNotContain("password");
+        verify(receiptPublisher).publishFailed(eq(task), eq(execution), any(SyncActorContext.class),
+                eq("DATASOURCE_RUN_ONCE_TRANSPORT_UNAVAILABLE"),
+                eq(List.of("DATASOURCE_RUN_ONCE_TRANSPORT_UNAVAILABLE")));
     }
 
     private SyncBatchRunOnceDispatchService dispatchService(String baseUrl,

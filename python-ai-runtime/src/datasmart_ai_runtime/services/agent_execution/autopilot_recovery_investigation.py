@@ -9,6 +9,7 @@ Recovery Specialist 可以自主判断下一步需要只读 preview，但模型�
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Protocol
 
@@ -29,6 +30,11 @@ from datasmart_ai_runtime.services.multi_agent.specialist_toolplan_bridge import
 
 _AUTONOMOUS_INVESTIGATION_TOOLS = {
     "PREVIEW_QUARANTINE": "sync.dirty-record.quarantine.preview",
+}
+# 模型只能影响这些注册表声明为 model_optional 的预览参数。动作 ID、原因、置信度和证据摘要都属于
+# 瞬态规划元数据，不能进入 Java AgentPlan 的重放身份，否则 Kafka 重投会把同一业务动作误判为不同请求。
+_AUTONOMOUS_INVESTIGATION_MODEL_ARGUMENTS = {
+    "PREVIEW_QUARANTINE": frozenset({"errorSampleIds", "quarantineAllRetryableInExecution"}),
 }
 _MODEL_SAFE_PREVIEW_RESULT_FIELDS = frozenset(
     {
@@ -114,11 +120,9 @@ class AutopilotRecoveryInvestigationCollaborator:
 
         确定性治理拒绝返回 ``completed=False``，不会产生副作用。HTTP、Java 合同或真实回执缺失说明交付状态
         未知，会抛出可重试异常；重复 Kafka 投递使用稳定的两个幂等键，Java ingestion/audit 负责回放而不是
-        创建无限重复执行。
-
-        English: this collaborator has no data-sync write client.  Its only effect is to submit the two bounded
-        ToolPlans through Java and return a filtered receipt for the next model turn.  A later APPLY_QUARANTINE is
-        never executed here; the coordinator merely validates this receipt before returning a Java-owned candidate.
+        创建无限重复执行。协作者本身没有 data-sync 写客户端，只会把两个有界 ToolPlan 提交给 Java，并把
+        裁剪后的回执交给下一轮模型。后续 ``APPLY_QUARANTINE`` 不在这里执行，coordinator 只验证回执并返回
+        由 Java 控制面持有的候选动作。
         """
 
         action_code = self._code(action_type)
@@ -131,11 +135,13 @@ class AutopilotRecoveryInvestigationCollaborator:
             return self._blocked("RECOVERY_INVESTIGATION_ACTION_NOT_FOUND")
         request_context = self._request_context(request, narrowed)
         parent_plan = self._parent_plan(request_context, expected_tool)
+        diagnosis_result = self._diagnosis_specialist_result(request, narrowed, action_code)
+        preview_idempotency_prefix = self._preview_idempotency_prefix(request, narrowed)
 
         bootstrap = self._bridge.bridge_recovery(
             request=request_context,
             plan=parent_plan,
-            specialist_result=narrowed,
+            specialist_result=diagnosis_result,
             control_plane_feedback=None,
         )
         if bootstrap.status is not SpecialistBridgeStatus.ACCEPTED or bootstrap.plan is None:
@@ -146,7 +152,7 @@ class AutopilotRecoveryInvestigationCollaborator:
         diagnosis_plan = self._ingest(
             request_context,
             bootstrap.plan,
-            idempotency_key=f"{request.event_id}:diagnosis",
+            idempotency_key=f"{request.event_id}:investigation:v2:diagnosis",
         )
         diagnosis_feedback = self._feedback_collector.collect(diagnosis_plan)
         self._require_java_success(diagnosis_feedback, "sync.execution.diagnose")
@@ -165,7 +171,7 @@ class AutopilotRecoveryInvestigationCollaborator:
         preview_plan = self._ingest(
             request_context,
             preview_bridge.plan,
-            idempotency_key=f"{request.event_id}:preview:{action_code.lower()}",
+            idempotency_key=f"{preview_idempotency_prefix}:preview:{action_code.lower()}",
         )
         preview_feedback = self._feedback_collector.collect(preview_plan)
         receipt = self._require_java_success(preview_feedback, expected_tool)
@@ -202,9 +208,9 @@ class AutopilotRecoveryInvestigationCollaborator:
         参数和其他未知字段一律不穿过这个边界。最终 API 的 ``quarantinePreview`` 会再移除 operationState，
         只携带 Java 约定的十个字段。
 
-        English: filtering happens before the receipt reaches a model turn.  The helper does not validate or execute
-        the preview; malformed eligibility facts are rejected later by the coordinator when and only when a model
-        proposes APPLY_QUARANTINE.  This preserves a valid preview-to-retry path without broadening model context.
+        过滤发生在回执进入模型 turn 之前。本方法既不验证也不执行预览；只有模型后续提出
+        ``APPLY_QUARANTINE`` 时，coordinator 才校验资格事实并拒绝畸形数据。这样既保留有效的
+        preview-to-retry 路径，也不会扩大模型上下文。
         """
 
         if not isinstance(result, Mapping):
@@ -331,8 +337,12 @@ class AutopilotRecoveryInvestigationCollaborator:
         """只保留 coordinator 已选择的调查动作，并为该子步骤生成稳定指纹。
 
         这不是修改模型结论或丢弃写动作：coordinator 只会在“原始候选全部是调查 preview”时调用本方法；
-        混有 retry/apply/replay/schema 写动作的输出会在更早阶段整体阻断。新指纹绑定 event、错误、execution
-        与动作代码，供 Java ingestion 幂等审计使用，不会冒充用户批准或最终修复指纹。
+        混有 retry/apply/replay/schema 写动作的输出会在更早阶段整体阻断。
+
+        Kafka 重投可能让模型重新生成 actionId、说明、置信度或证据摘要，这些字段不改变预览的执行语义。
+        如果直接保留，Python 会用同一阶段幂等键提交不同 Java 请求，触发正确的冲突保护并最终进入 DLT。
+        因此这里只保留动作类型和注册表允许的模型参数，再由 event、错误、execution、动作代码及这些参数
+        生成稳定动作指纹。真实参数变化会生成新身份；纯文本或瞬态元数据变化仍会回放首次 audit。
         """
 
         actions = result.structured_output.get("repairActions") or ()
@@ -347,18 +357,34 @@ class AutopilotRecoveryInvestigationCollaborator:
         )
         if selected is None:
             return None
-        material = "|".join(
-            (
-                str(request.event_id),
-                str(request.error_fingerprint),
-                str(request.current_execution_id),
-                action_type,
-            )
+        model_arguments = AutopilotRecoveryInvestigationCollaborator._canonical_model_arguments(
+            action_type,
+            selected,
         )
-        output = dict(result.structured_output)
-        output["repairActions"] = (selected,)
-        output["actionFingerprint"] = "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
-        output["executed"] = False
+        material = json.dumps(
+            {
+                "eventId": str(request.event_id),
+                "errorFingerprint": str(request.error_fingerprint),
+                "executionId": str(request.current_execution_id),
+                "actionType": action_type,
+                "modelArguments": model_arguments,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        canonical_action: dict[str, Any] = {
+            "actionId": f"autopilot-investigation-{digest[:24]}",
+            "actionType": action_type,
+        }
+        if model_arguments:
+            canonical_action["proposedValues"] = model_arguments
+        output = {
+            "repairActions": (canonical_action,),
+            "actionFingerprint": f"sha256:{digest}",
+            "executed": False,
+        }
         fact = result.control_plane_fact_binding
         delegated = {
             "tenantId": request.tenant_id,
@@ -371,6 +397,118 @@ class AutopilotRecoveryInvestigationCollaborator:
             "delegationId": str(fact.get("delegationId") or request.delegation_id),
         }
         return replace(result, structured_output=output, delegated_scope_binding=delegated)
+
+    @staticmethod
+    def _diagnosis_specialist_result(
+        request: Any,
+        result: SpecialistTurnResult,
+        action_type: str,
+    ) -> SpecialistTurnResult:
+        """构造与预览参数无关的诊断建议，确保同一事件只登记一份诊断 audit。
+
+        前置诊断只需要 taskId/executionId 等受信定位，不消费 ``errorSampleIds`` 等预览策略。若把预览参数
+        继续放入诊断 ToolPlan 指纹，同一事件内模型调整样本范围时会重复创建完全相同的只读诊断。因此本方法
+        为诊断阶段生成独立、稳定的动作和指纹；预览阶段仍使用包含真实参数的原始收敛结果。
+        """
+
+        material = "|".join(
+            (
+                str(request.event_id),
+                str(request.error_fingerprint),
+                str(request.current_execution_id),
+                action_type,
+                "diagnosis",
+            )
+        )
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        output = {
+            "repairActions": ({
+                "actionId": f"autopilot-diagnosis-{digest[:24]}",
+                "actionType": action_type,
+            },),
+            "actionFingerprint": f"sha256:{digest}",
+            "executed": False,
+        }
+        return replace(result, structured_output=output)
+
+    @staticmethod
+    def _canonical_model_arguments(
+        action_type: str,
+        action: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """提取会真实改变预览 ToolPlan 的模型参数，并生成确定性 JSON 结构。
+
+        参数白名单与当前自治调查目录一一对应。``originalValues`` 先读、``proposedValues`` 后读，和
+        ``SpecialistToolPlanBridge`` 的覆盖顺序一致；未知字段不会进入指纹或 Java 请求。映射键递归排序，
+        使同一对象仅因模型输出字段顺序不同也能命中幂等回放。数组顺序暂时保留，因为某些工具可能把顺序
+        视为策略的一部分；数据同步服务仍会在执行边界校验 ID、数量和类型。
+        """
+
+        allowed = _AUTONOMOUS_INVESTIGATION_MODEL_ARGUMENTS.get(action_type, frozenset())
+        candidates: dict[str, Any] = {}
+        for source_name in ("originalValues", "proposedValues"):
+            values = action.get(source_name)
+            if not isinstance(values, Mapping):
+                continue
+            for name, value in values.items():
+                normalized_name = str(name)
+                if normalized_name in allowed:
+                    candidates[normalized_name] = value
+        error_sample_ids = candidates.get("errorSampleIds")
+        if isinstance(error_sample_ids, (list, tuple)):
+            # 错误样本是集合语义：模型只改变 ID 顺序不代表新策略。这里先规范为正整数、有序、去重集合，
+            # 后续 Bridge 和 data-sync 仍会按工具 schema、数量上限及 execution 归属重新校验。只要存在一个
+            # 非法值就保留原数组，绝不能把“无效选择器”静默改成空数组后触发“全部可重试样本”的默认预览。
+            normalized_ids: list[int] = []
+            all_valid = True
+            for item in error_sample_ids:
+                if isinstance(item, bool) or not str(item).strip().isdigit() or int(item) <= 0:
+                    all_valid = False
+                    break
+                normalized_ids.append(int(item))
+            if all_valid:
+                candidates["errorSampleIds"] = sorted(set(normalized_ids))
+        return {
+            name: AutopilotRecoveryInvestigationCollaborator._canonical_json_value(candidates[name])
+            for name in sorted(candidates)
+        }
+
+    @staticmethod
+    def _canonical_json_value(value: Any) -> Any:
+        """把模型参数复制为键顺序稳定的普通 JSON 值，不把对象 repr 混入治理指纹。"""
+
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, Mapping):
+            return {
+                str(key): AutopilotRecoveryInvestigationCollaborator._canonical_json_value(value[key])
+                for key in sorted(value, key=lambda item: str(item))
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                AutopilotRecoveryInvestigationCollaborator._canonical_json_value(item)
+                for item in value
+            ]
+        raise ValueError("Recovery 调查参数包含非 JSON 类型")
+
+    @staticmethod
+    def _preview_idempotency_prefix(
+        request: Any,
+        result: SpecialistTurnResult,
+    ) -> str:
+        """生成可迁移、可回放且能区分真实策略变化的预览幂等前缀。
+
+        ``v2`` 用于避开旧实现已经写入数据库的固定键；否则修复部署后重放历史 Kafka 事件时，新的稳定请求
+        仍可能撞上旧请求指纹。诊断阶段使用独立的事件级键；这里的 eventId 已包含 recovery cycle、execution
+        和错误指纹，动作指纹再绑定当前预览参数，所以同一事件同一策略稳定复用，不同循环或真实策略变化
+        则创建新的受治理预览 Run。
+        """
+
+        fingerprint = str(result.structured_output.get("actionFingerprint") or "")
+        digest = fingerprint.removeprefix("sha256:")
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError("Recovery 调查缺少稳定动作指纹")
+        return f"{request.event_id}:investigation:v2:{digest}"
 
     @staticmethod
     def _bridge_reason(result: Any, fallback: str) -> str:

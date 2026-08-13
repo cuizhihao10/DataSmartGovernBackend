@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.controller.dto;
 
 import java.time.OffsetDateTime;
+import java.util.Map;
 
 /**
  * agent-runtime 提交给 data-sync 的低敏 Autopilot 决策请求。
@@ -33,5 +34,6 @@ public record SyncAutopilotRecoveryDecisionRequest(
         String repairFingerprint,
         String receiptId,
         int confidenceScore,
-        boolean evidenceAvailable) {
+        boolean evidenceAvailable,
+        Map<String, Object> autopilotRecoveryFacts) {
 }

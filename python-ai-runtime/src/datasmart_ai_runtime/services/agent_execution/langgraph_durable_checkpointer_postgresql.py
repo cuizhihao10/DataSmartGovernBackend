@@ -18,7 +18,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Any, Mapping
 
 from datasmart_ai_runtime.services.agent_execution.langgraph_durable_checkpointer import (
@@ -47,6 +49,7 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         thread 内历史版本不会被删除，方便恢复到旧节点或审计回放。
         """
 
+        normalized = _normalize_checkpoint(checkpoint)
         sql = f"""
             INSERT INTO langgraph_thread_checkpoint (
                 checkpoint_id, thread_id, parent_checkpoint_id, tenant_id, project_id, actor_id,
@@ -85,38 +88,38 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         self._execute(
             sql,
             (
-                checkpoint.checkpoint_id,
-                checkpoint.thread_id,
-                checkpoint.parent_checkpoint_id,
-                checkpoint.tenant_id,
-                checkpoint.project_id,
-                checkpoint.actor_id,
-                checkpoint.workspace_key,
-                checkpoint.run_id,
-                checkpoint.session_id,
-                checkpoint.graph_name,
-                checkpoint.graph_version,
-                checkpoint.node_name,
-                checkpoint.status.value,
-                checkpoint.checkpoint_version,
-                json.dumps(checkpoint.state, ensure_ascii=False, sort_keys=True),
-                json.dumps(list(checkpoint.next_nodes), ensure_ascii=False),
-                json.dumps(checkpoint.resume_requirements, ensure_ascii=False, sort_keys=True),
-                checkpoint.low_sensitive_summary,
-                checkpoint.expires_at,
-                checkpoint.created_at,
-                checkpoint.updated_at,
+                normalized.checkpoint_id,
+                normalized.thread_id,
+                normalized.parent_checkpoint_id,
+                normalized.tenant_id,
+                normalized.project_id,
+                normalized.actor_id,
+                normalized.workspace_key,
+                normalized.run_id,
+                normalized.session_id,
+                normalized.graph_name,
+                normalized.graph_version,
+                normalized.node_name,
+                normalized.status.value,
+                normalized.checkpoint_version,
+                json.dumps(normalized.state, ensure_ascii=False, sort_keys=True),
+                json.dumps(list(normalized.next_nodes), ensure_ascii=False),
+                json.dumps(normalized.resume_requirements, ensure_ascii=False, sort_keys=True),
+                normalized.low_sensitive_summary,
+                normalized.expires_at,
+                normalized.created_at,
+                normalized.updated_at,
             ),
         )
         self._commit()
-        return checkpoint
+        return normalized
 
     def get_checkpoint(self, checkpoint_id: str) -> LangGraphDurableCheckpoint | None:
         """按 checkpointId 查询。"""
 
         row = self._fetchone(
             f"SELECT {self._checkpoint_columns()} FROM langgraph_thread_checkpoint WHERE checkpoint_id = {self._placeholder}",
-            (checkpoint_id,),
+            (_bounded_text(checkpoint_id, 160),),
         )
         return _checkpoint_from_row(row) if row is not None else None
 
@@ -129,7 +132,7 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
                 f"WHERE thread_id = {self._placeholder} "
                 "ORDER BY checkpoint_version DESC, updated_at DESC LIMIT 1"
             ),
-            (thread_id,),
+            (_bounded_text(thread_id, 160),),
         )
         return _checkpoint_from_row(row) if row is not None else None
 
@@ -139,6 +142,7 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         eventId 是幂等键；如果重放同一事件，不覆盖已存在事件，避免审计序列被意外改写。
         """
 
+        normalized = _normalize_event(event)
         sql = f"""
             INSERT INTO langgraph_checkpoint_event (
                 event_id, checkpoint_id, thread_id, tenant_id, project_id, run_id,
@@ -154,22 +158,22 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         self._execute(
             sql,
             (
-                event.event_id,
-                event.checkpoint_id,
-                event.thread_id,
-                event.tenant_id,
-                event.project_id,
-                event.run_id,
-                event.event_type,
-                event.node_name,
-                event.edge_name,
-                event.sequence_number,
-                json.dumps(event.attributes, ensure_ascii=False, sort_keys=True),
-                event.created_at,
+                normalized.event_id,
+                normalized.checkpoint_id,
+                normalized.thread_id,
+                normalized.tenant_id,
+                normalized.project_id,
+                normalized.run_id,
+                normalized.event_type,
+                normalized.node_name,
+                normalized.edge_name,
+                normalized.sequence_number,
+                json.dumps(normalized.attributes, ensure_ascii=False, sort_keys=True),
+                normalized.created_at,
             ),
         )
         self._commit()
-        return event
+        return normalized
 
     def events_for_thread(self, thread_id: str) -> tuple[LangGraphCheckpointEvent, ...]:
         """读取 thread 事件流。"""
@@ -179,7 +183,7 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
                 f"SELECT {self._event_columns()} FROM langgraph_checkpoint_event "
                 f"WHERE thread_id = {self._placeholder} ORDER BY sequence_number ASC"
             ),
-            (thread_id,),
+            (_bounded_text(thread_id, 160),),
         )
         return tuple(_event_from_row(row) for row in rows)
 
@@ -213,6 +217,9 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         cursor = self._connection.cursor()
         try:
             cursor.execute(sql, params)
+        except Exception:
+            self._rollback_after_database_error()
+            raise
         finally:
             close = getattr(cursor, "close", None)
             if callable(close):
@@ -225,6 +232,9 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         try:
             cursor.execute(sql, params)
             return cursor.fetchone()
+        except Exception:
+            self._rollback_after_database_error()
+            raise
         finally:
             close = getattr(cursor, "close", None)
             if callable(close):
@@ -237,6 +247,9 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         try:
             cursor.execute(sql, params)
             return tuple(cursor.fetchall())
+        except Exception:
+            self._rollback_after_database_error()
+            raise
         finally:
             close = getattr(cursor, "close", None)
             if callable(close):
@@ -248,6 +261,22 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
         commit = getattr(self._connection, "commit", None)
         if callable(commit):
             commit()
+
+    def _rollback_after_database_error(self) -> None:
+        """清理 PostgreSQL 失败事务，避免同一连接把后续 Recovery 请求全部拖入失败状态。
+
+        psycopg 在一条 SQL 失败后会把连接标记为 ``transaction aborted``。如果这里只把异常抛回
+        FastAPI，连接池下一次复用时会在完全无关的查询上继续报 ``InFailedSqlTransaction``，让
+        Kafka 重试看起来像业务 Recovery 失败。rollback 不吞掉原异常，只恢复 DB-API 连接到可重试状态。
+        """
+
+        rollback = getattr(self._connection, "rollback", None)
+        if callable(rollback):
+            try:
+                rollback()
+            except Exception:
+                # 原始 SQL 异常更有诊断价值；rollback 自身失败不能覆盖它。
+                pass
 
     def _placeholders(self, count: int) -> str:
         """生成 DB-API placeholders。"""
@@ -273,6 +302,66 @@ class PostgresLangGraphCheckpointStore(LangGraphCheckpointStore):
             "event_id,checkpoint_id,thread_id,tenant_id,project_id,run_id,event_type,"
             "node_name,edge_name,sequence_number,attributes_json,created_at"
         )
+
+
+def _normalize_checkpoint(checkpoint: LangGraphDurableCheckpoint) -> LangGraphDurableCheckpoint:
+    """按 ``ai_memory.langgraph_thread_checkpoint`` 的 VARCHAR 上限归一化 checkpoint。
+
+    领域层允许较长的可读节点名和租户上下文，但 PostgreSQL 表是跨服务的稳定契约。这里在最后的
+    持久化边界做长度裁剪，并在裁剪尾部保留短 SHA-256 摘要，避免两个长标识仅因前缀相同而碰撞。
+    """
+
+    return replace(
+        checkpoint,
+        checkpoint_id=_bounded_text(checkpoint.checkpoint_id, 160),
+        thread_id=_bounded_text(checkpoint.thread_id, 160),
+        parent_checkpoint_id=_bounded_optional_text(checkpoint.parent_checkpoint_id, 160),
+        tenant_id=_bounded_optional_text(checkpoint.tenant_id, 64),
+        project_id=_bounded_optional_text(checkpoint.project_id, 64),
+        actor_id=_bounded_optional_text(checkpoint.actor_id, 64),
+        workspace_key=_bounded_optional_text(checkpoint.workspace_key, 255),
+        run_id=_bounded_optional_text(checkpoint.run_id, 128),
+        session_id=_bounded_optional_text(checkpoint.session_id, 128),
+        graph_name=_bounded_text(checkpoint.graph_name, 128),
+        graph_version=_bounded_text(checkpoint.graph_version, 64),
+        node_name=_bounded_text(checkpoint.node_name, 128),
+        low_sensitive_summary=_bounded_optional_text(checkpoint.low_sensitive_summary, 1024),
+    )
+
+
+def _normalize_event(event: LangGraphCheckpointEvent) -> LangGraphCheckpointEvent:
+    """按 ``ai_memory.langgraph_checkpoint_event`` 的 VARCHAR 上限归一化事件。"""
+
+    return replace(
+        event,
+        event_id=_bounded_text(event.event_id, 160),
+        checkpoint_id=_bounded_text(event.checkpoint_id, 160),
+        thread_id=_bounded_text(event.thread_id, 160),
+        tenant_id=_bounded_optional_text(event.tenant_id, 64),
+        project_id=_bounded_optional_text(event.project_id, 64),
+        run_id=_bounded_optional_text(event.run_id, 128),
+        event_type=_bounded_text(event.event_type, 96),
+        node_name=_bounded_optional_text(event.node_name, 128),
+        edge_name=_bounded_optional_text(event.edge_name, 128),
+    )
+
+
+def _bounded_optional_text(value: Any, limit: int) -> str | None:
+    """保留 NULL 语义并把非空值交给带摘要的长度保护。"""
+
+    if value is None:
+        return None
+    return _bounded_text(value, limit)
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    """把持久化标识压到数据库上限，并保留短摘要帮助排查截断冲突。"""
+
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+    return text[: max(1, limit - len(digest) - 1)] + "~" + digest
 
 
 def _checkpoint_from_row(row: Any) -> LangGraphDurableCheckpoint:

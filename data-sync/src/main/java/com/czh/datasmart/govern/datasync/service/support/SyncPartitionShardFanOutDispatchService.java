@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeTransportUnavailableException;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.support.SyncObjectExecutionState;
 import lombok.RequiredArgsConstructor;
@@ -142,16 +143,20 @@ public class SyncPartitionShardFanOutDispatchService {
         SyncPartitionShardExecutionContract partitionContract = resolvePartitionContract(task, execution, definition,
                 actorContext, parentContract);
         if (!partitionContract.executableByPartitionFanOut()) {
+            String contractErrorCode = partitionContract.issueCodes().contains(
+                    "PARTITION_AUTO_RANGE_PROBE_TRANSPORT_UNAVAILABLE")
+                    ? "DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE"
+                    : "PARTITION_SHARD_CONTRACT_BLOCKED";
             return failFanOut(task, execution, actorContext, parentContract,
                     false,
                     0L,
                     0L,
                     1L,
-                    "PARTITION_SHARD_CONTRACT_BLOCKED",
-                    "PARTITION_SHARD_CONTRACT_BLOCKED",
+                    contractErrorCode,
+                    contractErrorCode,
                     "partitionConfig 分片合同不可执行，本次未触发真实读写；请检查分片策略、分片字段和 ranges 配置",
                     mergeIssueCodes(partitionContract.issueCodes(), partitionContract.warnings(),
-                            "PARTITION_SHARD_CONTRACT_BLOCKED"));
+                            contractErrorCode));
         }
 
         List<SyncObjectExecution> shardExecutions =
@@ -301,6 +306,23 @@ public class SyncPartitionShardFanOutDispatchService {
             savePolicySnapshot(task, execution, effectivePolicy, resolved, "PARTITION_SHARD_AUTO_SPLIT_PK");
             return resolved;
         } catch (RuntimeException exception) {
+            boolean transportUnavailable = exception instanceof DatasourcePartitionRangeProbeTransportUnavailableException;
+            String transportIssueCode = transportUnavailable
+                    ? "PARTITION_AUTO_RANGE_PROBE_TRANSPORT_UNAVAILABLE"
+                    : "PARTITION_AUTO_RANGE_PROBE_FAILED";
+            if (transportUnavailable) {
+                /*
+                 * min/max 探测成功之前不存在真实分片。持久化一个低敏的失败范围探测工作单元，使常规的
+                 * 受治理失败对象重试路径能够重新入队这个 execution，而无需特殊的执行级旁路。HTTP 或
+                 * 业务拒绝刻意不进入此路径。
+                 */
+                objectExecutionLifecycleSupport.recordPartitionRangeProbeTransportFailure(
+                        task,
+                        execution,
+                        definition,
+                        parsed.maxAttemptCount(),
+                        "DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+            }
             SyncPartitionShardExecutionContract blocked = new SyncPartitionShardExecutionContract(
                     true,
                     true,
@@ -315,7 +337,7 @@ public class SyncPartitionShardFanOutDispatchService {
                     parsed.maxDirtyRecordCount(),
                     parsed.maxDirtyRecordRatio(),
                     List.of(),
-                    mergeIssueCodes(parsed.issueCodes(), List.of(), "PARTITION_AUTO_RANGE_PROBE_FAILED"),
+                     mergeIssueCodes(parsed.issueCodes(), List.of(), transportIssueCode),
                     mergeIssueCodes(parsed.warnings(), parentContract == null ? List.of() : parentContract.issueCodes(),
                             "PARTITION_AUTO_RANGE_PROBE_FAILED"),
                     SyncPartitionShardExecutionContract.PAYLOAD_POLICY
@@ -801,7 +823,8 @@ public class SyncPartitionShardFanOutDispatchService {
         request.setRecordsRead(recordsRead);
         request.setRecordsWritten(recordsWritten);
         request.setFailedRecordCount(Math.max(1L, failedRecordCount));
-        request.setRetryable(false);
+        boolean retryable = "DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE".equals(errorCode);
+        request.setRetryable(retryable);
         request.setIdempotencyKey("partition-shard-fan-out-fail-" + executionAttemptKey(execution) + "-" + errorCode);
         lifecycleSupport.failExecution(task, execution, request, actorContext);
         receiptPublisher.publishFailed(task, execution, actorContext, errorCode, issueCodes);

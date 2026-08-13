@@ -42,9 +42,8 @@ from datasmart_ai_runtime.services.multi_agent.specialist_contracts import (
 # 诊断工具是只读事实入口。Recovery 不再拥有通用执行器入口；恢复动作会在主 Agent bridge
 # 中按平台注册表映射为具体 ToolPlan，避免 Python 侧出现第二套执行权限边界。
 FAILURE_DIAGNOSTIC_TOOL_CODE = "recovery.failure.diagnose"
-# This is the stable contract name for the Java-controlled, approval-bound
-# recovery handoff. Python only proposes a recovery action; the control plane
-# remains responsible for authorization, execution and receipt persistence.
+# 这是由 Java 控制、受审批约束的 recovery handoff 的稳定合同名称。Python 仅提出
+# 恢复动作建议；控制面仍负责授权、执行和 receipt 持久化。
 CONTROLLED_RECOVERY_TOOL_CODE = "recovery.controlled.execute"
 RECOVERY_DIAGNOSTIC_TOOL_CODE = FAILURE_DIAGNOSTIC_TOOL_CODE
 
@@ -163,10 +162,17 @@ class RecoveryPlanningModelInput:
     max_output_tokens: int
     failure_code: str | None = None
     failure_reason: str = ""
-    # This summary comes only from a completed MONITOR_AGENT dependency.  It is optional for
-    # standalone unit/domain calls, but recovery waves that scheduled MONITOR_AGENT must consume it.
+    # 此摘要仅来自已完成的 MONITOR_AGENT 依赖。对于独立单元/领域调用它是可选的，
+    # 但已调度 MONITOR_AGENT 的 recovery wave 必须消费它。
     monitoring_summary: Mapping[str, Any] = field(default_factory=dict)
     evidence_audit: Mapping[str, Any] = field(default_factory=dict)
+    # 这些由 coordinator 拥有的事实告知模型当前 turn 是初始检索决策，还是检索后的有界后续决策。
+    # 它们不携带执行授权。
+    decision_phase: str = "DIAGNOSE"
+    knowledge_search_completed: bool = False
+    retrieval_already_performed: bool = False
+    remaining_knowledge_searches: int = 1
+    must_choose_single_governed_action: bool = False
 
     def __post_init__(self) -> None:
         """冻结模型输入，避免 Provider 适配器在规划过程中篡改事实快照。"""
@@ -182,6 +188,19 @@ class RecoveryPlanningModelInput:
         object.__setattr__(self, "allowed_tool_names", _unique_text(self.allowed_tool_names))
         object.__setattr__(self, "failure_code", _bounded_text(self.failure_code, 160).strip() or None)
         object.__setattr__(self, "failure_reason", _bounded_text(self.failure_reason, 1_000))
+        phase = _bounded_text(self.decision_phase, 48).strip().upper() or "DIAGNOSE"
+        if phase not in {"DIAGNOSE", "DECIDE_AFTER_SEARCH", "DECIDE_AFTER_INVESTIGATION"}:
+            raise ValueError("decision_phase must be a supported Recovery phase")
+        object.__setattr__(self, "decision_phase", phase)
+        for field_name in ("knowledge_search_completed", "retrieval_already_performed", "must_choose_single_governed_action"):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be boolean")
+        if isinstance(self.remaining_knowledge_searches, bool):
+            raise TypeError("remaining_knowledge_searches must be an integer")
+        remaining = int(self.remaining_knowledge_searches)
+        if not 0 <= remaining <= 1:
+            raise ValueError("remaining_knowledge_searches must be 0 or 1")
+        object.__setattr__(self, "remaining_knowledge_searches", remaining)
 
     @property
     def failure_facts(self) -> Mapping[str, Any]:
@@ -661,6 +680,34 @@ class RecoverySpecialistAgent:
             # 恢复模型可能提出高风险动作，所以它比普通摘要模型更不能依赖隐式上下文；
             # 范围必须来自本次失败恢复 turn 的 request，而不是故障会话的旧缓存。
             audit_scope = request.audit_scope
+            decision_control = _lookup(
+                request.context_summary,
+                "recoveryDecisionControl",
+                "recovery_decision_control",
+            )
+            if not isinstance(decision_control, Mapping):
+                decision_control = {}
+            decision_phase = _bounded_text(_lookup(decision_control, "phase"), 48).strip().upper() or "DIAGNOSE"
+            knowledge_search_completed = _strict_bool(
+                _lookup(decision_control, "knowledgeSearchCompleted", "knowledge_search_completed"),
+                default=False,
+            )
+            retrieval_already_performed = _strict_bool(
+                _lookup(decision_control, "retrievalAlreadyPerformed", "retrieval_already_performed"),
+                default=False,
+            )
+            remaining_knowledge_searches = _lookup(
+                decision_control,
+                "remainingKnowledgeSearches",
+                "remaining_knowledge_searches",
+            )
+            remaining_knowledge_searches = (
+                0 if remaining_knowledge_searches is None else int(remaining_knowledge_searches)
+            )
+            must_choose_single_governed_action = _strict_bool(
+                _lookup(decision_control, "mustChooseSingleGovernedAction", "must_choose_single_governed_action"),
+                default=False,
+            )
             model_input = RecoveryPlanningModelInput(
                 objective=_bounded_text(request.objective, 4_000),
                 audit_scope=audit_scope,
@@ -680,6 +727,11 @@ class RecoverySpecialistAgent:
                 failure_code=diagnostic.failure_code,
                 failure_reason=_sanitize_text(diagnostic.failure_reason),
                 evidence_audit=evidence_audit,
+                decision_phase=decision_phase,
+                knowledge_search_completed=knowledge_search_completed,
+                retrieval_already_performed=retrieval_already_performed,
+                remaining_knowledge_searches=remaining_knowledge_searches,
+                must_choose_single_governed_action=must_choose_single_governed_action,
             )
         except (TypeError, ValueError):
             return self._failed_result(
@@ -833,6 +885,9 @@ class RecoverySpecialistAgent:
         )
         base_output = {
             "failure": self._public_failure(diagnostic),
+            # 这是控制面诊断的确定性投影，而非模型声明。Java executor 使用同一事实判断
+            # 重试是否可以保持在用户的 Autopilot 范围内。
+            "autopilotRecoveryFacts": self._autopilot_recovery_facts(diagnostic),
             "repairActions": public_actions,
             "actionFingerprint": action_fingerprint,
             "evidenceReferences": evidence_references,
@@ -1075,8 +1130,8 @@ class RecoverySpecialistAgent:
         )
         monitoring_raw: Any = None
 
-        # Specialist coordinator places completed upstream outputs in ``dependencyResults``.  Read
-        # only their low-sensitive structured summaries; neither branch re-runs RAG or reads logs.
+        # Specialist coordinator 将已完成的上游输出放入 ``dependencyResults``。仅读取其低敏
+        # 结构化摘要；两个分支都不会重新运行 RAG 或读取日志。
         dependency_results = _lookup(context, "dependencyResults", "dependency_results")
         if isinstance(dependency_results, Mapping):
             if knowledge_raw is None:
@@ -1090,9 +1145,8 @@ class RecoverySpecialistAgent:
                     if knowledge_raw is None:
                         knowledge_raw = knowledge_result
 
-            # Monitor is independent from the knowledge lookup.  Keep this extraction outside the
-            # ``knowledge_raw is None`` branch so a normal grounded RAG result cannot accidentally
-            # suppress the completed runtime dependency needed by a recovery wave.
+            # Monitor 独立于知识查询。将此提取保留在 ``knowledge_raw is None`` 分支外，
+            # 以免正常的 grounded RAG 结果意外抑制 recovery wave 所需的已完成 runtime 依赖。
             monitor_result = _lookup(
                 dependency_results,
                 AgentSessionRole.MONITOR_AGENT.value,
@@ -1133,7 +1187,7 @@ class RecoverySpecialistAgent:
         knowledge_summary: Mapping[str, Any],
         monitoring_summary: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        """Build low-sensitive source/time/query/evidence metadata for this turn."""
+        """为当前 turn 构建低敏的来源、时间、查询和证据元数据。"""
 
         retrieved_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         query_material = "|".join((
@@ -1213,7 +1267,7 @@ class RecoverySpecialistAgent:
         diagnostic: FailureDiagnosticResult,
         audit: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        """Require authoritative diagnostics without requiring a RAG call."""
+        """要求权威诊断，但不要求调用 RAG。"""
 
         code = _bounded_text(diagnostic.failure_code, 160).strip().upper()
         failure_signal = (bool(code) and code != "UNKNOWN") or bool(diagnostic.facts)
@@ -1229,6 +1283,85 @@ class RecoverySpecialistAgent:
             "ragRequired": False,
         }
 
+    @classmethod
+    def _autopilot_recovery_facts(cls, diagnostic: FailureDiagnosticResult) -> Mapping[str, Any]:
+        """投影提出无人值守重试前所需的精简事实。
+
+        只有对于明确的瞬态 connector/worker 故障，且受控诊断同时表明受影响工作可重试时，重试才是安全的。
+        本方法有意忽略模型标签、动作名称和自由文本错误描述。因此即使模型请求
+        ``RETRY_FAILED_OBJECTS``，schema、凭据、权限、范围和数据合同故障仍留在受治理的审核路径中。
+
+        返回映射包含布尔值、有界故障类别和计数。它绝不携带原始错误消息、SQL、对象名或样本行，
+        因而适用于 specialist 结果和 checkpoint。
+        """
+
+        facts = diagnostic.facts if isinstance(diagnostic.facts, Mapping) else {}
+        root_causes = tuple(
+            _action_key(value)
+            for value in (_lookup(facts, "rootCauseCodes", "root_cause_codes") or ())
+            if _action_key(value)
+        )
+        errors = _lookup(facts, "errors") or ()
+        error_codes: list[str] = []
+        retryable_error = False
+        if isinstance(errors, (list, tuple)):
+            for item in errors[:32]:
+                if not isinstance(item, Mapping):
+                    continue
+                error_codes.extend(
+                    [
+                        code
+                        for code in (_action_key(_lookup(item, "errorType", "error_type")),)
+                        if code
+                    ],
+                )
+                error_codes.extend(
+                    [
+                        code
+                        for code in (_action_key(_lookup(item, "errorCode", "error_code")),)
+                        if code
+                    ],
+                )
+                if _lookup(item, "retryable") is True and _positive_int(_lookup(item, "count")) > 0:
+                    retryable_error = True
+
+        transient_markers = (
+            "CONNECTOR",
+            "CONNECTION",
+            "NETWORK",
+            "TIMEOUT",
+            "UNAVAILABLE",
+            "COMMUNICATION",
+            "WORKER",
+            "KAFKA",
+            "BROKER",
+            "TRANSIENT",
+        )
+        transient_source = any(
+            any(marker in code for marker in transient_markers)
+            for code in (*root_causes, *error_codes)
+        )
+        explicit_retryable = _lookup(facts, "retryable") is True or retryable_error
+        failure_class = (
+            "TRANSIENT_CONNECTOR_OR_WORKER"
+            if transient_source and explicit_retryable
+            else "NON_TRANSIENT_OR_UNCLASSIFIED"
+        )
+        failed_object_count = _positive_int(
+            _lookup(facts, "failedObjectCount", "failed_object_count")
+        )
+        return {
+            "failureClass": failure_class,
+            "retryable": explicit_retryable,
+            "eligibleForAutomaticRetry": (
+                failure_class == "TRANSIENT_CONNECTOR_OR_WORKER"
+                and explicit_retryable
+                and failed_object_count > 0
+            ),
+            "failedObjectCount": failed_object_count,
+            "rootCauseCodes": tuple(root_causes[:12]),
+        }
+
     def _alternate_strategy_action(
         self,
         *,
@@ -1237,7 +1370,7 @@ class RecoverySpecialistAgent:
         previous_repair_fingerprint: str,
         repeated_error_count: int,
     ) -> tuple[RecoveryAction, ...]:
-        """Replace a repeated repair with a read-only evidence expansion."""
+        """用只读证据扩展替换重复的修复动作。"""
 
         return (
             RecoveryAction(
@@ -1257,11 +1390,10 @@ class RecoverySpecialistAgent:
         )
 
     def _has_grounded_knowledge(self, value: Mapping[str, Any]) -> bool:
-        """Require an actual grounded KNOWLEDGE_AGENT result before model recovery planning.
+        """在模型恢复规划前要求实际落地的 KNOWLEDGE_AGENT 结果。
 
-        Recovery is allowed to use a case summary as supporting evidence, but it must not substitute
-        that summary for the RAG grounding contract.  The boolean and at least one citation/reference
-        are both required, which prevents a caller from asserting ``grounded=true`` without evidence.
+        Recovery 可以将案例摘要作为辅助证据，但不能用它替代 RAG 落地合同。必须同时具备布尔值和至少一条
+        citation/reference，从而防止调用方在没有证据时声称 ``grounded=true``。
         """
 
         if not self._has_evidence(value) or _lookup(value, "grounded") is not True:
@@ -1271,7 +1403,7 @@ class RecoverySpecialistAgent:
 
     @staticmethod
     def _monitoring_dependency_required(context: Mapping[str, Any]) -> bool:
-        """Detect whether the coordinator supplied a completed monitor dependency for this turn."""
+        """检测 coordinator 是否为当前 turn 提供了已完成的 monitor 依赖。"""
 
         dependencies = _lookup(context, "dependencyResults", "dependency_results")
         return isinstance(dependencies, Mapping) and isinstance(
@@ -1281,11 +1413,10 @@ class RecoverySpecialistAgent:
 
     @staticmethod
     def _normalize_monitoring_summary(value: Any) -> Mapping[str, Any]:
-        """Keep only low-sensitive monitor facts usable by the recovery planning model.
+        """仅保留 recovery 规划模型可使用的低敏 monitor 事实。
 
-        The monitor result can contain explanatory text and schedule details, but recovery needs only
-        the deterministic lifecycle/health counters.  Rebuilding this narrow object prevents logs,
-        credentials, model text, or arbitrary dependency fields from crossing into a second model call.
+        monitor 结果可包含说明文本和调度细节，但 recovery 仅需要确定性的生命周期/健康度计数器。重建此
+        精简对象可避免日志、凭据、模型文本或任意依赖字段进入第二次模型调用。
         """
 
         if not isinstance(value, Mapping):
@@ -1311,12 +1442,11 @@ class RecoverySpecialistAgent:
 
     @classmethod
     def _model_failure_details(cls, exc: Exception) -> Mapping[str, str]:
-        """Classify model failures into stable, low-sensitive result fields.
+        """将模型故障分类为稳定、低敏的结果字段。
 
-        Adapters may attach ``reason_code`` and ``reason_source`` attributes, but those values are
-        accepted only from fixed allow-lists.  Unknown exceptions fall back to a generic adapter code;
-        this intentionally avoids returning endpoint URLs, provider messages, prompts, output text or
-        stack traces while preserving an actionable operational category.
+        适配器可以附加 ``reason_code`` 和 ``reason_source`` 属性，但仅接受固定允许列表中的值。未知异常会
+        回退到通用适配器代码；这在保留可操作运维类别的同时，有意避免返回 endpoint URL、provider 消息、
+        prompt、输出文本或堆栈跟踪。
         """
 
         reason_code = getattr(exc, "reason_code", None)
@@ -2111,6 +2241,16 @@ def _lookup(mapping: Mapping[str, Any] | None, *names: str) -> Any:
     return None
 
 
+def _strict_bool(value: Any, *, default: bool) -> bool:
+    """解析 coordinator 拥有的控制标志，不接受任意真值文本。"""
+
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError("Recovery decision control boolean must be true or false")
+    return value
+
+
 def _positive_decimal_reference(value: Any) -> str | None:
     """把 Java 资源 ID 收敛为正十进制字符串，拒绝模型文本、UUID 和通配符。
 
@@ -2128,7 +2268,7 @@ def _positive_decimal_reference(value: Any) -> str | None:
 
 
 def _positive_int(value: Any) -> int:
-    """Return a non-negative control-plane counter without raising."""
+    """返回非负控制面计数器，不抛出异常。"""
 
     try:
         return max(0, int(value))

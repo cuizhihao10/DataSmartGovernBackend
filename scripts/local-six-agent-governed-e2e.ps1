@@ -3220,8 +3220,8 @@ function Invoke-AutopilotPublicContractRegressionTest {
         $failureCount = $script:FailureCount
         $rejected = $false
         try {
-            # Stop-E2E writes its expected fixture failure to the Information stream. Suppress only that expected
-            # local signal so the standalone regression output remains an unambiguous PASS/FAIL result.
+            # Stop-E2E 会把夹具预期的失败写入 Information 流。这里只抑制该预期本地信号，
+            # 让独立回归的输出仍然只有明确的 PASS/FAIL 结果。
             $null = Assert-AutopilotModelEvidence -Snapshot $Snapshot 6>$null
         } catch {
             if (-not (Test-SafeE2EException -Exception $_.Exception)) {
@@ -3239,16 +3239,15 @@ function Invoke-AutopilotPublicContractRegressionTest {
         }
     }
 
-    # The authorization snapshot is the one fact a recovery GET may legitimately compare against. It contains no
-    # secret or recovery payload and lets the fixture prove that a callback-only bounded stop cannot enlarge cycles.
+    # 授权快照是 Recovery GET 可以合法比对的唯一外部事实。它不含 Secret 或恢复载荷，
+    # 用于证明只有 callback 的有界停止不能扩大循环次数。
     $authorizationSnapshot = [pscustomobject]@{
         MaxRecoveryCycles = 3
         MaxTotalDurationMinutes = 120
     }
 
-    # No legacy nested evidence object is present. A valid SEARCH response is completely described by the four flat fields.
-    # The digest deliberately has a non-hex suffix: the public contract requires the sha256: prefix, not exposure of
-    # a specific internal digest serialization length.
+    # 夹具不包含旧的嵌套 evidence 对象；合法 SEARCH 响应完全由四个扁平字段描述。
+    # 摘要有意使用非十六进制后缀：公开合同只要求 sha256: 前缀，不应暴露内部摘要序列化长度。
     $recoveredSearchSnapshot = [pscustomobject]@{
         caseId = 'autopilot-recovered-fixture'
         caseState = 'RECOVERED'
@@ -3276,8 +3275,8 @@ function Invoke-AutopilotPublicContractRegressionTest {
         throw 'Autopilot 公开合同回归失败：RECOVERED 没有保留 SEARCH、worker 终态或 currentExecutionId 证据。'
     }
 
-    # A persisted ATTENTION_REQUIRED case has SKIP evidence but intentionally lacks a successful worker terminal.
-    # The assertion must accept its bounded stop and report WorkerTerminal=false rather than require a made-up success.
+    # 已持久化的 ATTENTION_REQUIRED case 带有 SKIP 证据，但有意不包含成功 worker 终态。
+    # 断言必须接受该有界停止并返回 WorkerTerminal=false，不能要求虚构成功事实。
     $attentionSkipSnapshot = [pscustomobject]@{
         caseId = 'autopilot-attention-fixture'
         caseState = 'ATTENTION_REQUIRED'
@@ -3299,8 +3298,8 @@ function Invoke-AutopilotPublicContractRegressionTest {
         throw 'Autopilot 公开合同回归失败：ATTENTION_REQUIRED 被错误地当成 worker 成功或未保留 SKIP 合同。'
     }
 
-    # The consumer can persist a bounded stop before a recovery case exists. Omit maxCycles deliberately so this
-    # branch proves it uses the already verified first-confirmation snapshot instead of demanding WorkerTerminal.
+    # consumer 可以在 recovery case 创建前持久化有界停止。这里有意省略 maxCycles，
+    # 用于证明该分支复用已验证的首次确认快照，而不是强求 WorkerTerminal。
     $callbackAttentionSnapshot = [pscustomobject]@{
         consumerResultStatus = 'ATTENTION_REQUIRED'
         consumerResultReasonCode = 'AUTOPILOT_CYCLE_LIMIT_REACHED'
@@ -3320,8 +3319,8 @@ function Invoke-AutopilotPublicContractRegressionTest {
         throw 'Autopilot 公开合同回归失败：无 case 的 ATTENTION_REQUIRED 没有按首次授权边界停止。'
     }
 
-    # Positive fixtures prove the accepted public shape; these negative fixtures prevent future loosening of the
-    # SEARCH/SKIP count-and-digest invariant while keeping the regression output free of expected [FAIL] noise.
+    # 正向夹具证明可接受的公开形状；负向夹具防止未来放宽 SEARCH/SKIP 的计数与摘要不变量，
+    # 同时不让预期的 [FAIL] 噪声混入独立回归输出。
     $invalidSearchSnapshot = $recoveredSearchSnapshot.PSObject.Copy()
     $invalidSearchSnapshot.retrievalEvidenceCount = 0
     $invalidSearchSnapshot.retrievalEvidenceDigest = ''
@@ -3343,8 +3342,8 @@ function Invoke-AutopilotPublicContractRegressionTest {
         }
     }
 
-    # Reuse the production flow with local probes. The probes stand in only for public API calls; their trace proves
-    # the ordering and target execution ID without fabricating a worker success or contacting any service.
+    # 使用本地探针复用生产流程。探针只替代公开 API 调用，其轨迹用于证明顺序和目标 execution ID，
+    # 不会伪造 worker 成功，也不会访问任何服务。
     $initialSuccessTrace = [System.Collections.Generic.List[string]]::new()
     $initialSuccessFlow = Invoke-AutopilotSuccessRecoveryFlow `
         -TaskId 701 `
@@ -4063,6 +4062,12 @@ if ($RunAutopilotPublicContractRegressionTest) {
 
 if ($RunRequestContractRegressionTest) {
     try {
+        # 离线回归必须自带确定性异名对象夹具，不能依赖调用者额外传参。源端 schema 留空用于覆盖
+        # MySQL catalog 场景；其余名称只用于内存中的公开请求合同，不访问网络或数据库。
+        $SourceSchemaName = ''
+        $SourceObjectName = 'contract_source_orders'
+        $TargetSchemaName = 'contract_target_schema'
+        $TargetObjectName = 'contract_target_orders'
         Assert-BasicInputs
         $contract = New-AgentRequestBody
         $nestedMappings = @($contract.variables.dataSyncRequest.objectMappings)
@@ -4156,8 +4161,8 @@ try {
                 -TaskId $lifecycle.TaskId `
                 -ExecutionId $lifecycle.ExecutionId
         } else {
-            # Delegate the full first-terminal/recovery/current-execution sequence so the offline regression exercises
-            # the same branching contract as the real Gateway path.
+            # 将首次终态、Recovery 和当前 execution 的完整序列统一交给同一流程，确保离线回归
+            # 与真实 Gateway 路径验证的是同一套分支合同。
             $autopilotFlow = Invoke-AutopilotSuccessRecoveryFlow `
                 -TaskId $lifecycle.TaskId `
                 -ExecutionId $lifecycle.ExecutionId `

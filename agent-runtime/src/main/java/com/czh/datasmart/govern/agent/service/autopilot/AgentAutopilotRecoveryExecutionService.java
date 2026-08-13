@@ -67,9 +67,10 @@ public class AgentAutopilotRecoveryExecutionService {
             AgentAutopilotVerifiedRecoveryTrigger trigger,
             AgentAutopilotRecoveryPlanResponse response) {
         if (!"CANDIDATE_READY".equals(code(response.status()))) {
-            // An attention/failed planner response has not passed Java evidence verification. Persist its
-            // terminal code, but do not publish unverified retrieval metadata as grounded public evidence.
-            return result(trigger, null, response.status(), response.reasonCode(), null);
+            // Python 已完成一次范围受限、低敏感的规划。即使建议的动作不可执行，也要将其明确的
+            // SEARCH/SKIP 检索结果保留在持久审计中。
+            // 但该响应仍不是执行授权：此分支不会校验候选、创建恢复 case、修改数据或调度重试。
+            return result(trigger, response, response.status(), response.reasonCode(), null);
         }
         boolean evidenceVerified;
         try {
@@ -85,6 +86,13 @@ public class AgentAutopilotRecoveryExecutionService {
         String repeatedStrategyIssue = repeatedStrategyIssue(trigger, response);
         if (repeatedStrategyIssue != null) {
             return result(trigger, response, "ATTENTION_REQUIRED", repeatedStrategyIssue, null);
+        }
+
+        if ("RETRY_EXECUTION".equals(code(response.action()))
+                && !AgentAutopilotRecoveryFactsVerifier.eligibleForAutomaticRetry(
+                response.autopilotRecoveryFacts())) {
+            return result(trigger, response, "ATTENTION_REQUIRED",
+                    "RECOVERY_AUTOMATIC_RETRY_FACTS_REQUIRED", null);
         }
 
         AgentAutopilotRecoveryQuarantinePreview quarantinePreview = null;
@@ -108,7 +116,8 @@ public class AgentAutopilotRecoveryExecutionService {
                 response.riskLevel(),
                 response.idempotent(),
                 response.repairFingerprint(),
-                response.errorFingerprint());
+                response.errorFingerprint(),
+                response.autopilotRecoveryFacts());
         AgentAutopilotRecoveryLoopState loopState = new AgentAutopilotRecoveryLoopState(
                 trigger.event().cycle() - 1,
                 trigger.recoveryStartedAt(),

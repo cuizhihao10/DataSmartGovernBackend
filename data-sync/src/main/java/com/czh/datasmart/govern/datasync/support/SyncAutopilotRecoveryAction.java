@@ -28,9 +28,9 @@ public enum SyncAutopilotRecoveryAction {
     /** Reconnect an external datasource, which may change external-system state and needs approval. */
     RECONNECT_DATASOURCE(false),
     /** Resume from a persisted checkpoint without changing source/target configuration. */
-    RESUME_FROM_CHECKPOINT(true),
+    RESUME_FROM_CHECKPOINT(false),
     /** Replay only previously failed shards under the existing bounded task definition. */
-    REPLAY_FAILED_SHARDS(true),
+    REPLAY_FAILED_SHARDS(false),
     /** Refresh metadata, requiring approval because discovered shape may change later execution behavior. */
     REFRESH_METADATA(false),
     /** Change a schema contract; never eligible for unattended recovery. */
@@ -45,7 +45,7 @@ public enum SyncAutopilotRecoveryAction {
     EXPAND_DATA_SCOPE(false),
 
     /** Compatibility alias for retrying failed objects under the same limited execution scope. */
-    RETRY_FAILED_OBJECTS(true),
+    RETRY_FAILED_OBJECTS(false),
     /** Compatibility alias retained for old APIs; it still requires approval in this policy ceiling. */
     REPLAY_FROM_CHECKPOINT(false),
     /** Backfill can alter data volume/time scope and therefore always requires approval. */

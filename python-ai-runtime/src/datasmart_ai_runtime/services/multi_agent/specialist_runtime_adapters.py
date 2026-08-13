@@ -76,11 +76,10 @@ class SpecialistRuntimeAdapterError(RuntimeError):
         reason_code: str = "MODEL_ADAPTER_ERROR",
         reason_source: str = "SPECIALIST_MODEL_ADAPTER",
     ) -> None:
-        """Keep a public-safe classification alongside an internal exception message.
+        """在内部异常消息之外保留可安全公开的分类。
 
-        Callers must use ``reason_code`` and ``reason_source`` for persisted Specialist results.
-        The exception message remains diagnostic-only and is deliberately never copied into the
-        Recovery Agent response, event stream, or durable fact payload.
+        调用方必须将 ``reason_code`` 和 ``reason_source`` 用于持久化的 Specialist 结果。
+        异常消息仅用于诊断，且有意绝不复制到 Recovery Agent 响应、事件流或 durable fact 载荷中。
         """
 
         super().__init__(message)
@@ -317,7 +316,7 @@ class GovernedSpecialistJsonModel:
 
     @classmethod
     def _index_tool_registry(cls, tools: tuple[ToolDefinition, ...]) -> dict[str, ToolDefinition]:
-        """Build the model descriptor index and add only missing specialist read contracts."""
+        """构建模型描述符索引，并仅补充缺失的 Specialist 只读合同。"""
 
         indexed = {tool.name: tool for tool in tools if isinstance(tool, ToolDefinition)}
         for tool in cls._virtual_read_tool_definitions():
@@ -326,7 +325,7 @@ class GovernedSpecialistJsonModel:
 
     @staticmethod
     def _virtual_read_tool_definitions() -> tuple[ToolDefinition, ...]:
-        """Describe specialist tool codes which have deterministic clients but no generic descriptor."""
+        """描述具有确定性客户端但没有通用描述符的 Specialist 工具代码。"""
 
         from datasmart_ai_runtime.domain.contracts import ToolExecutionMode, ToolRiskLevel
 
@@ -385,11 +384,10 @@ class GovernedSpecialistJsonModel:
         specialist_role: str | None,
         allowed_tool_names: tuple[str, ...],
     ) -> tuple[ToolDefinition, ...]:
-        """Expose only the intersection of role policy, current delegation, and read-only registry tools.
+        """仅暴露角色策略、当前委派和注册表只读工具的交集。
 
-        This is a three-part boundary. A model-visible tool must be intrinsic to this specialist,
-        explicitly delegated for this turn, and marked read_only by the platform catalog. Unknown roles,
-        unknown descriptors and every write tool are excluded before the provider sees a schema.
+        这是三重边界。模型可见工具必须是此 specialist 的固有工具、已为本轮显式委派，且被平台目录
+        标记为 read_only。Provider 看到 schema 前，会排除未知角色、未知描述符和所有写工具。
         """
 
         role = str(specialist_role or "").strip().upper()
@@ -411,11 +409,10 @@ class GovernedSpecialistJsonModel:
         tool_calls: tuple[ModelToolCall, ...],
         visible_tools: tuple[ToolDefinition, ...],
     ) -> tuple[ModelToolCall, ...]:
-        """Validate Provider tool calls as inert candidates and remove raw Provider payloads.
+        """将 Provider 工具调用校验为惰性候选，并移除原始 Provider 载荷。
 
-        This adapter deliberately never dispatches a tool. It only checks that the model selected a tool
-        from the current read-only exposure set, stayed inside the specialist call budget, and provided a
-        bounded JSON object. Bridge and Java still own schema, RBAC, approval, idempotency and execution.
+        此适配器有意绝不分派工具。它只检查模型是否从当前只读暴露集合中选择工具、是否遵守
+        specialist 调用预算以及是否提供有界 JSON 对象。Bridge 和 Java 仍负责 schema、RBAC、审批、幂等和执行。
         """
 
         calls = tuple(call for call in tool_calls or () if isinstance(call, ModelToolCall))
@@ -463,7 +460,7 @@ class GovernedSpecialistJsonModel:
 
     @staticmethod
     def _canonical_native_tool_arguments(arguments: str) -> str:
-        """Keep a canonical in-memory JSON object while rejecting raw, invalid, or oversized arguments."""
+        """在拒绝原始、无效或超大参数的同时，保留规范的内存 JSON 对象。"""
 
         raw = str(arguments or "{}").strip() or "{}"
         if len(raw) > 8_192:
@@ -490,11 +487,10 @@ class GovernedSpecialistJsonModel:
 
     @staticmethod
     def _classify_provider_exception(exc: Exception) -> tuple[str, str]:
-        """Normalize provider failures without exposing transport details or provider messages.
+        """在不暴露传输细节或 Provider 消息的前提下规范化 Provider 故障。
 
-        Providers and HTTP libraries use heterogeneous exception types.  The classifier intentionally
-        exposes only the timeout/non-timeout distinction required for operational remediation; endpoint
-        names, response payloads, authentication values and exception text never leave the adapter.
+        Provider 和 HTTP 库使用异构异常类型。分类器有意仅暴露运维补救所需的超时/非超时区别；
+        endpoint 名称、响应载荷、认证值和异常文本绝不离开适配器。
         """
 
         if isinstance(exc, TimeoutError) or "timeout" in exc.__class__.__name__.lower():
@@ -653,12 +649,24 @@ class GovernedSyncPlanningModel:
         configuration = payload.get("configuration")
         if not isinstance(configuration, Mapping):
             raise SpecialistRuntimeAdapterError("同步规划模型没有返回 configuration 对象")
+
+        # 通用 JSON 模型有时会把“本轮建议做什么”误放进 configuration.action。
+        # action 不是同步任务的业务配置字段；对于纯文本动作，我们把它降级为既有的
+        # requestedActions 建议字段。DATA_SYNC_AGENT 后续仍会把该建议隔离，Java 控制面
+        # 也不会因为它被解析出来就执行任何副作用。只有这个非常窄的纯文本兼容路径被放行；
+        # 布尔值、对象、数组和嵌套 action 仍原样交给 Specialist 安全门，保持 fail-closed。
+        normalized_configuration = dict(configuration)
+        top_level_action = normalized_configuration.get("action")
+        requested_actions = list(_string_tuple(payload.get("requestedActions")))
+        if isinstance(top_level_action, str) and top_level_action.strip():
+            normalized_configuration.pop("action", None)
+            requested_actions.append(top_level_action.strip())
         return SyncPlanningModelOutput(
-            configuration=configuration,
+            configuration=normalized_configuration,
             public_summary=_optional_text(payload.get("publicSummary")) or "同步规划模型已生成待校验草案。",
             invocation_summary=result.invocation_summary,
             requested_tool_names=_string_tuple(payload.get("requestedToolNames")),
-            requested_actions=_string_tuple(payload.get("requestedActions")),
+            requested_actions=tuple(dict.fromkeys(requested_actions)),
         )
 
 
@@ -768,6 +776,12 @@ class GovernedPrecheckExplanationModel(_GovernedProtocolModelAdapter):
         result = self._invoke(
             request=request,
             system_instruction=(
+                "The coordinator-owned recoveryDecisionControl is authoritative for this turn. If phase is "
+                "DECIDE_AFTER_SEARCH and knowledgeSearchCompleted is true, the one-shot knowledge search has "
+                "already completed, remainingKnowledgeSearches is zero, and this turn must choose exactly one "
+                "governed action. Do not return SEARCH or SEARCH_RECOVERY_KNOWLEDGE again. For a clearly transient "
+                "connector failure, RETRY_EXECUTION may be proposed as one inert recommendation; it is never "
+                "execution authority. "
                 "你是 DataSmart PRECHECK_AGENT 的解释模型。控制面状态、执行闸门和 checks 是唯一事实源，"
                 "你只能解释它们，不能新增或改写表、字段、主键、目标状态或执行许可。不要调用工具，"
                 "不要输出 SQL、凭据、样本行、隐藏思维链或保存/发布/执行动作。只返回 JSON，允许字段为 "
@@ -853,7 +867,7 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
     # 只是避免模型创造诸如 FIX_EVERYTHING / RERUN_TASK 这类无法治理的自由动作名称。
     _CANONICAL_ACTION_TYPES = (
         "SEARCH_RECOVERY_KNOWLEDGE",
-        "RETRY_FAILED_OBJECTS",
+        "RETRY_EXECUTION",
         "PREVIEW_QUARANTINE",
         "APPLY_QUARANTINE",
         "REPLAY_DIRTY_RECORDS",
@@ -881,6 +895,12 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
         result = self._invoke(
             request=request,
             system_instruction=(
+                "The coordinator-owned recoveryDecisionControl is authoritative for this turn. If phase is "
+                "DECIDE_AFTER_SEARCH and knowledgeSearchCompleted is true, the one-shot knowledge search has "
+                "already completed, remainingKnowledgeSearches is zero, and this turn must choose exactly one "
+                "governed action. Do not return SEARCH or SEARCH_RECOVERY_KNOWLEDGE again. For a clearly transient "
+                "connector failure, RETRY_EXECUTION may be proposed as one inert recommendation; it is never "
+                "execution authority. "
                 "你是 DataSmart RECOVERY_AGENT 的建议模型。只能根据给出的失败事实和外部证据生成待审核"
                 "恢复建议；不得创建审批、调用工具、执行、重试、发布或修改任务。不要输出 SQL、凭据、"
                 "样本行、原始日志或隐藏思维链。只返回 JSON，允许字段为 actions、publicSummary、"
@@ -905,18 +925,26 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
                 "diagnosticFacts": _require_low_sensitive_mapping(request.diagnostic_facts, "diagnosticFacts"),
                 "caseEvidence": _require_low_sensitive_mapping(request.case_evidence, "caseEvidence"),
                 "knowledgeSummary": _require_low_sensitive_mapping(request.knowledge_summary, "knowledgeSummary"),
-                # This is a narrow deterministic snapshot produced by MONITOR_AGENT, never a raw log
-                # payload or a second model's text.  RECOVERY uses it only to keep its proposal aligned
-                # with the observed failed execution that the coordinator already gated.
+            # 这是由 MONITOR_AGENT 生成的精简确定性快照，绝非原始日志载荷或第二个模型的文本。
+            # RECOVERY 仅用它使其建议与 coordinator 已门控的观察到的失败执行保持一致。
                 "monitoringSummary": _require_low_sensitive_mapping(request.monitoring_summary, "monitoringSummary"),
                 "evidenceAudit": _require_low_sensitive_mapping(request.evidence_audit, "evidenceAudit"),
                 "evidenceReferences": _safe_reference_tuple(request.evidence_references),
                 "allowedToolNames": _safe_string_tuple(request.allowed_tool_names, 240),
                 "maxOutputTokens": request.max_output_tokens,
                 "failureCode": _safe_public_text(request.failure_code, 160) or None,
-                "failureReason": _safe_public_text(request.failure_reason, 1_000),
-                "canonicalActionTypes": self._CANONICAL_ACTION_TYPES,
-            },
+                 "failureReason": _safe_public_text(request.failure_reason, 1_000),
+                 "canonicalActionTypes": self._CANONICAL_ACTION_TYPES,
+                 # 仅回显 coordinator 拥有的阶段事实。模型可据此选择下一项惰性建议，
+                 # 而 Java 仍负责每一项权限和副作用检查。
+                 "recoveryDecisionControl": {
+                     "phase": request.decision_phase,
+                     "knowledgeSearchCompleted": request.knowledge_search_completed,
+                     "retrievalAlreadyPerformed": request.retrieval_already_performed,
+                     "remainingKnowledgeSearches": request.remaining_knowledge_searches,
+                     "mustChooseSingleGovernedAction": request.must_choose_single_governed_action,
+                 },
+             },
             max_output_tokens=request.max_output_tokens,
         )
         payload = _validated_model_payload(

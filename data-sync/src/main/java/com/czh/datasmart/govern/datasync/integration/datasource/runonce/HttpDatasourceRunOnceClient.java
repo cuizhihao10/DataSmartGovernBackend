@@ -18,6 +18,7 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.ResourceAccessException;
 
 import java.time.Duration;
 
@@ -80,6 +81,15 @@ public class HttpDatasourceRunOnceClient implements DatasourceRunOnceClient {
                     .retrieve()
                     .body(DatasourceRunOnceEnvelope.class);
             return unwrap(taskId, executionId, response);
+        } catch (ResourceAccessException exception) {
+            /*
+             * ResourceAccessException 是 Spring 用来表示连接被拒绝以及连接/读取超时的传输层边界异常。
+             * 为受治理的恢复策略保留这种区分，但绝不复制其消息：不同 HTTP 客户端的消息可能包含内部 URI
+             * 或其他部署细节。
+             */
+            log.warn("调用 datasource-management run-once 发生传输层故障: taskId={}, executionId={}, traceId={}, exceptionType={}",
+                    taskId, executionId, traceId(actorContext), exception.getClass().getSimpleName());
+            throw new DatasourceRunOnceTransportUnavailableException(executionId);
         } catch (RestClientException exception) {
             log.warn("调用 datasource-management run-once 失败: taskId={}, executionId={}, traceId={}, exceptionType={}",
                     taskId, executionId, traceId(actorContext), exception.getClass().getSimpleName());

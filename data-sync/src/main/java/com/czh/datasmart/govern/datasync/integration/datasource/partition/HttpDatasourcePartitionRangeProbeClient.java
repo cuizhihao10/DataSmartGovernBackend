@@ -17,6 +17,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 
 import java.time.Duration;
@@ -55,6 +56,15 @@ public class HttpDatasourcePartitionRangeProbeClient implements DatasourcePartit
                     .retrieve()
                     .body(DatasourcePartitionRangeProbeEnvelope.class);
             return unwrap(response);
+        } catch (ResourceAccessException exception) {
+            /*
+             * 连接被拒绝以及连接/读取超时，是唯一一种不改变已批准任务就可能自行恢复的外部 range-probe
+             * 故障。只将这一受限事实交给 Autopilot 判断，而不复制异常消息，因为 HTTP 客户端可能在消息中
+             * 带出内部 URI 或网络细节。
+             */
+            log.warn("调用 datasource-management range-probe 发生传输层故障: datasourceId={}, traceId={}, exceptionType={}",
+                    request.getDatasourceId(), traceId(actorContext), exception.getClass().getSimpleName());
+            throw new DatasourcePartitionRangeProbeTransportUnavailableException(request.getDatasourceId());
         } catch (RestClientException exception) {
             log.warn("调用 datasource-management range-probe 失败: datasourceId={}, traceId={}, exceptionType={}",
                     request.getDatasourceId(), traceId(actorContext), exception.getClass().getSimpleName());

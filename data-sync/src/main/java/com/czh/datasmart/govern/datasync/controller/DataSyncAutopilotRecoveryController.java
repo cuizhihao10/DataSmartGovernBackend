@@ -182,7 +182,8 @@ public class DataSyncAutopilotRecoveryController {
                         request.repairFingerprint(),
                         request.receiptId(),
                         request.confidenceScore(),
-                        request.evidenceAvailable()
+                        request.evidenceAvailable(),
+                        request.autopilotRecoveryFacts()
                 ));
         return PlatformApiResponse.success(view, traceId);
     }

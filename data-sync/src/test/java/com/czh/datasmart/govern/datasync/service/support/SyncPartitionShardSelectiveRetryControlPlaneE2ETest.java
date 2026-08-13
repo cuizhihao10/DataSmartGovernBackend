@@ -18,6 +18,9 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeClient;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeTransportUnavailableException;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
@@ -62,6 +65,115 @@ import static org.mockito.Mockito.when;
 class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * 证明分片前的 AUTO_SPLIT_PK 传输故障可以进入正常的受治理恢复循环。
+     *
+     * <p>第一次探测在分片边界存在之前失败。派发器仍必须持久化一个 FAILED 范围探测工作单元，并将
+     * 父失败标记为可重试。既有的失败对象重试服务随后会重新入队同一个 execution。第二次 worker
+     * 领取时探测成功，临时标记被协调删除，创建真实分片行，父 execution 完成且不会生成重复的账本行。</p>
+     */
+    @Test
+    void autoSplitProbeTransportFailureShouldRequeueAndReconcileIntoSuccessfulShardLedger() {
+        AtomicInteger probeCalls = new AtomicInteger();
+        DatasourcePartitionRangeProbeClient rangeProbeClient = (request, actorContext) -> {
+            if (probeCalls.incrementAndGet() == 1) {
+                throw new DatasourcePartitionRangeProbeTransportUnavailableException(request.getDatasourceId());
+            }
+            DatasourcePartitionRangeProbeResponse response = new DatasourcePartitionRangeProbeResponse();
+            response.setProbeStatus("RANGE_PROBED");
+            response.setNumericRange(true);
+            response.setMinValue(1L);
+            response.setMaxValue(10L);
+            response.setRowCount(10L);
+            response.setWarnings(List.of());
+            return response;
+        };
+        FakeDatasourceRunOnceClient datasourceClient = new FakeDatasourceRunOnceClient();
+        ObjectExecutionMapperFixture objectFixture = objectExecutionMapperFixture();
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncOfflineRunnerDispatchService dispatchService = dispatchService(
+                datasourceClient, objectFixture.mapper(), lifecycleSupport, receiptPublisher, rangeProbeClient);
+        SyncObjectExecutionOperationSupport retrySupport = retrySupport(objectFixture.mapper());
+        SyncExecution execution = execution(SyncExecutionState.RUNNING);
+        SyncTask task = task(SyncTaskState.RUNNING.name());
+        SyncTaskDefinition definition = autoSplitSingleObjectDefinition();
+
+        SyncOfflineRunnerDispatchResult failedResult =
+                dispatchService.dispatchOffline(execution, task, definition, workerPlan(), actor());
+
+        assertThat(failedResult.failed()).isTrue();
+        assertThat(failedResult.issueCodes())
+                .contains("DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+        assertThat(objectFixture.rows()).singleElement().satisfies(row -> {
+            assertThat(row.getWorkUnitType())
+                    .isEqualTo(SyncObjectExecutionLifecycleSupport.WORK_UNIT_TYPE_PARTITION_RANGE_PROBE);
+            assertThat(row.getObjectState()).isEqualTo(SyncObjectExecutionState.FAILED.name());
+            assertThat(row.getLastErrorCode())
+                    .isEqualTo("DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+        });
+        ArgumentCaptor<SyncExecutionFailRequest> failRequest =
+                ArgumentCaptor.forClass(SyncExecutionFailRequest.class);
+        verify(lifecycleSupport).failExecution(eq(task), eq(execution), failRequest.capture(), eq(actor()));
+        assertThat(failRequest.getValue().getRetryable()).isTrue();
+
+        execution.setExecutionState(SyncExecutionState.FAILED.name());
+        task.setCurrentState(SyncTaskState.FAILED.name());
+        SyncObjectRetryResult retry = retrySupport.retryFailedObjects(task, execution, null, actor());
+        assertThat(retry.retryObjectCount()).isEqualTo(1);
+        assertThat(objectFixture.rows()).singleElement()
+                .extracting(SyncObjectExecution::getObjectState)
+                .isEqualTo(SyncObjectExecutionState.PENDING.name());
+
+        execution.setExecutionState(SyncExecutionState.RUNNING.name());
+        execution.setLeaseExpireTime(execution.getLeaseExpireTime().plusMinutes(5));
+        task.setCurrentState(SyncTaskState.RETRYING.name());
+        SyncOfflineRunnerDispatchResult recovered =
+                dispatchService.dispatchOffline(execution, task, definition, workerPlan(), actor());
+
+        assertThat(recovered.completed()).isTrue();
+        assertThat(recovered.failed()).isFalse();
+        assertThat(probeCalls).hasValue(2);
+        assertThat(objectFixture.rows()).hasSize(1);
+        assertThat(objectFixture.rows()).allSatisfy(row -> {
+            assertThat(row.getWorkUnitType())
+                    .isNotEqualTo(SyncObjectExecutionLifecycleSupport.WORK_UNIT_TYPE_PARTITION_RANGE_PROBE);
+            assertThat(row.getObjectState()).isEqualTo(SyncObjectExecutionState.SUCCEEDED.name());
+            assertThat(row.getObjectOrdinal()).isZero();
+        });
+        verify(lifecycleSupport).completeExecution(eq(task), eq(execution), any(), eq(actor()));
+    }
+
+    /** 业务或 HTTP 拒绝不是瞬态传输中断，必须排除在 Autopilot 重试之外。 */
+    @Test
+    void autoSplitProbeBusinessFailureShouldNotCreateRetryableWorkUnit() {
+        DatasourcePartitionRangeProbeClient rejectedProbe = (request, actorContext) -> {
+            throw new IllegalStateException("controlled range-probe contract rejection");
+        };
+        ObjectExecutionMapperFixture objectFixture = objectExecutionMapperFixture();
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncOfflineRunnerDispatchService dispatchService = dispatchService(
+                new FakeDatasourceRunOnceClient(),
+                objectFixture.mapper(),
+                lifecycleSupport,
+                mock(DataSyncTaskManagementReceiptPublisher.class),
+                rejectedProbe);
+        SyncExecution execution = execution(SyncExecutionState.RUNNING);
+        SyncTask task = task(SyncTaskState.RUNNING.name());
+
+        SyncOfflineRunnerDispatchResult result = dispatchService.dispatchOffline(
+                execution, task, autoSplitSingleObjectDefinition(), workerPlan(), actor());
+
+        assertThat(result.failed()).isTrue();
+        assertThat(result.issueCodes()).contains("PARTITION_SHARD_CONTRACT_BLOCKED");
+        assertThat(objectFixture.rows()).isEmpty();
+        ArgumentCaptor<SyncExecutionFailRequest> failure =
+                ArgumentCaptor.forClass(SyncExecutionFailRequest.class);
+        verify(lifecycleSupport).failExecution(eq(task), eq(execution), failure.capture(), eq(actor()));
+        assertThat(failure.getValue().getRetryable()).isFalse();
+        assertThat(failure.getValue().getErrorCode()).isEqualTo("PARTITION_SHARD_CONTRACT_BLOCKED");
+    }
 
     @Test
     void partitionShardShouldRetryOnlyFailedShardAndSkipSucceededShard() {
@@ -201,9 +313,18 @@ class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
     }
 
     private SyncOfflineRunnerDispatchService dispatchService(DatasourceRunOnceClient datasourceClient,
-                                                            SyncObjectExecutionMapper objectExecutionMapper,
-                                                            SyncExecutionLifecycleSupport lifecycleSupport,
-                                                            DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+                                                             SyncObjectExecutionMapper objectExecutionMapper,
+                                                             SyncExecutionLifecycleSupport lifecycleSupport,
+                                                             DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+        return dispatchService(datasourceClient, objectExecutionMapper, lifecycleSupport, receiptPublisher, null);
+    }
+
+    /** 构建生产派发链，并可选地接入 AUTO_SPLIT_PK 范围探测边界。 */
+    private SyncOfflineRunnerDispatchService dispatchService(DatasourceRunOnceClient datasourceClient,
+                                                             SyncObjectExecutionMapper objectExecutionMapper,
+                                                             SyncExecutionLifecycleSupport lifecycleSupport,
+                                                             DataSyncTaskManagementReceiptPublisher receiptPublisher,
+                                                             DatasourcePartitionRangeProbeClient rangeProbeClient) {
         SyncBatchRunnerBridgePlanSupport bridgePlanSupport = bridgePlanSupport();
         SyncBatchRunOnceDispatchService runOnceDispatchService = new SyncBatchRunOnceDispatchService(
                 bridgePlanSupport,
@@ -220,7 +341,7 @@ class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
                         new SyncObjectExecutionLifecycleSupport(objectExecutionMapper),
                         bridgePlanSupport,
                         runOnceDispatchService,
-                        null,
+                        rangeProbeClient,
                         lifecycleSupport,
                         receiptPublisher,
                         mock(SyncExecutionLogSupport.class));
@@ -280,6 +401,10 @@ class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
             return 1;
         });
         when(mapper.updateById(any(SyncObjectExecution.class))).thenReturn(1);
+        when(mapper.deleteById(any(Long.class))).thenAnswer(invocation -> {
+            Long id = invocation.getArgument(0);
+            return rows.removeIf(row -> id.equals(row.getId())) ? 1 : 0;
+        });
         return new ObjectExecutionMapperFixture(mapper, rows);
     }
 
@@ -373,6 +498,20 @@ class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
                 }
                 """);
         definition.setEnabled(true);
+        return definition;
+    }
+
+    /** 复用有效的单对象定义，同时允许平台依据 splitPk 推导范围。 */
+    private SyncTaskDefinition autoSplitSingleObjectDefinition() {
+        SyncTaskDefinition definition = partitionedSingleObjectDefinition();
+        definition.setPartitionConfig("""
+                {
+                  "strategy": "AUTO_SPLIT_PK",
+                  "splitPk": "id",
+                  "maxParallelism": 2,
+                  "maxShardAttempts": 3
+                }
+                """);
         return definition;
     }
 

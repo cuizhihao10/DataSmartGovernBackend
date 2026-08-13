@@ -12,9 +12,12 @@ import com.czh.datasmart.govern.datasync.entity.SyncAutopilotRecoveryReceipt;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.mapper.SyncAutopilotRecoveryCaseMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncAutopilotRecoveryReceiptMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncObjectExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryAction;
@@ -25,6 +28,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,19 +64,20 @@ class SyncAutopilotRecoveryCaseServiceTest {
     @Test
     void shouldReplayCompletedReceiptWithoutApplyingDecisionAgain() {
         Fixture fixture = fixture();
+        SyncAutopilotRecoveryDecisionCommand originalDecision = decision("decision-1");
         SyncAutopilotRecoveryCase existingCase = recoveryCase(
                 81L, SyncAutopilotRecoveryCaseState.AUTO_APPROVED, 0L);
         when(fixture.caseMapper().selectByIdentity(any(), any(), any(), any(), any())).thenReturn(existingCase);
         SyncAutopilotRecoveryReceipt existingReceipt = new SyncAutopilotRecoveryReceipt();
         existingReceipt.setReceiptId("decision-1");
         existingReceipt.setCaseId(81L);
-        existingReceipt.setReceiptDigest(SyncAutopilotRecoveryCaseService.decisionReceiptDigest(decision("decision-1")));
+        existingReceipt.setReceiptDigest(SyncAutopilotRecoveryCaseService.decisionReceiptDigest(originalDecision));
         existingReceipt.setReceiptState("COMPLETED");
         existingReceipt.setResultingCaseState("AUTO_APPROVED");
         existingReceipt.setResultingVersion(0L);
         when(fixture.receiptMapper().selectByReceiptId("decision-1")).thenReturn(existingReceipt);
 
-        SyncAutopilotRecoveryCaseView result = fixture.service().recordDecision(decision("decision-1"));
+        SyncAutopilotRecoveryCaseView result = fixture.service().recordDecision(originalDecision);
 
         assertThat(result.caseId()).isEqualTo(81L);
         assertThat(result.state()).isEqualTo(SyncAutopilotRecoveryCaseState.AUTO_APPROVED);
@@ -160,10 +166,25 @@ class SyncAutopilotRecoveryCaseServiceTest {
         root.setSyncTaskId(31L);
         when(executionMapper.selectById(1001L)).thenReturn(root);
 
+        SyncObjectExecution failedObject = new SyncObjectExecution();
+        failedObject.setObjectState("FAILED");
+        /*
+         * 使用真实的分片前范围探测工作单元事实。只有在 data-sync 自有的持久账本中独立发现这个瞬态 FAILED
+         * 行之后，recordDecision 才能接受受限的 Python 投影。
+         */
+        failedObject.setWorkUnitType(SyncObjectExecutionLifecycleSupport.WORK_UNIT_TYPE_PARTITION_RANGE_PROBE);
+        failedObject.setLastErrorType("CONNECTOR_TRANSPORT_UNAVAILABLE");
+        failedObject.setLastErrorCode("DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+        SyncObjectExecutionMapper objectExecutionMapper = mock(SyncObjectExecutionMapper.class);
+        when(objectExecutionMapper.selectByExecutionId(1001L)).thenReturn(List.of(failedObject));
+        SyncErrorSampleMapper errorSampleMapper = mock(SyncErrorSampleMapper.class);
+
         SyncAutopilotRecoveryCaseService service = new SyncAutopilotRecoveryCaseService(
                 taskMapper,
                 definitionMapper,
                 executionMapper,
+                objectExecutionMapper,
+                errorSampleMapper,
                 caseMapper,
                 receiptMapper,
                 new SyncAutopilotRecoveryPolicyEvaluator(),
@@ -188,7 +209,14 @@ class SyncAutopilotRecoveryCaseServiceTest {
                 "b".repeat(64),
                 receiptId,
                 95,
-                true
+                true,
+                Map.of(
+                        "failureClass", "TRANSIENT_CONNECTOR_OR_WORKER",
+                        "retryable", true,
+                        "eligibleForAutomaticRetry", true,
+                        "failedObjectCount", 1,
+                        "rootCauseCodes", List.of("CONNECTOR_OR_NETWORK_UNAVAILABLE")
+                )
         );
     }
 

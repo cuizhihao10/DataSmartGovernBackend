@@ -163,6 +163,47 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
         self.assertTrue(output.invocation_summary["structuredJsonParsed"])
         self.assertFalse(output.invocation_summary["responseContentStored"])
 
+    def test_sync_model_demotes_scalar_top_level_action_to_non_binding_suggestion(self) -> None:
+        """兼容模型把纯文本动作回显到 configuration.action 的情况。
+
+        ``action`` 不是同步配置字段。适配器可以把纯文本值移到已有的
+        ``requestedActions`` 建议字段，供 DATA_SYNC_AGENT 记账并隔离；这不会授予保存、发布
+        或执行权限。结构化 action 仍留在 configuration，交给后续安全门拒绝。
+        """
+
+        engine = _QueryEngine(
+            json.dumps(
+                {
+                    "configuration": {
+                        "taskName": "客户同步",
+                        "syncMode": "FULL",
+                        "action": "CREATE_SYNC_TASK_DRAFT",
+                    },
+                    "publicSummary": "已形成草案",
+                    "requestedToolNames": [],
+                    "requestedActions": [],
+                },
+                ensure_ascii=False,
+            )
+        )
+        output = GovernedSyncPlanningModel(self._json_model(engine)).plan(
+            SyncPlanningModelInput(
+                objective="创建全量同步任务",
+                context={"sourceDatasourceId": 1, "targetDatasourceId": 2},
+                allowed_tool_names=(),
+                max_output_tokens=1024,
+                tenant_id="10",
+                project_id="101",
+                actor_id="37",
+                session_id="session-action-compatibility",
+                run_id="run-action-compatibility",
+                trace_id="trace-action-compatibility",
+            )
+        )
+
+        self.assertNotIn("action", output.configuration)
+        self.assertEqual(("CREATE_SYNC_TASK_DRAFT",), output.requested_actions)
+
     def test_sync_model_preserves_inert_execution_summary_for_specialist_quarantine(self) -> None:
         """适配器不应在模型层静默吞掉边界摘要，由 DATA_SYNC_AGENT 统一隔离并审计。"""
 
@@ -420,19 +461,23 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
                 "evidenceReferences",
                 "allowedToolNames",
                 "maxOutputTokens",
-                "failureCode",
-                "failureReason",
-                "canonicalActionTypes",
-            },
+                 "failureCode",
+                 "failureReason",
+                 "canonicalActionTypes",
+                 "recoveryDecisionControl",
+             },
             set(payload),
         )
-        self.assertIn("RETRY_FAILED_OBJECTS", payload["canonicalActionTypes"])
+        self.assertIn("RETRY_EXECUTION", payload["canonicalActionTypes"])
         self.assertIn("PREVIEW_QUARANTINE", payload["canonicalActionTypes"])
         self.assertIn("PREVIEW_CREATE_TARGET_TABLE", payload["canonicalActionTypes"])
         self.assertNotIn("must-not-reach-model", str(payload))
         self.assertNotIn("SELECT secret", str(payload))
         self.assertEqual({}, payload["monitoringSummary"])
         self.assertEqual({}, payload["evidenceAudit"])
+        self.assertEqual("DIAGNOSE", payload["recoveryDecisionControl"]["phase"])
+        self.assertFalse(payload["recoveryDecisionControl"]["knowledgeSearchCompleted"])
+        self.assertEqual(1, payload["recoveryDecisionControl"]["remainingKnowledgeSearches"])
         self.assertEqual((), engine.requests[0].available_tools)
         self.assertIsNone(engine.requests[0].tool_choice)
         system_instruction = engine.requests[0].messages[0].content
@@ -440,6 +485,51 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
         self.assertIn("不能在同一轮同时建议 preview", system_instruction)
         self.assertEqual("test-specialist-model", output.invocation_summary["selectedModelName"])
         self.assertFalse(output.invocation_summary["rawModelOutputStored"])
+
+    def test_recovery_adapter_exposes_decide_after_search_control_contract(self) -> None:
+        """第二个 Recovery turn 必须看到其一次性 RAG 预算已耗尽。
+
+        这是规划提示而非授权：coordinator 仍会拒绝重复 SEARCH，且 Java 仍会在任何 data-sync 副作用前
+        校验返回的 retry 候选。
+        """
+
+        engine = _QueryEngine(
+            json.dumps(
+                {
+                    "actions": [{"actionType": "RETRY_FAILED_OBJECTS"}],
+                    "retrievalDecision": "SKIP",
+                    "retrievalStrategy": "EXACT_SEARCH",
+                    "publicSummary": "Transient connector retry candidate",
+                }
+            )
+        )
+        model = GovernedRecoveryPlanningModel(self._json_model(engine))
+        output = model.plan(
+            RecoveryPlanningModelInput(
+                objective="Recover failed sync",
+                audit_scope=self._audit_scope(),
+                diagnostic_facts={"failureCode": "CONNECTOR_UNAVAILABLE"},
+                case_evidence={},
+                knowledge_summary={"grounded": True, "citations": ({"citationId": "citation-1"},)},
+                evidence_references=("citation-1",),
+                allowed_tool_names=("recovery.failure.diagnose",),
+                max_output_tokens=512,
+                decision_phase="DECIDE_AFTER_SEARCH",
+                knowledge_search_completed=True,
+                retrieval_already_performed=True,
+                remaining_knowledge_searches=0,
+                must_choose_single_governed_action=True,
+            )
+        )
+
+        payload = self._payload(engine)
+        control = payload["recoveryDecisionControl"]
+        self.assertEqual("DECIDE_AFTER_SEARCH", control["phase"])
+        self.assertTrue(control["knowledgeSearchCompleted"])
+        self.assertTrue(control["retrievalAlreadyPerformed"])
+        self.assertEqual(0, control["remainingKnowledgeSearches"])
+        self.assertTrue(control["mustChooseSingleGovernedAction"])
+        self.assertEqual("RETRY_FAILED_OBJECTS", output.actions[0]["actionType"])
 
     def test_recovery_adapter_falls_back_to_one_read_only_dirty_record_preview(self) -> None:
         """模型主动 abstain 时，只能把 Java 脏数据建议收敛成一个只读预览。

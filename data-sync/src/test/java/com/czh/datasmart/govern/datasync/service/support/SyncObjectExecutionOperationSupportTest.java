@@ -121,6 +121,29 @@ class SyncObjectExecutionOperationSupportTest {
         assertThat(result.retryObjectCount()).isEqualTo(1);
     }
 
+    /** 合成的范围探测标记与真实分片一样使用受治理的失败对象重新入队路径。 */
+    @Test
+    void retryRangeProbeWorkUnitShouldResetMarkerAndRequeueParentExecution() {
+        Fixture fixture = fixture();
+        SyncObjectExecution probe = objectRow(13L, 0, SyncObjectExecutionState.FAILED, 1, 3);
+        probe.setWorkUnitType(SyncObjectExecutionLifecycleSupport.WORK_UNIT_TYPE_PARTITION_RANGE_PROBE);
+        probe.setLastErrorType("CONNECTOR_TRANSPORT_UNAVAILABLE");
+        probe.setLastErrorCode("DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+        when(fixture.objectExecutionMapper().selectByExecutionId(88L)).thenReturn(List.of(probe));
+        when(fixture.executionMapper().requeueTerminalObjectLevelRetry(eq(88L), contains("OBJECT_LEVEL_RETRY")))
+                .thenReturn(1);
+        when(fixture.taskMapper().markLifecycleState(
+                1L, SyncTaskState.RETRYING.name(), SyncTriggerType.MANUAL.name(), 88L)).thenReturn(1);
+
+        SyncObjectRetryResult result = fixture.support().retryFailedObjects(
+                task(), execution(SyncExecutionState.FAILED), null, actor());
+
+        assertThat(result.retryObjectCount()).isEqualTo(1);
+        assertThat(probe.getObjectState()).isEqualTo(SyncObjectExecutionState.PENDING.name());
+        assertThat(probe.getAttemptCount()).isZero();
+        verify(fixture.executionMapper()).requeueTerminalObjectLevelRetry(eq(88L), contains("OBJECT_LEVEL_RETRY"));
+    }
+
     /**
      * 如果调用方选中了 SUCCEEDED 对象，必须拒绝，避免重复写入目标端。
      */

@@ -155,7 +155,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 本文件前文的角色名册、源码行数和测试计数是 2026-07 冻结批次的历史证据，不应再被当作当前工作区统计。后续双仓迁移复核以当前六 Specialist roster（`KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`）及其 Java bridge 边界为准；长期八 Agent 描述仍是产品路线，不是当前验收名册。
 
-2026-08-10 当前复验结果为 Python Runtime `1099 passed`（一条弃用警告）、JDK 21 Maven Reactor `1323 tests / 0 failures / 0 errors / 9 skipped`，Frontend 6 个合同脚本、lint 和 build 全部通过。真实 Success `six-agent-success-type-normalized-20260810112629` 与 Recovery `six-agent-recovery-rag-durable-20260810214832` 均通过脚本门禁；Recovery 的独立数据库审计确认没有审批、提交、异步命令或恢复副作用。该本地黑盒结论不改变第 7 节第 4 条：生产上线仍必须补客户环境、Secret 轮换、备份恢复、容量、故障演练和供应链证据。
+2026-08-10 当前复验结果为 Python Runtime `1099 passed`（一条弃用警告）、JDK 21 Maven Reactor `1323 tests / 0 failures / 0 errors / 9 skipped`，Frontend 6 个合同脚本、lint 和 build 全部通过。真实 Success `six-agent-success-type-normalized-20260810112629` 与只读 Recovery `six-agent-recovery-rag-durable-20260810214832` 均通过脚本门禁；Recovery 的独立数据库审计确认没有审批、提交、异步命令或恢复副作用，因此该历史结果不包含真实 Kafka/Python Autopilot `FAILED -> Recovery -> retry -> SUCCEEDED -> RECOVERED` 写重跑。该本地黑盒结论不改变第 7 节第 4 条：生产上线仍必须补客户环境、Secret 轮换、备份恢复、容量、故障演练和供应链证据。
 
 ## 9. 2026-08-12 当前工作树勘误
 
@@ -165,8 +165,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 ## 10. 2026-08-13 当前复核勘误
 
-上述第 9 节记录的是 2026-08-12 的审计快照。本轮已经补齐 Recovery 写动作后的 durable post-action finalization，并以 checkpoint、turn ID 和 Java durable fact sink 保证 Specialist 事实登记、终态重放与失败传播的幂等边界。普通规划仍由模型自主选择 RAG `SEARCH`/`SKIP`，Recovery 仍强制检索；Python 不直接写 data-sync，恢复执行继续由 Java/data-sync 双策略和授权盒子控制。
+上述第 9 节记录的是 2026-08-12 的审计快照。本轮已经补齐 Recovery 写动作后的 durable post-action finalization，并以 checkpoint、turn ID 和 Java durable fact sink 保证 Specialist 事实登记、终态重放与失败传播的幂等边界。普通规划和 Recovery 规划都由模型自主选择 RAG `SEARCH`/`SKIP`；Python 不直接写 data-sync，恢复执行继续由 Java/data-sync 双策略和授权盒子控制。
 
 2026-08-13 验证结果：Python 全量 `1162 passed, 1 skipped`，Recovery 聚焦 `24 passed`；JDK 21 的 `agent-runtime`/`data-sync` 编译成功；Frontend lint、build、API/WebSocket 与 Agent 控制面合同测试通过；最新 `data-sync`、`agent-runtime`、`python-ai-runtime` 容器 healthy，Kafka Autopilot 主 topic、retry-1000、retry-2000 和 DLT consumer 已启动。durable fact 缺失的 HTTP 503、Kafka 不 ACK、有界重试/DLT、terminal checkpoint 重放和 post-recovery PRECHECK/MONITOR 投影均有回归覆盖。
 
 仍不能把本轮证据扩大为“客户生产环境真实恢复已验收”：宿主机没有 `DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD`，真实 project-owner 授权后的 `-Execute -ConfirmAndExecute -EnableAutopilot` 写动作未运行。真实环境仍需验证 V20-V25 Flyway、Kafka 消费/重投递、Provider/RAG、worker receipt、低风险自动 retry/quarantine、高风险审批停点、重复投递/过期授权/Provider 失败、补偿、指标告警和备份恢复。默认高风险与真实副作用开关继续保持受控关闭。
+
+## 11. 2026-08-13 真实 Success 复核补充
+
+随后提供的本机 `project-owner` 密码已验证有效。使用项目 `101` 下真实数据源 ID `55`/`56`，本机真实请求 `local-six-agent-20260813053638265` 完成了首次确认、LOW 风险 Autopilot 授权、Java 生命周期控制面和 data-sync worker 执行：task `97`、execution `2619`，读取 20、写入 20、失败 0，单对象成功；后置 `PRECHECK_AGENT`/`MONITOR_AGENT` 为 `EXECUTED`，4 条 durable Specialist facts 已落库。
+
+一次 `INSERT + FULL` 运行被 `METADATA_TARGET_NOT_EMPTY_FOR_INSERT_FULL` 正确阻断，随后由用户明确改为 `UPDATE/merge` 才完成 Success。这是实际的 fail-closed 预检查证据。由于该 execution 首次即成功，当前证据关闭的是“首次授权后的正常执行盒子”，不是“失败后 Kafka Recovery 自动重跑”门禁；后者仍需隔离失败 execution、真实 Recovery trigger、模型检索、retry/quarantine receipt、worker 最终回执和 `RECOVERED`/`ATTENTION_REQUIRED` 收敛证据。
+
+## 12. 2026-08-13 Recovery 检索与 transient retry 最终复核
+
+第 10 节中“Recovery 仍强制检索”是旧口径。当前源码和回归证明 Recovery 强制的是模型对 `SEARCH`/`SKIP` 作出显式、可持久化的受治理决策，而不是每次机械调用 RAG。`SEARCH` 最多执行一次并要求 durable evidence 后重评；`SKIP` 只表示现有结构化诊断足够，不会跳过 Java/data-sync 双策略、授权盒、风险、循环、幂等或账本事实校验。普通规划同样由模型在已开放的检索工具中自主决定是否调用。
+
+本轮新增 transport-only retry 分类：Spring `ResourceAccessException` 被收敛为专用 `DatasourceRunOnceTransportUnavailableException` 或 range-probe 专用 transport exception，data-sync 只对这类 transport 故障写入 `retryable=true`；HTTP rejection、无效 envelope、权限、凭证、契约和无效范围错误保持不可重试。自动 retry 还要求 Python 的低敏事实投影、Agent Runtime 事实校验和 data-sync 对 execution/object/error ledger 的独立复核同时成立。Java range-probe/run-once/Recovery 聚焦合同回归 `21 tests` 全部通过；Python Recovery/Specialist/checkpointer 聚焦回归 `37 passed`。
+
+真实故障尝试 `six-agent-autopilot-transient-20260813230035361` 的 task `106` / execution `2714` 在 run-once 前因 `AUTO_SPLIT_PK` 范围探测不可用而被 `PARTITION_SHARD_CONTRACT_BLOCKED` 阻断。精确状态是 `outbox_state=DELIVERED`、`consumer_result_status=ATTENTION_REQUIRED`，检索投影为 `SEARCH` / `EXACT_SEARCH`，evidence count 为 2；没有 recovery case 或 retry receipt。该结果证明系统不会把前置契约失败误判为可自动重试，但没有证明无人值守恢复成功。因此目前不能宣称真实黑盒 `FAILED -> Kafka -> Recovery -> retry -> SUCCEEDED -> RECOVERED` 已闭合；提交和发布说明必须继续列为当前主 Agent 待验证的剩余 E2E 门禁。
+
+## 13. 2026-08-14 range-probe 失败工作单元审计结论
+
+源码审计确认，`AUTO_SPLIT_PK` 的 transport failure 发生在真实 shard rows 初始化之前时，data-sync 会幂等写入一条 `PARTITION_RANGE_PROBE`/`FAILED` 临时工作单元，并把 transport error 作为可重试事实纳入既有失败对象重试入口。该入口重排 execution 后，成功的 range-probe 会在事务内删除临时单元并幂等生成真实分片/自适应对象行；因此临时单元不会伪装成真实分片，也不会在成功重跑时造成重复账本。
+
+本结论由 `21 tests / 0 failures / 0 errors` 聚焦回归支持，且继续区分 transport failure 与 HTTP/业务/契约/无效范围拒绝。它是源码和模块回归证据，不是运行环境证据。真实 Kafka/Python `FAILED -> Recovery -> retry -> SUCCEEDED -> RECOVERED` 黑盒 E2E 仍未由当前主 Agent 验证，任何提交、发布或产品说明都不得把它写成已成功。
+
+## 14. 2026-08-14 Recovery AgentPlan 幂等与环境阻塞审计
+
+task `107` 的运行证据补充了两个必须分开处理的问题。首先，首次 transport 故障后的 range-probe 重排、Kafka outbox 和 Recovery 消费均已发生；随后写入失败是因为任务定义缺少 `customer_name -> name` 映射，而目标表 `name` 为 `NOT NULL`，不是 transport retry 本身失效。其次，Kafka 重投会重新调用模型，同一业务策略可能生成不同 actionId、摘要、置信度或证据说明；旧实现把这些瞬态字段带入 AgentPlan，同时复用固定 diagnosis/preview 幂等键，触发 Java 正确的请求指纹冲突保护。
+
+当前实现通过“语义稳定化 + 分阶段版本化身份”修复该问题：同一 event/stage/strategy 的 ToolPlan 请求保持字节级语义一致，真实策略参数变化或新 recovery cycle 获得新身份；诊断阶段不再被预览参数污染，旧键通过 `investigation:v2` 隔离。Java `AgentPlanIngestionIdempotencySupport` 的冲突拒绝保持不变，Python 仍不能直接写 data-sync。聚焦测试覆盖同策略重放、策略变化、新 cycle、非法样本选择器以及 bridge 接入，investigation、coordinator、runtime adapter、bridge 四个测试文件合计 `73 passed`。
+
+最新全量审计结果：Java Reactor `1515 tests / 0 failures / 0 errors / 9 skipped`，Python `1171 passed, 1 skipped`；Frontend 六项合同脚本、lint、TypeScript 与 Vite build 全通过；三个最新运行时镜像健康，Kafka 四组 consumer 已就绪。新增和本轮修改的重要方法注释已统一为中文，文档增量也使用中文记录。
+
+黑盒结论仍保持未关闭。最新模型密钥已成功进入容器且指纹发生变化，但当前 Provider 的 `/models` 与 `/chat/completions` 都返回 HTTP `401`。三次真实规划在任务创建前均以 `MODEL_PROVIDER_ERROR / MODEL_PROVIDER_TRANSPORT` 结束，未产生新的 task/execution，不构成数据写入或恢复副作用。该结果应记录为外部 Provider 凭据/端点不匹配，不能记作代码失败，也不能用来宣称无人值守恢复已经完成。

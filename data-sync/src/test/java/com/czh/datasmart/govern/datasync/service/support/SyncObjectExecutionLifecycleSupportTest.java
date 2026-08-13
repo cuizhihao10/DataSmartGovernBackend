@@ -21,9 +21,61 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class SyncObjectExecutionLifecycleSupportTest {
+
+    /** 仅传输层的范围探测失败必须生成一个供 Autopilot 使用的持久失败工作单元。 */
+    @Test
+    void rangeProbeTransportFailureShouldPersistIdempotentRetryableWorkUnit() {
+        List<SyncObjectExecution> rows = new ArrayList<>();
+        SyncObjectExecutionMapper mapper = statefulMapper(rows);
+        SyncObjectExecutionLifecycleSupport lifecycle = new SyncObjectExecutionLifecycleSupport(mapper);
+
+        SyncObjectExecution first = lifecycle.recordPartitionRangeProbeTransportFailure(
+                task(), execution(), definition(), 3,
+                "DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+        SyncObjectExecution replay = lifecycle.recordPartitionRangeProbeTransportFailure(
+                task(), execution(), definition(), 3,
+                "DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+
+        assertThat(rows).hasSize(1);
+        assertThat(replay).isSameAs(first);
+        assertThat(first.getWorkUnitType())
+                .isEqualTo(SyncObjectExecutionLifecycleSupport.WORK_UNIT_TYPE_PARTITION_RANGE_PROBE);
+        assertThat(first.getObjectState()).isEqualTo("FAILED");
+        assertThat(first.getAttemptCount()).isEqualTo(1);
+        assertThat(first.getMaxAttemptCount()).isEqualTo(3);
+        assertThat(first.getFailedRecordCount()).isEqualTo(1L);
+        assertThat(first.getLastErrorType()).isEqualTo("CONNECTOR_TRANSPORT_UNAVAILABLE");
+        assertThat(first.getLastErrorCode())
+                .isEqualTo("DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+    }
+
+    /** 成功重试应在真实分片账本物化前移除合成的范围探测标记。 */
+    @Test
+    void successfulProbeShouldReconcileMarkerIntoRealShardRowsWithoutDuplicates() {
+        List<SyncObjectExecution> rows = new ArrayList<>();
+        SyncObjectExecutionMapper mapper = statefulMapper(rows);
+        SyncObjectExecutionLifecycleSupport lifecycle = new SyncObjectExecutionLifecycleSupport(mapper);
+        lifecycle.recordPartitionRangeProbeTransportFailure(
+                task(), execution(), definition(), 3,
+                "DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE");
+
+        List<SyncObjectExecution> initialized = lifecycle.initializePartitionShardExecutions(
+                task(), execution(), definition(), autoContract(500_000L, 1L, 500_000L));
+        List<SyncObjectExecution> replay = lifecycle.initializePartitionShardExecutions(
+                task(), execution(), definition(), autoContract(500_000L, 1L, 500_000L));
+
+        assertThat(initialized).hasSize(3);
+        assertThat(replay).hasSize(3);
+        assertThat(rows).hasSize(3);
+        assertThat(rows).noneMatch(row -> SyncObjectExecutionLifecycleSupport
+                .WORK_UNIT_TYPE_PARTITION_RANGE_PROBE.equals(row.getWorkUnitType()));
+        assertThat(rows).extracting(SyncObjectExecution::getObjectOrdinal)
+                .containsExactlyInAnyOrder(0, 1, 2);
+    }
 
     @Test
     void adaptiveSingleShardShouldBeRecordedAsObjectLedger() {
@@ -78,15 +130,27 @@ class SyncObjectExecutionLifecycleSupportTest {
     }
 
     private SyncObjectExecutionLifecycleSupport lifecycle(List<SyncObjectExecution> inserted) {
+        SyncObjectExecutionMapper mapper = statefulMapper(inserted);
+        return new SyncObjectExecutionLifecycleSupport(mapper);
+    }
+
+    /** 构建一个极小的内存 mapper，使测试可以观测插入/删除协调。 */
+    private SyncObjectExecutionMapper statefulMapper(List<SyncObjectExecution> inserted) {
         SyncObjectExecutionMapper mapper = mock(SyncObjectExecutionMapper.class);
-        when(mapper.selectByExecutionId(1078L)).thenReturn(List.of());
+        when(mapper.selectByExecutionId(1078L)).thenAnswer(invocation -> new ArrayList<>(inserted));
         when(mapper.insert(any(SyncObjectExecution.class))).thenAnswer(invocation -> {
             SyncObjectExecution row = invocation.getArgument(0);
-            row.setId((long) inserted.size() + 1L);
+            long nextId = inserted.stream().map(SyncObjectExecution::getId)
+                    .filter(java.util.Objects::nonNull).mapToLong(Long::longValue).max().orElse(0L) + 1L;
+            row.setId(nextId);
             inserted.add(row);
             return 1;
         });
-        return new SyncObjectExecutionLifecycleSupport(mapper);
+        when(mapper.deleteById(any(Long.class))).thenAnswer(invocation -> {
+            Long id = invocation.getArgument(0);
+            return inserted.removeIf(row -> id.equals(row.getId())) ? 1 : 0;
+        });
+        return mapper;
     }
 
     private SyncTask task() {

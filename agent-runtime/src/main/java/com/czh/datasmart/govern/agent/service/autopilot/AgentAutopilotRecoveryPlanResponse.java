@@ -36,7 +36,8 @@ public record AgentAutopilotRecoveryPlanResponse(
         boolean strategyChanged,
         String checkpointThreadId,
         String payloadPolicy,
-        Map<String, Object> quarantinePreview) {
+        Map<String, Object> quarantinePreview,
+        Map<String, Object> autopilotRecoveryFacts) {
 
     /**
      * 为 Python 返回的三个审计 Map 建立不可修改的第一层快照。
@@ -53,6 +54,7 @@ public record AgentAutopilotRecoveryPlanResponse(
         evidenceScope = immutableMap(evidenceScope);
         retrievalAudit = immutableMap(retrievalAudit);
         quarantinePreview = immutableMap(quarantinePreview);
+        autopilotRecoveryFacts = immutableMap(autopilotRecoveryFacts);
     }
 
     /**
@@ -106,6 +108,38 @@ public record AgentAutopilotRecoveryPlanResponse(
         this(schemaVersion, eventId, status, reasonCode, action, riskLevel, idempotent, repairFingerprint,
                 errorFingerprint, confidence, evidenceAvailable, evidenceAudit, evidenceScope, retrievalDecision,
                 retrievalStrategy, retrievalAudit, strategyChanged, checkpointThreadId, payloadPolicy, Map.of());
+    }
+
+    /**
+     * 保留现有调用方使用的响应构造器，并在 Java 源码边界将新增的重试事实设为可选。
+     * 缺少该映射时会有意判定为不具备资格：当 {@code RETRY_EXECUTION} 缺少这些事实时，执行策略和
+     * data-sync 控制平面都会采取默认不自动执行的保守处理。
+     */
+    public AgentAutopilotRecoveryPlanResponse(
+            String schemaVersion,
+            String eventId,
+            String status,
+            String reasonCode,
+            String action,
+            String riskLevel,
+            boolean idempotent,
+            String repairFingerprint,
+            String errorFingerprint,
+            double confidence,
+            boolean evidenceAvailable,
+            Map<String, Object> evidenceAudit,
+            Map<String, Object> evidenceScope,
+            String retrievalDecision,
+            String retrievalStrategy,
+            Map<String, Object> retrievalAudit,
+            boolean strategyChanged,
+            String checkpointThreadId,
+            String payloadPolicy,
+            Map<String, Object> quarantinePreview) {
+        this(schemaVersion, eventId, status, reasonCode, action, riskLevel, idempotent, repairFingerprint,
+                errorFingerprint, confidence, evidenceAvailable, evidenceAudit, evidenceScope, retrievalDecision,
+                retrievalStrategy, retrievalAudit, strategyChanged, checkpointThreadId, payloadPolicy,
+                quarantinePreview, Map.of());
     }
 
     /**

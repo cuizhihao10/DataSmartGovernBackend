@@ -99,6 +99,14 @@ public class AgentAutopilotRecoveryPolicyEvaluator {
             return decision(AgentAutopilotRecoveryDecisionType.REJECTED,
                     "RECOVERY_IDEMPOTENCY_EVIDENCE_MISSING", authorization, candidate);
         }
+        if ("RETRY_EXECUTION".equals(code(candidate.action()))
+                && !AgentAutopilotRecoveryFactsVerifier.eligibleForAutomaticRetry(
+                candidate.autopilotRecoveryFacts())) {
+            // 动作名称只是模型的建议。只有先提供结构化的瞬时故障事实，
+            // 才能进入无人值守执行路径。
+            return decision(AgentAutopilotRecoveryDecisionType.ATTENTION_REQUIRED,
+                    "RECOVERY_AUTOMATIC_RETRY_FACTS_REQUIRED", authorization, candidate);
+        }
         return decision(AgentAutopilotRecoveryDecisionType.AUTO_APPROVED,
                 "RECOVERY_PREAUTHORIZED", authorization, candidate);
     }

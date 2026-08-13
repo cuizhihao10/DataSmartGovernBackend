@@ -21,6 +21,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
+import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceTransportUnavailableException;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -865,13 +866,21 @@ public class SyncBatchRunOnceDispatchService {
                                                                                SyncExecution execution,
                                                                                SyncActorContext actorContext,
                                                                                PlatformBusinessException exception) {
+        /*
+         * 只有传输层不可用才是确定的瞬态事实。通用平台异常还包括 HTTP 拒绝和无效 envelope；
+         * 若将它们标记为可重试，Autopilot 就会在没有新证据的情况下反复触发权限、凭据或契约故障。
+         */
+        boolean retryable = exception instanceof DatasourceRunOnceTransportUnavailableException;
+        String errorCode = retryable
+                ? "DATASOURCE_RUN_ONCE_TRANSPORT_UNAVAILABLE"
+                : "DATASOURCE_RUN_ONCE_UNAVAILABLE";
         return remoteResult(true, false, true, "DISPATCHED_AND_FAILED_BY_CLIENT_EXCEPTION",
                 execution.getId(), null, 0L, 0L, 0L,
                 "CONNECTOR_RUNTIME_RUN_ONCE_CALL_FAILED",
-                "DATASOURCE_RUN_ONCE_UNAVAILABLE",
+                errorCode,
                 "datasource-management run-once 调用不可用，本次执行已按 fail-closed 终止",
-                false,
-                List.of("DATASOURCE_RUN_ONCE_UNAVAILABLE"));
+                retryable,
+                List.of(errorCode));
     }
 
     private SyncBatchRunOnceRemoteExecutionResult failAfterRemoteResult(SyncTask task,

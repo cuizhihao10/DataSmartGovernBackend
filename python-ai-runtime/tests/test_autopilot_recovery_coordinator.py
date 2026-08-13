@@ -119,8 +119,8 @@ class _RecordingInvestigationCollaborator:
         传入一个已完成但业务上不合格的 preview 结果，证明 Python 仍不会把它提升为 apply 候选。协作者只
         记录调用和返回低敏事实，不具备 data-sync 写能力。
 
-        English: the fake models a receipt that has already crossed the Java control plane.  Overriding only the
-        result lets tests isolate receipt validation without faking an apply executor or changing Java state.
+        该替身模拟已经通过 Java 控制面的 receipt。仅覆盖 result 可让测试隔离 receipt 校验，
+        无需伪造 apply executor 或改变 Java 状态。
         """
 
         self.calls: list[dict[str, Any]] = []
@@ -132,8 +132,8 @@ class _RecordingInvestigationCollaborator:
         中文说明：返回的 ``auditId/runId/outputRef`` 是 Java 侧 receipt locator，不是模型字段。默认样本 ID
         故意按非升序排列，方便测试最终 apply 指纹必须按数值排序，而非采信原始列表顺序。
 
-        English: this method does not execute quarantine.  It represents the completed read-only preview stage so
-        the following Recovery turn can decide between an apply candidate and a retry candidate.
+        此方法不执行 quarantine。它表示已完成的只读 preview 阶段，以便后续 Recovery turn 能在
+        apply 候选和 retry 候选之间做出决策。
         """
 
         self.calls.append(
@@ -193,6 +193,23 @@ def _evidence_audit() -> dict[str, Any]:
     }
 
 
+def _transient_retry_facts() -> dict[str, Any]:
+    """返回无人值守重试候选所需的控制面事实。
+
+    Recovery Specialist 可以提出动作，但只有受保护的诊断结果独立证明存在瞬态 connector 或
+    worker 故障、标记其为可重试并报告至少一个失败对象时，平台才将重试视为符合条件。将此 fixture
+    保留在一个辅助函数中，可让每个成功路径测试都清楚呈现这条重要边界。
+    """
+
+    return {
+        "failureClass": "TRANSIENT_CONNECTOR_OR_WORKER",
+        "retryable": True,
+        "eligibleForAutomaticRetry": True,
+        "failedObjectCount": 1,
+        "rootCauseCodes": ("CONNECTOR_OR_NETWORK_UNAVAILABLE",),
+    }
+
+
 def _request(**overrides: Any) -> AutopilotRecoveryRequest:
     """创建一份有效的 Java 已验证触发请求，允许测试覆盖单个字段。"""
 
@@ -225,11 +242,10 @@ def _request(**overrides: Any) -> AutopilotRecoveryRequest:
 
 
 def _durable_fact_sink(request: SpecialistTurnRequest, result: SpecialistTurnResult) -> dict[str, bool]:
-    """Model a Java control-plane acknowledgement for coordinator success-path tests.
+    """为 coordinator 成功路径测试模拟 Java 控制面确认。
 
-    Recording that a callback was invoked is not enough for Autopilot.  The production client returns these typed
-    flags after the Java durable fact endpoint accepts the low-sensitive specialist receipt, so tests must model the
-    same contract explicitly.
+    对 Autopilot 而言，仅记录 callback 被调用并不足够。生产客户端会在 Java durable fact endpoint 接受
+    低敏 specialist receipt 后返回这些有类型标志，因此测试必须显式模拟相同合同。
     """
 
     return {
@@ -388,6 +404,7 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
             "modelConfidence": 0.91,
             # 第二轮模型即使没有自报策略变化，协调器也能根据已完成 SEARCH 与 retrieval audit 独立标记。
             "strategyChanged": False,
+            "autopilotRecoveryFacts": _transient_retry_facts(),
         }
         agent = _SequencedRecoveryAgent([first_output, second_output])
         rag = _StaticRagPipeline()
@@ -436,6 +453,7 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
             "diagnosticEvidenceGate": {"satisfied": True, "ragRequired": False},
             "evidenceAudit": _evidence_audit(),
             "modelConfidence": 0.84,
+            "autopilotRecoveryFacts": _transient_retry_facts(),
         }
         agent = _SequencedRecoveryAgent([output])
         rag = _StaticRagPipeline()
@@ -499,6 +517,7 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
             "diagnosticEvidenceGate": {"satisfied": True, "ragRequired": False},
             "evidenceAudit": _evidence_audit(),
             "modelConfidence": 0.88,
+            "autopilotRecoveryFacts": _transient_retry_facts(),
         }
         coordinator = AutopilotRecoveryCoordinator(
             specialist_registry=SpecialistAgentRegistry((_SequencedRecoveryAgent([output]),)),
@@ -516,6 +535,29 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
         self.assertEqual("LOW", result.risk_level)
         self.assertTrue(result.idempotent)
 
+    def test_read_only_diagnosis_alone_is_attention_not_unknown_action(self) -> None:
+        """仅含诊断的 turn 是正常的受治理弃权，而非目录错误。"""
+
+        output = {
+            "repairActions": ({"actionType": "READ_ONLY_DIAGNOSTIC"},),
+            "retrievalDecision": "SKIP",
+            "retrievalStrategy": "STRUCTURED_DIAGNOSTIC",
+            "diagnosticEvidenceGate": {"satisfied": True, "ragRequired": False},
+            "evidenceAudit": _evidence_audit(),
+            "modelConfidence": 0.82,
+        }
+        coordinator = AutopilotRecoveryCoordinator(
+            specialist_registry=SpecialistAgentRegistry((_SequencedRecoveryAgent([output]),)),
+            rag_pipeline=_StaticRagPipeline(),  # type: ignore[arg-type]
+            checkpointer=LangGraphDurableCheckpointerService(),
+            result_sink=_durable_fact_sink,
+        )
+
+        result = coordinator.plan(_request(cycle=1, repeated_error_count=0, previous_repair_fingerprint=None))
+
+        self.assertEqual("ATTENTION_REQUIRED", result.status)
+        self.assertEqual("RECOVERY_READ_ONLY_EVIDENCE_ONLY", result.reason_code)
+
     def test_multiple_investigation_previews_select_one_autonomous_low_risk_step(self) -> None:
         """多个纯调查候选只执行一个 preview，receipt 后仍可选择普通 retry 候选。
 
@@ -523,8 +565,8 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
         进入第二轮后，模型可以改为 ``RETRY_FAILED_OBJECTS``。这证明 preview 是证据扩展，不会把后续 retry
         路径锁死，也不会让 Python 自己执行 retry。
 
-        English: a governed preview is a one-shot evidence step, not a terminal recovery action.  The next model turn
-        may still return a normal Java-owned retry candidate after seeing the receipt, with no additional preview call.
+        受治理的 preview 是一次性证据步骤，而非终态恢复动作。看到 receipt 后，下一模型 turn 仍可返回
+        正常的 Java 所有 retry 候选，无需额外 preview 调用。
         """
 
         output = {
@@ -555,6 +597,7 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
             "diagnosticEvidenceGate": {"satisfied": True, "ragRequired": False},
             "evidenceAudit": _evidence_audit(),
             "modelConfidence": 0.91,
+            "autopilotRecoveryFacts": _transient_retry_facts(),
         }
         agent = _SequencedRecoveryAgent([output, second_output])
         investigation = _RecordingInvestigationCollaborator()
@@ -586,9 +629,8 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
         不能再次提交 diagnosis/preview ToolPlan。它返回固定 ATTENTION_REQUIRED，保留外层 Java/Kafka 重试与
         人工审计空间，同时确保 Python 内层没有重复执行只读工具造成不必要的审计和预算消耗。
 
-        English: this is the preview counterpart to the one-shot RAG limit.  The assertion counts collaborator calls,
-        not just model turns, so a regression cannot quietly issue a second Java-controlled preview under the same
-        recovery event.
+        这是一次性 RAG 限制在 preview 上的对应规则。断言统计 collaborator 调用，而非仅统计模型 turn，
+        因此回归无法在同一 recovery 事件下悄悄发出第二次受 Java 控制的 preview。
         """
 
         preview_output = {
@@ -650,7 +692,7 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
         }
         apply_output = {
             "repairActions": ({"actionType": "APPLY_QUARANTINE"},),
-            # This deliberately malformed model field proves the candidate fingerprint is receipt-derived.
+            # 这个有意格式错误的模型字段证明候选 fingerprint 源自 receipt。
             "actionFingerprint": "model-forged-fingerprint",
             "retrievalDecision": "SKIP",
             "retrievalStrategy": "STRUCTURED_DIAGNOSTIC",
@@ -714,9 +756,8 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
         解锁隔离。协调器返回低敏 ATTENTION_REQUIRED，Java 因而不会把 Python 响应误当成 data-sync apply
         请求；真正的 preview 必须先由 Java ToolPlan/receipt 链完成。
 
-        English: an apply proposal without prior Java receipt is a business attention outcome, not a Python tool
-        failure and not a direct write.  This distinction lets Java persist a clear governance state without invoking
-        quarantine or retry.
+        缺少先前 Java receipt 的 apply 建议属于业务关注结果，而非 Python 工具失败或直接写入。该区分让
+        Java 可持久化清晰的治理状态，而无需调用 quarantine 或 retry。
         """
 
         output = {
@@ -806,9 +847,8 @@ class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
         请求 SEARCH。协调器必须在第三轮返回固定 attention 结果，既不发起第二次 RAG，也不丢弃已发生的
         preview receipt；这使同一 Autopilot 请求的内层循环保持有界。
 
-        English: the test deliberately traverses both evidence expansions, then repeats SEARCH.  It proves that the
-        coordinator records one RAG call and one Java-governed preview only, while the outer recovery-cycle budget
-        remains owned by Java rather than a recursive Python planner.
+        测试有意遍历两种证据扩展后再重复 SEARCH。它证明 coordinator 仅记录一次 RAG 调用和一次受 Java
+        治理的 preview，而外层 recovery-cycle 预算仍由 Java 而非递归 Python planner 所有。
         """
 
         search_output = {

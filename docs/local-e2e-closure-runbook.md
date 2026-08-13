@@ -449,7 +449,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-go
 - Recovery 请求 `six-agent-recovery-rag-durable-20260810214832` 针对既有失败任务/执行 `76/1805`，获得 2 条 grounded citation、2 条 durable evidence reference、1 个 Java 只读 preview，后置 PRECHECK/MONITOR 均为 `EXECUTED`，durable-fact 脚本计数为 8。11 项检查为 `0 fail / 0 warning`，独立子进程退出码为 `0`。
 - 独立数据库审计确认 permission approval、approval confirmation、submission fact 和 async command outbox 本轮均为 `0`。任务 `76` 仍只有 `1805 FAILED` 与 `1806 SUCCEEDED`；恢复计划 `9` 早于本轮请求，不是 Agent 自动创建。8 个 Java 工具审计全部为 `LOW/readOnly/SUCCEEDED`，两条 KNOWLEDGE durable 引用均为 `rag:sha256:`；LangGraph 的 `rag_retrieve_knowledge -> rag_evidence_gate -> rag_grounded_answer_completed` 三节点完整。
 
-因此本地真实六 Agent Success/Recovery 黑盒门禁已经关闭。该结论不等于生产发布门禁全部关闭：Secret Manager 注入与轮换、备份恢复、容量压测、故障演练、镜像签名/SBOM 和客户环境迁移仍需按各生产 runbook 单独补证。
+因此本地真实六 Agent Success/只读 Recovery 黑盒门禁已经关闭；该结论不包含真实 Kafka/Python Autopilot `FAILED -> Recovery -> retry -> SUCCEEDED -> RECOVERED` 写重跑。生产发布门禁也未全部关闭：Secret Manager 注入与轮换、备份恢复、容量压测、故障演练、镜像签名/SBOM 和客户环境迁移仍需按各生产 runbook 单独补证。
 
 ## 5. Smoke Check
 
@@ -627,7 +627,7 @@ POST http://localhost:8086/internal/sync-workers/run-once
 
 ### 8.2 2026-08-13 Autopilot 自主检索与无人值守恢复复核
 
-本轮已完成并复核以下代码闭环：普通同步规划把 RAG 暴露为模型可见工具，由模型根据当前证据自主选择 `SEARCH` 或 `SKIP`；Recovery 规划强制使用持久化 RAG 证据。恢复动作仍由 Java/data-sync 控制面执行，Python 只负责受约束的决策与证据编排。首次授权后，授权盒子内的低风险 `RETRY_EXECUTION` 可以无人值守排队、执行和有界重试；达到最大循环次数、授权过期、证据不足、双策略不一致或高风险动作时，系统会停在 `ATTENTION_REQUIRED`/审批边界，不会无限循环或越权写入。
+本轮已完成并复核以下代码闭环：普通同步规划和 Recovery 规划都把 RAG 暴露为模型可见工具，由模型根据当前证据自主选择 `SEARCH` 或 `SKIP`；选择 `SEARCH` 时最多执行一次受控检索并要求持久化 evidence 后重评，选择 `SKIP` 不会绕过 Java/data-sync 门禁。恢复动作仍由 Java/data-sync 控制面执行，Python 只负责受约束的决策与证据编排。首次授权后，授权盒子内的低风险 `RETRY_EXECUTION` 可以无人值守排队、执行和有界重试；达到最大循环次数、授权过期、证据不足、双策略不一致或高风险动作时，系统会停在 `ATTENTION_REQUIRED`/审批边界，不会无限循环或越权写入。
 
 本轮验证证据：
 
@@ -639,3 +639,69 @@ POST http://localhost:8086/internal/sync-workers/run-once
 - 离线六 Specialist 合同回归证明了模型可自主 `SEARCH`/`SKIP`、失败对象可受治理重排队，以及最大循环后进入 `ATTENTION_REQUIRED`。
 
 本轮没有宣称完成真实生产写动作 E2E。宿主机未配置 `DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD`，因此没有执行需要 project-owner 登录的真实 `-Execute -ConfirmAndExecute -EnableAutopilot` Recovery 黑盒。仍需在隔离环境补充真实 Keycloak 授权、V20-V25 Flyway 状态、Kafka 投递/重投递、Python Provider/RAG、worker receipt、post-action `PRECHECK_AGENT`/`MONITOR_AGENT` durable fact、指标告警以及低风险自动 retry/quarantine 和高风险审批停点证据。
+
+### 8.3 2026-08-13 Keycloak 密码与真实 Success/Autopilot 复核
+
+随后使用本机 Keycloak `project-owner` 的已配置密码，通过进程级环境变量完成真实认证；密码没有写入仓库、日志或提交。当前项目 `101` 的真实低敏数据源为 MySQL `55` 和 PostgreSQL `56`，二者均返回 `VIEW/USE/MANAGE`。本次真实执行使用这两个稳定 ID，不依赖已经失效的历史示例名称。
+
+真实 Success + 首次确认 + `EnableAutopilot` 请求 `local-six-agent-20260813053638265` 已通过：
+
+- 首次确认建立了绑定 root Run 的 LOW 风险 Autopilot 授权盒，最大 3 轮、120 分钟，允许动作仅为 `RETRY_EXECUTION` 和 `APPLY_QUARANTINE`。
+- `sync.task.draft.save`、`sync.task.precheck`、`sync.task.publish` 和 `sync.task.run` 均由 Java 控制面成功执行；真实 task `97`、execution `2619` 已可信定位。
+- 真实 worker 将 execution 收敛为 `SUCCEEDED`，读取 20、写入 20、失败 0，对象账本 1 个且全部成功。
+- 资源产生后的 `PRECHECK_AGENT` 和 `MONITOR_AGENT` 均为 `EXECUTED`，本轮查询到 4 条低敏 durable Specialist facts，无受治理等待角色。
+
+同一环境还验证了阻断行为：使用 `INSERT + FULL` 时，目标表已有 20 行，Java precheck 返回 `BLOCKED` 和 `METADATA_TARGET_NOT_EMPTY_FOR_INSERT_FULL`，没有发布、运行或覆盖目标数据；改用用户明确选择的 `UPDATE/merge` 后才通过并完成上述 Success。该结果证明预检查会阻止高风险/不安全配置，而不是让 Agent 猜测或强行执行。
+
+这条证据证明了真实 Keycloak、Gateway、权限中心、六 Specialist、Java 控制面、data-sync worker、首次 Autopilot 授权和后置复核链路。它仍不是 Recovery 写重跑证据：本次首次 execution 成功，没有进入失败对象的 Kafka Recovery trigger。真实 Recovery 仍需使用隔离的失败 execution 验证 `SEARCH`、失败对象 retry/quarantine、最终 receipt、post-action facts、指标告警和有界 `RECOVERED`/`ATTENTION_REQUIRED` 收敛。
+
+### 8.4 2026-08-13 Recovery transient transport 演练补充
+
+当前 Recovery 检索合同不是“每次强制调用 RAG”。模型必须对检索作出显式 `SEARCH`/`SKIP` 决策：结构化诊断足够时可选择 `SKIP`；陌生、重复或低置信度错误可选择 `SEARCH`，随后只能执行一次受控检索并用 durable evidence 重评。该决策只进入审计和候选规划，不绕过 Java/data-sync 的授权、风险、作用域、预算、幂等与事实账本。
+
+run-once transport 演练前已补齐异常分类：仅连接拒绝、connect/read timeout 这类 Spring transport failure 写为 `DATASOURCE_RUN_ONCE_TRANSPORT_UNAVAILABLE`、`retryable=true`；HTTP rejection、无效 envelope、权限、凭证和契约失败继续为 `DATASOURCE_RUN_ONCE_UNAVAILABLE`、`retryable=false`。可执行聚焦命令为：
+
+```powershell
+mvn -pl data-sync -am "-Dtest=SyncBatchRunOnceHttpContractE2ETest,SyncAutopilotRecoveryCaseServiceTest,SyncAutopilotRecoveryPolicyEvaluatorTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-DskipTests=false" "-Dcheckstyle.skip=true"
+```
+
+当前相关聚焦回归共 `21 tests / 0 failures / 0 errors`。测试使用关闭的本地端口制造真实 transport 拒绝，不依赖外部 DNS；同时验证远端 HTTP/业务/契约 rejection 仍不可重试，并覆盖失败工作单元重排和成功探测后的账本对账。
+
+真实请求 `six-agent-autopilot-transient-20260813230035361` 创建 task `106` / execution `2714`。本次在 `datasource-management` 暂停期间，`AUTO_SPLIT_PK` 范围探测先于 run-once 执行并返回 `PARTITION_SHARD_CONTRACT_BLOCKED`；精确状态为 `outbox_state=DELIVERED`、`consumer_result_status=ATTENTION_REQUIRED`，记录 `SEARCH`、`EXACT_SEARCH` 和 2 条 evidence 引用，但没有 recovery case、`RECOVERY_STARTED` 或 retry receipt。服务已恢复，未留下故意停止的容器。
+
+因此下一次隔离演练必须避免自动范围探测抢先失败，并收集以下连续证据后才可关闭门禁：首轮 execution 的 transport failure、trigger outbox、Kafka 消费、模型 `SEARCH` 或 `SKIP`、Java/data-sync 双事实复核、`AUTO_APPROVED`、`RECOVERY_STARTED`、新 execution 自动重跑成功、`RECOVERED`、后置 `PRECHECK_AGENT`/`MONITOR_AGENT` durable facts。任一项缺失都只能记录为 fail-closed 或部分链路证据。
+
+### 8.5 2026-08-14 AUTO_SPLIT_PK range-probe 失败工作单元复核
+
+当前实现已覆盖范围探测早于真实分片账本初始化的边界：仅 transport-only 失败会持久化一条低敏 `workUnitType=PARTITION_RANGE_PROBE`、`objectState=FAILED` 临时工作单元，并记录 `DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE` 与 `retryable=true` 的错误事实。既有失败对象重试入口可以重置该单元并重新排队 execution；HTTP/业务/契约/无效范围失败不会创建自动重试资格。
+
+重试时 range-probe 成功，data-sync 会在同一事务中删除临时 `PARTITION_RANGE_PROBE` 单元，然后幂等生成真实 `PARTITION_SHARD`（自适应单分片则为对象）账本。成功分片不会重复插入，临时单元也不会进入父 execution 汇总。该生命周期与 run-once/Recovery 分类由 `21 tests / 0 failures / 0 errors` 聚焦回归覆盖。
+
+本 runbook 必须继续把真实 Kafka/Python `FAILED -> Recovery -> retry -> SUCCEEDED -> RECOVERED` 作为当前主 Agent 的未完成黑盒验证项。当前已有的是代码、聚焦测试、容器健康和 fail-closed 的部分证据；在收集真实 trigger outbox 投递、Kafka 消费、Recovery `SEARCH`/`SKIP`、worker receipt、重跑 execution 和最终 `RECOVERED` 之前，不得把自治恢复写重跑宣称为成功。
+
+### 8.6 2026-08-14 幂等重放修复后的复验方法与当前阻塞
+
+复验 task `107` 时，必须先保证完整字段映射。其目标表 `orders_platform_clean.name` 为非空列，因此源端 `customer_name` 必须显式映射到 `name`；缺少该映射会产生 20 条 dirty record，并把“字段规划错误”混入 transport Recovery 演练。更稳妥的隔离方式是使用源端同名四字段目标表，并在 objective 中明确 `id`、`customer_name`、`amount`、`region` 及主键和写策略。
+
+Kafka 重投的 diagnosis/preview AgentPlan 现已使用 `investigation:v2` 幂等身份。同一 event、阶段和真实策略会回放首次 Java audit；不同 recovery cycle 或真实预览参数会创建新受治理 Run。不要通过关闭 Java 指纹冲突检查、变更随机幂等键或让 Python 直连 data-sync 来“修复”重放，这些做法会破坏审批、审计和副作用边界。
+
+本轮可重复门禁：
+
+```powershell
+mvn test
+Set-Location .\python-ai-runtime
+pytest -q
+Set-Location ..\..\DataSmartGovernFrontend
+npm run test:api-adapter-contract
+npm run test:agent-control-plane
+npm run test:agent-specialist-audit
+npm run test:agent-confirmation-gate
+npm run test:agent-console-live-contract
+npm run test:data-sync-agent-locator
+npm run lint
+npm run build
+```
+
+2026-08-14 实际结果为 Java `1515 tests / 9 skipped`、Python `1171 passed / 1 skipped`，前端全部脚本和构建通过。运行时镜像也已重建并健康，Kafka consumer 已就绪。
+
+当前唯一阻止继续执行黑盒故障演练的环境问题是模型 Provider 鉴权：最新密钥已仅注入 Python Runtime 容器，但当前 OpenAI-compatible Provider 的 `/models` 和 `/chat/completions` 都返回 HTTP `401`。脚本因此在 `DATA_SYNC_AGENT` 规划阶段 fail-closed，低敏 durable fact 为 `MODEL_PROVIDER_ERROR / MODEL_PROVIDER_TRANSPORT`，且没有创建新 task。恢复有效 Provider 后，应重新执行完整规划，再按“关闭 worker scheduler -> 创建并首次确认任务 -> 暂停 datasource-management -> 手动触发一次 worker -> 恢复 datasource-management 与 scheduler -> 只观察系统自治收敛”的顺序演练；人工不得调用 retry/quarantine 接口代替 Agent 决策。

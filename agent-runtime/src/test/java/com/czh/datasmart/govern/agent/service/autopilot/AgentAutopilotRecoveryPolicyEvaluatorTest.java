@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -15,7 +16,7 @@ class AgentAutopilotRecoveryPolicyEvaluatorTest {
     @Test
     void autoApprovesOnlyPreauthorizedLowRiskIdempotentAction() {
         AgentAutopilotRecoveryDecision decision = evaluator.evaluate(
-                snapshot(), candidate("REPLAY_FAILED_SHARDS", "LOW", true), state());
+                snapshot(), candidate("RETRY_EXECUTION", "LOW", true), state());
 
         assertEquals(AgentAutopilotRecoveryDecisionType.AUTO_APPROVED, decision.decision());
     }
@@ -62,6 +63,15 @@ class AgentAutopilotRecoveryPolicyEvaluatorTest {
         assertEquals("RECOVERY_EVIDENCE_MISSING", decision.reasonCode());
     }
 
+    @Test
+    void retryWithoutStructuredTransientFactsRequiresAttention() {
+        AgentAutopilotRecoveryDecision decision = evaluator.evaluate(
+                snapshot(), candidate("RETRY_EXECUTION", "LOW", true, Map.of()), state());
+
+        assertEquals(AgentAutopilotRecoveryDecisionType.ATTENTION_REQUIRED, decision.decision());
+        assertEquals("RECOVERY_AUTOMATIC_RETRY_FACTS_REQUIRED", decision.reasonCode());
+    }
+
     private AgentAutopilotAuthorizationSnapshot snapshot() {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         return new AgentAutopilotAuthorizationSnapshot(
@@ -74,9 +84,23 @@ class AgentAutopilotRecoveryPolicyEvaluatorTest {
     }
 
     private AgentAutopilotRecoveryCandidate candidate(String action, String risk, boolean idempotent) {
+        return candidate(action, risk, idempotent, transientRetryFacts());
+    }
+
+    private AgentAutopilotRecoveryCandidate candidate(String action, String risk, boolean idempotent,
+                                                      Map<String, Object> facts) {
         return new AgentAutopilotRecoveryCandidate(
                 10L, 20L, 30L, "user-7", "agent-master", "delegation-1",
-                action, risk, idempotent, "sha256:repair", "sha256:error");
+                action, risk, idempotent, "sha256:repair", "sha256:error", facts);
+    }
+
+    private Map<String, Object> transientRetryFacts() {
+        return Map.of(
+                "failureClass", "TRANSIENT_CONNECTOR_OR_WORKER",
+                "retryable", true,
+                "eligibleForAutomaticRetry", true,
+                "failedObjectCount", 1,
+                "rootCauseCodes", List.of("CONNECTOR_OR_NETWORK_UNAVAILABLE"));
     }
 
     private AgentAutopilotRecoveryLoopState state() {

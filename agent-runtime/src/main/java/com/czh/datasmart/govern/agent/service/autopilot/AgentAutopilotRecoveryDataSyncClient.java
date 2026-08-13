@@ -166,6 +166,9 @@ public class AgentAutopilotRecoveryDataSyncClient {
         body.put("receiptId", event.eventId() + ":decision");
         body.put("confidenceScore", (int) Math.round(response.confidence() * 100.0d));
         body.put("evidenceAvailable", evidenceVerified && response.evidenceAvailable());
+        // 这些事实只是范围受限的传输投影。data-sync 在认定 RETRY_EXECUTION 已获自动授权前，
+        // 仍必须重新读取自身的执行和错误账本。
+        body.put("autopilotRecoveryFacts", response.autopilotRecoveryFacts());
         Map<String, Object> data = postEnvelope(
                 trigger, DECISION_PATH, body, event.eventId(), new Object[0]);
         return caseView(data);

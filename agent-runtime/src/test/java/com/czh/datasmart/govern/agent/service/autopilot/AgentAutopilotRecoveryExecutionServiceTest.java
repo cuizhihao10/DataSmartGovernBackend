@@ -415,6 +415,30 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         assertThat(result.retrievalEvidenceDigest()).isEqualTo("sha256:" + "c".repeat(64));
     }
 
+    /** 受限规划在候选执行前停止时，仍会暴露模型明确的 SKIP 决策，但不会授予执行权限。 */
+    @Test
+    void shouldProjectRetrievalDecisionWhenPlannerStopsBeforeCandidateExecution() {
+        Fixture fixture = fixture();
+        AgentAutopilotVerifiedRecoveryTrigger trigger = trigger();
+        AgentAutopilotRecoveryPlanResponse response = new AgentAutopilotRecoveryPlanResponse(
+                "datasmart.autopilot.recovery-candidate.v1", "event-1", "ATTENTION_REQUIRED",
+                "RECOVERY_ACTION_NOT_IN_PLATFORM_CATALOG", null, null, false,
+                null, "a".repeat(64), 0.94d, true,
+                Map.of("evidenceCount", 4), Map.of(), "SKIP", "STRUCTURED_DIAGNOSTIC", Map.of(),
+                false, "autopilot-recovery:event-1",
+                "LOW_SENSITIVE_AUTOPILOT_RECOVERY_CANDIDATE_ONLY");
+
+        AgentAutopilotRecoveryExecutionResult result = fixture.service.execute(trigger, response);
+
+        assertThat(result.status()).isEqualTo("ATTENTION_REQUIRED");
+        assertThat(result.reasonCode()).isEqualTo("RECOVERY_ACTION_NOT_IN_PLATFORM_CATALOG");
+        assertThat(result.retrievalDecision()).isEqualTo("SKIP");
+        assertThat(result.retrievalStrategy()).isEqualTo("STRUCTURED_DIAGNOSTIC");
+        assertThat(result.retrievalEvidenceCount()).isZero();
+        assertThat(result.retrievalEvidenceDigest()).isNull();
+        verifyNoInteractions(fixture.evidenceVerifier, fixture.policyEvaluator, fixture.dataSyncClient);
+    }
+
     /**
      * Scope, digest, source, and freshness violations are deterministic evidence denials rather than delivery failures.
      *
@@ -504,7 +528,17 @@ class AgentAutopilotRecoveryExecutionServiceTest {
                 repairFingerprint, "a".repeat(64), 0.91d, true,
                 Map.of(), Map.of(), retrievalDecision, "STRUCTURED_DIAGNOSTIC", retrievalAudit,
                 strategyChanged, "autopilot-recovery:event-1",
-                "LOW_SENSITIVE_AUTOPILOT_RECOVERY_CANDIDATE_ONLY");
+                "LOW_SENSITIVE_AUTOPILOT_RECOVERY_CANDIDATE_ONLY", Map.of(), transientRetryFacts());
+    }
+
+    /** 为无人值守重试提供 Java 和 data-sync 都要求的确定性事实。 */
+    private Map<String, Object> transientRetryFacts() {
+        return Map.of(
+                "failureClass", "TRANSIENT_CONNECTOR_OR_WORKER",
+                "retryable", true,
+                "eligibleForAutomaticRetry", true,
+                "failedObjectCount", 1,
+                "rootCauseCodes", List.of("CONNECTOR_OR_NETWORK_UNAVAILABLE"));
     }
 
     /** Builds the exact preview projection and canonical fingerprint used by the Python/Java apply protocol. */

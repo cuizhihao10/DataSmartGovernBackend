@@ -11,14 +11,19 @@ import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.entity.SyncAutopilotRecoveryCase;
 import com.czh.datasmart.govern.datasync.entity.SyncAutopilotRecoveryReceipt;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
+import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncAutopilotRecoveryCaseMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncAutopilotRecoveryReceiptMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncObjectExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAutopilotExecutionMode;
+import com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryAction;
 import com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryCaseState;
 import com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryReceiptType;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +33,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Objects;
+import java.util.List;
+import java.util.Locale;
 
 /**
  * Persists deterministic Autopilot decisions and optimistic lifecycle receipts.
@@ -49,6 +56,8 @@ public class SyncAutopilotRecoveryCaseService {
     private final SyncTaskMapper taskMapper;
     private final SyncTaskDefinitionMapper definitionMapper;
     private final SyncExecutionMapper executionMapper;
+    private final SyncObjectExecutionMapper objectExecutionMapper;
+    private final SyncErrorSampleMapper errorSampleMapper;
     private final SyncAutopilotRecoveryCaseMapper caseMapper;
     private final SyncAutopilotRecoveryReceiptMapper receiptMapper;
     private final SyncAutopilotRecoveryPolicyEvaluator policyEvaluator;
@@ -79,8 +88,10 @@ public class SyncAutopilotRecoveryCaseService {
         SyncTask task = requireTask(command.syncTaskId());
         SyncTaskDefinition definition = requireDefinition(command.syncTaskId());
         SyncExecution rootExecution = requireExecution(command.rootExecutionId(), command.syncTaskId());
-        requireExecution(command.currentExecutionId(), command.syncTaskId());
+        SyncExecution currentExecution = requireExecution(command.currentExecutionId(), command.syncTaskId());
         requireScope(task, definition, rootExecution, command);
+
+        boolean automaticRetryFactsVerified = verifyAutomaticRetryFacts(command, currentExecution);
 
         SyncAutopilotRecoveryPolicyDecision decision = policyEvaluator.evaluate(
                 definition.getAutopilotPolicy(),
@@ -99,6 +110,7 @@ public class SyncAutopilotRecoveryCaseService {
                         command.receiptId(),
                         command.confidenceScore(),
                         command.evidenceAvailable(),
+                        automaticRetryFactsVerified,
                         // Decision commands and persisted LocalDateTime deadlines use UTC by contract.
                         LocalDateTime.now(ZoneOffset.UTC)
                 )
@@ -121,6 +133,72 @@ public class SyncAutopilotRecoveryCaseService {
             throw conflict("Recovery decision receipt could not be completed");
         }
         return view(recoveryCase);
+    }
+
+    /**
+     * 根据 data-sync 持久账本重新计算重试资格，而不是直接信任 Python 的事实投影。
+     *
+     * <p>面向模型的动作和传输事实可用于说明原因，却不能单独作为依据。这里执行第二次事实校验：
+     * 权威的失败对象数量和可重试性以 data-sync 持久账本为准。仅当当前 execution 至少有一个失败对象，
+     * 且每条已观察到的错误都明确属于瞬态的连接器/worker 工作时，重试才具备资格。约束、模式、
+     * 权限、凭据、范围和数据契约故障会明确返回 {@code false}。</p>
+     *
+     * @param command 包含受限 Python 事实的候选决策
+     * @param rootExecution 必须检查其失败账本的 execution
+     * @return 任务本地账本是否独立证明该候选项为瞬态重试
+     */
+    private boolean verifyAutomaticRetryFacts(SyncAutopilotRecoveryDecisionCommand command,
+                                              SyncExecution currentExecution) {
+        if (command.action() != SyncAutopilotRecoveryAction.RETRY_EXECUTION
+                || !SyncAutopilotRecoveryFactsVerifier.eligibleForAutomaticRetry(command.autopilotRecoveryFacts())) {
+            return false;
+        }
+        List<SyncObjectExecution> failedObjects = objectExecutionMapper.selectByExecutionId(
+                currentExecution.getId());
+        List<SyncObjectExecution> failed = failedObjects == null ? List.of() : failedObjects.stream()
+                .filter(item -> "FAILED".equalsIgnoreCase(item.getObjectState()))
+                .toList();
+        int declaredCount = positiveInt(command.autopilotRecoveryFacts().get("failedObjectCount"));
+        if (failed.isEmpty() || declaredCount != failed.size()
+                || failed.stream().anyMatch(item -> !isTransientConnectorOrWorkerFailure(item))) {
+            return false;
+        }
+        List<SyncErrorSample> samples = errorSampleMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SyncErrorSample>()
+                        .eq(SyncErrorSample::getSyncTaskId, command.syncTaskId())
+                        .eq(SyncErrorSample::getExecutionId, command.currentExecutionId())
+                        .eq(SyncErrorSample::getRetryable, true));
+        if (samples != null && samples.stream().anyMatch(sample ->
+                !isTransientCode(sample.getErrorType()) && !isTransientCode(sample.getErrorCode()))) {
+            return false;
+        }
+        return true;
+    }
+
+    /** 解析正的事实计数器；不接受布尔值或自由格式的数字。 */
+    private int positiveInt(Object value) {
+        if (value instanceof Boolean || value == null) {
+            return 0;
+        }
+        try {
+            int result = Integer.parseInt(String.valueOf(value));
+            return result > 0 ? result : 0;
+        } catch (NumberFormatException exception) {
+            return 0;
+        }
+    }
+
+    /** 仅依据受限的类型/代码字段检查一个失败对象，绝不读取错误原文。 */
+    private boolean isTransientConnectorOrWorkerFailure(SyncObjectExecution object) {
+        return isTransientCode(object.getLastErrorType()) || isTransientCode(object.getLastErrorCode());
+    }
+
+    /** 判断代码是否属于诊断契约规定的固定连接器/worker 瞬态词汇。 */
+    private boolean isTransientCode(String value) {
+        String code = value == null ? "" : value.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+        return code.contains("CONNECTOR") || code.contains("NETWORK") || code.contains("WORKER")
+                || code.contains("TIMEOUT") || code.contains("UNAVAILABLE")
+                || code.contains("COMMUNICATION") || code.contains("CONNECTION");
     }
 
     /**
