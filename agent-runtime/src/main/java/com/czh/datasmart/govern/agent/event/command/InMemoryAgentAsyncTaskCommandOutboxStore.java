@@ -157,6 +157,17 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore
 
     @Override
     public List<AgentAsyncTaskCommandOutboxRecord> listPublishable(int limit, Instant now) {
+        return listPublishableByToolCodes(List.of(), limit, now);
+    }
+
+    /**
+     * 在内存记录上先应用工具白名单，再执行 limit，保证灰度允许的命令不会被队首旧命令饿死。
+     */
+    @Override
+    public List<AgentAsyncTaskCommandOutboxRecord> listPublishableByToolCodes(
+            Collection<String> allowedToolCodes,
+            int limit,
+            Instant now) {
         int normalizedLimit = normalizeLimit(limit);
         Instant referenceTime = now == null ? Instant.now() : now;
         lock.readLock().lock();
@@ -165,6 +176,7 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore
                     .filter(record -> record.status() == AgentAsyncTaskCommandOutboxStatus.PENDING
                             || record.status() == AgentAsyncTaskCommandOutboxStatus.FAILED)
                     .filter(record -> record.nextRetryAt() == null || !record.nextRetryAt().isAfter(referenceTime))
+                    .filter(record -> toolCodeAllowed(record, allowedToolCodes))
                     .limit(normalizedLimit)
                     .toList();
         } finally {
@@ -264,6 +276,17 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore
 
     @Override
     public int recoverStalePublishing(Instant staleBefore, Instant now, String error) {
+        return recoverStalePublishingByToolCodes(List.of(), staleBefore, now, error);
+    }
+
+    /**
+     * 恢复超时领取记录时复用与查询相同的工具白名单，避免灰度开关改变其他工具的持久化状态。
+     */
+    @Override
+    public int recoverStalePublishingByToolCodes(Collection<String> allowedToolCodes,
+                                                  Instant staleBefore,
+                                                  Instant now,
+                                                  String error) {
         Instant cutoff = staleBefore == null ? Instant.now() : staleBefore;
         Instant referenceTime = now == null ? Instant.now() : now;
         lock.writeLock().lock();
@@ -273,7 +296,8 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore
                 AgentAsyncTaskCommandOutboxRecord record = entry.getValue();
                 if (record.status() == AgentAsyncTaskCommandOutboxStatus.PUBLISHING
                         && record.updatedAt() != null
-                        && !record.updatedAt().isAfter(cutoff)) {
+                        && !record.updatedAt().isAfter(cutoff)
+                        && toolCodeAllowed(record, allowedToolCodes)) {
                     entry.setValue(record.markFailed(error, referenceTime, referenceTime));
                     recovered++;
                 }
@@ -422,6 +446,13 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore
     private boolean statusMatches(AgentAsyncTaskCommandOutboxRecord record,
                                   Collection<AgentAsyncTaskCommandOutboxStatus> statuses) {
         return statuses == null || statuses.isEmpty() || statuses.contains(record.status());
+    }
+
+    private boolean toolCodeAllowed(AgentAsyncTaskCommandOutboxRecord record,
+                                    Collection<String> allowedToolCodes) {
+        return allowedToolCodes == null
+                || allowedToolCodes.isEmpty()
+                || allowedToolCodes.contains(record.toolCode());
     }
 
     private int normalizeLimit(int limit) {

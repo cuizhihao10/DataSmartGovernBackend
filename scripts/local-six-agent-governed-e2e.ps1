@@ -17,7 +17,7 @@
     安全默认值：
     - 不带 -Execute 时只打印计划，不请求 Keycloak，不调用 Agent API，不创建任务；
     - 带 -Execute 时才会通过 project-owner 获取短期 access token；token、密码、API key 和响应正文永不输出；
-    - Recovery 场景最多验证高风险动作已经进入审批/Java handoff，不会自动提交批准，也不会直接执行恢复动作；
+    - Recovery 场景要求可审计诊断证据，但由模型决定是否继续调用 RAG；高风险动作只验证进入审批/Java handoff；
     - 只解析低敏角色、状态、稳定 ID、计数和建议，不输出 prompt、模型原文、SQL、工具参数或连接信息。
 
     典型用法：
@@ -30,8 +30,8 @@
         -TargetDatasourceName 'FlashSync PostgreSQL 目标' `
         -SourceObjectName 'datasmart_e2e_platform_orders' `
         -TargetSchemaName 'datasmart_e2e' -TargetObjectName 'orders_platform_clean' `
-        -Objective '将 MySQL 中的两张测试表全量同步到 PostgreSQL public schema 的同名表，并完成预检查后执行'
-    - 恢复场景，只验证 RAG -> Recovery -> 审批等待：
+        -Objective '将 MySQL 的 datasmart_e2e_platform_orders 全量同步到 PostgreSQL datasmart_e2e schema 的 orders_platform_clean，并完成预检查后执行'
+    - 恢复场景，验证诊断证据 -> 模型按需检索 -> 受治理恢复建议：
       .\scripts\local-six-agent-governed-e2e.ps1 -Execute -Scenario Recovery `
         -SourceDatasourceName 'FlashSync MySQL 源' `
         -TargetDatasourceName 'FlashSync PostgreSQL 目标' `
@@ -56,10 +56,19 @@ param(
     # Success 场景只有显式传入该开关才会批准当前生命周期 Run；Recovery 场景始终禁止自动批准修复动作。
     [switch]$ConfirmAndExecute,
 
+    # 只有首次 Success 确认可以建立有界 AUTOPILOT 授权；后续恢复继续由服务端按该快照自动决策。
+    [switch]$EnableAutopilot,
+
+    # 无人值守恢复的循环和总时长预算。后端仍会再次执行更严格的范围与上限校验。
+    [ValidateRange(1, 10)]
+    [int]$AutopilotMaxRecoveryCycles = 3,
+    [ValidateRange(5, 1440)]
+    [int]$AutopilotMaxTotalDurationMinutes = 120,
+
     # 允许调用方显式写出只读模式；与默认行为等价，但不能和 -Execute 同时使用。
     [switch]$PlanOnly,
 
-    # 成功场景验证同步规划和后置复核；恢复场景验证 RAG/恢复审批门禁而不自动批准。
+    # 成功场景验证同步规划和后置复核；恢复场景验证诊断证据、模型检索决策和恢复治理门禁。
     [ValidateSet('Success', 'Recovery')]
     [string]$Scenario = 'Success',
 
@@ -79,6 +88,10 @@ param(
 
     # 只构造公开 AgentRequest 并断言异名对象映射进入结构化基线；不会读取凭据、访问网络或创建任务。
     [switch]$RunRequestContractRegressionTest,
+
+    # 只构造确认回执、低敏 Specialist fact、扁平 recovery 状态和执行账本夹具；用于防止 E2E 再次等待
+    # 不存在的嵌套内部对象。该回归不读取凭据、不访问 Gateway，也不会创建或重试真实任务。
+    [switch]$RunAutopilotPublicContractRegressionTest,
 
     # 统一产品入口。脚本不绕过 Gateway 访问 Python Runtime。
     [string]$GatewayBaseUrl = 'http://localhost:8080',
@@ -104,6 +117,7 @@ param(
     [string]$TargetConnectorType = 'POSTGRESQL',
 
     # 异名表不能依赖模型从自然语言猜测映射。非空时，脚本把这组用户审核值写入结构化 objectMappings。
+    # MySQL 的 database 属于 JDBC catalog，通常不应填写 SourceSchemaName；PostgreSQL 等连接器才使用 schema。
     [string]$SourceSchemaName = '',
     [string]$SourceObjectName = '',
     [string]$TargetSchemaName = '',
@@ -165,7 +179,6 @@ $script:SuccessPostConfirmationExecutedRoles = @(
     'MONITOR_AGENT'
 )
 $script:RecoveryExecutedRoles = @(
-    'KNOWLEDGE_AGENT',
     'RECOVERY_AGENT',
     'MONITOR_AGENT'
 )
@@ -509,7 +522,10 @@ function Assert-BasicInputs {
         Stop-E2E -Name '显式确认模式' -Detail '-ConfirmAndExecute 只能和 -Execute 一起使用；只读计划模式不会批准任何 Agent Run。'
     }
     if ($ConfirmAndExecute -and $Scenario -eq 'Recovery') {
-        Stop-E2E -Name '恢复审批边界' -Detail 'Recovery 场景禁止使用 -ConfirmAndExecute；改表、清理数据、修改任务和重试必须由用户在产品界面逐项审核。'
+        Stop-E2E -Name '恢复审批边界' -Detail 'Recovery 场景禁止使用 -ConfirmAndExecute；高风险变更仍必须停留在产品治理审批边界内。'
+    }
+    if ($EnableAutopilot -and (-not $Execute -or -not $ConfirmAndExecute -or $Scenario -ne 'Success')) {
+        Stop-E2E -Name 'Autopilot 首次授权边界' -Detail '-EnableAutopilot 只能用于 Success 场景的 -Execute -ConfirmAndExecute；它不能在恢复请求中补授或扩大权限。'
     }
     if ($TenantId -le 0 -or $ProjectId -le 0 -or [string]::IsNullOrWhiteSpace($ActorId)) {
         Stop-E2E -Name '租户项目上下文' -Detail 'TenantId、ProjectId 和 ActorId 必须是非空的合法上下文。'
@@ -1258,17 +1274,217 @@ function Invoke-ConfirmedAgentRun {
 
     $sessionId = [uri]::EscapeDataString([string]$Reference.SessionId)
     $runId = [uri]::EscapeDataString([string]$Reference.RunId)
+    # idempotencyKey 对同一个 E2E RequestId 保持稳定。若服务端已经完成确认但 HTTP 响应丢失，调用方可用
+    # 同一 key 重放并读取原结果；任何修改后的确认事实必须由服务端摘要校验拒绝，不能重复产生副作用。
+    $confirmationBody = [ordered]@{
+        confirmed = $true
+        comment = '六专业 Agent 本地 E2E：用户显式确认 Success 场景同步生命周期计划。'
+        idempotencyKey = "$RequestId-confirm"
+    }
+    if ($EnableAutopilot) {
+        # expiresAt 始终使用带 Z/offset 的 UTC ISO-8601。Java 和 data-sync 必须按同一瞬时时间比较，
+        # 不能把它降为本地墙钟 LocalDateTime，否则 Asia/Shanghai 容器会把授权提前八小时判定过期。
+        $confirmationBody.autopilotPolicy = [ordered]@{
+            executionMode = 'AUTOPILOT'
+            maxRecoveryCycles = $AutopilotMaxRecoveryCycles
+            maxTotalDurationMinutes = $AutopilotMaxTotalDurationMinutes
+            maxAutomaticRiskLevel = 'LOW'
+            # 这两个动作是当前服务端真正可兑现的自动执行白名单。脚本不会用这些值执行任何恢复 POST；
+            # failed-object retry 是 RETRY_EXECUTION 的受治理执行结果，preview 是只读证据而非扩权动作。
+            # 后续真实动作仍由 data-sync/Agent Runtime 在每轮根据风险、证据、预览和审批重新校验。
+            allowedRecoveryActions = @(
+                'RETRY_EXECUTION',
+                'APPLY_QUARANTINE'
+            )
+            requireApprovalFor = @(
+                'CHANGE_SCHEMA',
+                'CHANGE_CREDENTIAL',
+                'DELETE_DATA',
+                'OVERWRITE_TARGET',
+                'EXPAND_DATA_SCOPE'
+            )
+            expiresAt = [DateTimeOffset]::UtcNow.AddMinutes($AutopilotMaxTotalDurationMinutes).ToString('o')
+        }
+    }
     $result = Invoke-GatewayJson `
         -Method 'POST' `
         -Path "/api/agent/sessions/$sessionId/runs/$runId/confirm-and-execute" `
         -AccessToken $AccessToken `
-        -Body @{
-            confirmed = $true
-            comment = '六专业 Agent 本地 E2E：用户显式确认 Success 场景同步生命周期计划。'
-        } `
+        -Body $confirmationBody `
         -Operation 'Agent Run 显式确认'
     Add-Check -Name 'Agent Run 显式确认' -Status 'PASS' -Detail "已批准来源=$($Reference.Source) 的同步生命周期 Run；运行标识与服务端内容均未回显。"
     return $result
+}
+
+function Test-SafeAutopilotPublicIdentifier {
+    <#
+    .SYNOPSIS
+        判断一个公开 Autopilot 标识是否是短、稳定且可低敏显示的定位符。
+
+    .DESCRIPTION
+        policy、session、run 和 evidence reference 都是不同公开 API 返回的定位字段。E2E 不输出其完整值，
+        但需要拒绝空白、大段文本或异常对象，避免把意外响应正文当成授权或事实证据。这里不承担授权判断，
+        授权仍由确认接口和服务端持久化快照负责。
+    #>
+    param([AllowNull()][object]$Value)
+
+    $text = if ($null -eq $Value) { '' } else { ([string]$Value).Trim() }
+    return $text -match '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'
+}
+
+function Get-StrictAutopilotSnapshotInteger {
+    <#
+    .SYNOPSIS
+        从确认响应的公开授权盒读取一个有边界的整数。
+
+    .DESCRIPTION
+        PowerShell 会把空值和若干非数值类型隐式转换为 0。对于首次授权的循环数和总时长，这种宽松转换会把
+        损坏响应误判为有效的低风险限制。因此本函数只接受十进制正整数，并由调用方传入 DTO/策略定义允许的
+        最小和最大值。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][int]$Minimum,
+        [Parameter(Mandatory = $true)][int]$Maximum
+    )
+
+    $raw = Get-FieldValue -Object $Snapshot -Names $Names
+    $text = if ($null -eq $raw) { '' } else { ([string]$raw).Trim() }
+    if ($text -notmatch '^[1-9][0-9]{0,3}$') {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail "$Label 缺失或不是受限正整数。"
+    }
+    $value = [int]$text
+    if ($value -lt $Minimum -or $value -gt $Maximum) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail "$Label=$value 超出公开授权合同范围 $Minimum..$Maximum。"
+    }
+    return $value
+}
+
+function Assert-ConfirmedAutopilotSnapshot {
+    <#
+    .SYNOPSIS
+        仅从首次 confirm-and-execute 响应验证 AUTOPILOT 授权盒。
+
+    .DESCRIPTION
+        AgentRunConfirmedExecutionResponse.autopilotSnapshot 是浏览器和 E2E 能看到的唯一公开授权证据。它绑定
+        本次确认的根 session/run、循环和总时长预算、低风险上限以及两个当前可兑现的自动动作。后续
+        autopilot-recovery GET 故意不重复公开这些授权字段；因此这里在确认成功后立即验证，并把已验证快照
+        传给后续恢复轮询作边界比对，而不是从恢复状态 API 猜测或重建授权。
+
+        此函数只读取 DTO 已公开的低敏字段。它不读取持久化 authorization JSON、策略摘要、委托、工具参数、
+        prompt 或任何内部回执，也不发送新的授权或恢复请求。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Confirmation,
+        [Parameter(Mandatory = $true)][object]$Reference
+    )
+
+    $snapshot = Get-FieldValue -Object $Confirmation -Names @('autopilotSnapshot', 'autopilot_snapshot')
+    if ($null -eq $snapshot) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '首次确认已请求 AUTOPILOT，但 confirm-and-execute 响应没有返回 autopilotSnapshot。'
+    }
+
+    $policyId = Get-FieldValue -Object $snapshot -Names @('policyId', 'policy_id')
+    $policyVersion = Get-FieldValue -Object $snapshot -Names @('policyVersion', 'policy_version')
+    if (-not (Test-SafeAutopilotPublicIdentifier $policyId) -or
+        -not (Test-SafeAutopilotPublicIdentifier $policyVersion)) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '确认响应中的 policyId 或 policyVersion 缺失，无法证明服务端已建立可审计授权盒。'
+    }
+
+    $executionMode = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $snapshot -Names @('executionMode', 'execution_mode')
+    ) -Fallback 'UNKNOWN'
+    $state = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $snapshot -Names @('state')
+    ) -Fallback 'UNKNOWN'
+    if ($executionMode -ne 'AUTOPILOT' -or $state -ne 'ACTIVE') {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail "确认响应中的 executionMode/state 不可用于无人值守低风险恢复：mode=$executionMode、state=$state。"
+    }
+
+    $rootSessionId = [string](Get-FieldValue -Object $snapshot -Names @('rootSessionId', 'root_session_id'))
+    $rootRunId = [string](Get-FieldValue -Object $snapshot -Names @('rootRunId', 'root_run_id'))
+    if (-not (Test-SafeAutopilotPublicIdentifier $rootSessionId) -or
+        -not (Test-SafeAutopilotPublicIdentifier $rootRunId) -or
+        $rootSessionId.Trim() -cne ([string]$Reference.SessionId).Trim() -or
+        $rootRunId.Trim() -cne ([string]$Reference.RunId).Trim()) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail 'autopilotSnapshot 的根 session/run 与本次显式确认的生命周期 Run 不一致。'
+    }
+
+    $maxCycles = Get-StrictAutopilotSnapshotInteger `
+        -Snapshot $snapshot `
+        -Names @('maxRecoveryCycles', 'max_recovery_cycles') `
+        -Label 'maxRecoveryCycles' `
+        -Minimum 1 `
+        -Maximum 10
+    $maxDurationMinutes = Get-StrictAutopilotSnapshotInteger `
+        -Snapshot $snapshot `
+        -Names @('maxTotalDurationMinutes', 'max_total_duration_minutes') `
+        -Label 'maxTotalDurationMinutes' `
+        -Minimum 5 `
+        -Maximum 1440
+    if ($maxCycles -ne $AutopilotMaxRecoveryCycles -or $maxDurationMinutes -ne $AutopilotMaxTotalDurationMinutes) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail "服务端返回的循环/时长预算与本次确认不一致：cycles=$maxCycles、minutes=$maxDurationMinutes。"
+    }
+
+    $riskLevel = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $snapshot -Names @('maxAutomaticRiskLevel', 'max_automatic_risk_level')
+    ) -Fallback 'UNKNOWN'
+    if ($riskLevel -ne 'LOW') {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail "公开授权盒的自动风险上限不是 LOW：risk=$riskLevel。"
+    }
+
+    $allowedActions = [System.Collections.Generic.List[string]]::new()
+    foreach ($rawAction in (Get-Items (Get-FieldValue -Object $snapshot -Names @('allowedRecoveryActions', 'allowed_recovery_actions')))) {
+        $action = Get-SafeStatusToken -Text $rawAction -Fallback 'UNKNOWN'
+        if ($action -eq 'UNKNOWN') {
+            Stop-E2E -Name 'Autopilot 首次授权盒' -Detail 'allowedRecoveryActions 包含缺失或非公开代码。'
+        }
+        $allowedActions.Add($action) | Out-Null
+    }
+    if ($allowedActions.Count -ne 2 -or -not $allowedActions.Contains('RETRY_EXECUTION') -or
+        -not $allowedActions.Contains('APPLY_QUARANTINE')) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '公开授权盒没有严格保留当前服务端可兑现的 RETRY_EXECUTION/APPLY_QUARANTINE 白名单。'
+    }
+
+    $approvalActions = [System.Collections.Generic.List[string]]::new()
+    foreach ($rawAction in (Get-Items (Get-FieldValue -Object $snapshot -Names @('requireApprovalFor', 'require_approval_for')))) {
+        $action = Get-SafeStatusToken -Text $rawAction -Fallback 'UNKNOWN'
+        if ($action -eq 'UNKNOWN') {
+            Stop-E2E -Name 'Autopilot 首次授权盒' -Detail 'requireApprovalFor 包含缺失或非公开代码。'
+        }
+        $approvalActions.Add($action) | Out-Null
+    }
+    $requiredApprovalActions = @('CHANGE_SCHEMA', 'CHANGE_CREDENTIAL', 'DELETE_DATA', 'OVERWRITE_TARGET', 'EXPAND_DATA_SCOPE')
+    if ($approvalActions.Count -ne $requiredApprovalActions.Count -or
+        @($requiredApprovalActions | Where-Object { -not $approvalActions.Contains($_) }).Count -gt 0) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '公开授权盒没有完整保留本次确认要求人工审批的高风险动作集合。'
+    }
+
+    $issuedAtText = [string](Get-FieldValue -Object $snapshot -Names @('issuedAt', 'issued_at'))
+    $expiresAtText = [string](Get-FieldValue -Object $snapshot -Names @('expiresAt', 'expires_at'))
+    [DateTimeOffset]$issuedAt = [DateTimeOffset]::MinValue
+    [DateTimeOffset]$expiresAt = [DateTimeOffset]::MinValue
+    if ([string]::IsNullOrWhiteSpace($issuedAtText) -or [string]::IsNullOrWhiteSpace($expiresAtText) -or
+        -not [DateTimeOffset]::TryParse($issuedAtText, [ref]$issuedAt) -or
+        -not [DateTimeOffset]::TryParse($expiresAtText, [ref]$expiresAt) -or
+        $expiresAt -le $issuedAt -or $expiresAt -le [DateTimeOffset]::UtcNow) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '公开授权盒的 issuedAt/expiresAt 缺失、无效或已经失效。'
+    }
+
+    Add-Check -Name 'Autopilot 首次授权盒' -Status 'PASS' -Detail "确认响应已绑定根 Run，并固定 LOW 风险、$maxCycles 轮和 $maxDurationMinutes 分钟的恢复边界。"
+    return [pscustomobject]@{
+        PolicyId = ([string]$policyId).Trim()
+        PolicyVersion = ([string]$policyVersion).Trim()
+        RootSessionId = $rootSessionId.Trim()
+        RootRunId = $rootRunId.Trim()
+        MaxRecoveryCycles = $maxCycles
+        MaxTotalDurationMinutes = $maxDurationMinutes
+        AllowedRecoveryActions = @($allowedActions)
+        RequireApprovalFor = @($approvalActions)
+        ExpiresAt = $expiresAt
+    }
 }
 
 function Get-TrustedPositiveField {
@@ -1385,58 +1601,133 @@ function Get-PageRecords {
     return @(Get-Items $Value)
 }
 
-function Wait-SyncExecutionResult {
+function Get-SyncExecutionById {
     <#
     .SYNOPSIS
-        等待本次真实 data-sync execution 到达终态，并核对计数、对象账本和运行日志。
+        从公开 execution 历史定位一个由 Java 确认回执给出的执行。
 
     .DESCRIPTION
-        Agent 的创建任务目标在“任务已创建并提交执行”时已经完成，但六 Agent E2E 还需要更强证据证明 worker
-        真正消费了 execution。这里通过 Gateway 以当前用户身份轮询，不直连业务数据库、不调用内部 worker API；
-        最终要求 execution=SUCCEEDED、失败数为 0、读写计数合理、所有对象成功且至少存在一条运行日志。
+        data-sync 没有单 execution 明细 GET 时，任务级执行历史就是浏览器和 E2E 共同使用的公开查询合同。此
+        helper 只按确认回执或 recovery view 已给出的正整数 ID 过滤分页结果，不扫描日志正文、不访问数据库，
+        也不会把未授权 execution 误当成本次 worker 的状态。
     #>
     param(
         [Parameter(Mandatory = $true)][string]$AccessToken,
         [Parameter(Mandatory = $true)][long]$TaskId,
-        [Parameter(Mandatory = $true)][long]$ExecutionId
+        [Parameter(Mandatory = $true)][long]$ExecutionId,
+        [string]$Operation = '查询同步 execution'
     )
 
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($ExecutionTimeoutSeconds)
-    $terminalStates = @('SUCCEEDED', 'FAILED', 'PARTIAL_SUCCESS', 'CANCELLED')
-    $execution = $null
-    do {
-        $page = Invoke-GatewayJson `
-            -Method 'GET' `
-            -Path "/api/sync/sync-tasks/$TaskId/executions?current=1&size=100" `
-            -AccessToken $AccessToken `
-            -Body $null `
-            -Operation '查询同步 execution'
-        $execution = Get-PageRecords $page | Where-Object {
+    $page = Invoke-GatewayJson `
+        -Method 'GET' `
+        -Path "/api/sync/sync-tasks/$TaskId/executions?current=1&size=100" `
+        -AccessToken $AccessToken `
+        -Body $null `
+        -Operation $Operation
+    return (Get-PageRecords $page | Where-Object {
             [string](Get-FieldValue -Object $_ -Names @('id', 'executionId')) -eq [string]$ExecutionId
-        } | Select-Object -First 1
+        } | Select-Object -First 1)
+}
+
+function Wait-SyncExecutionTerminal {
+    <#
+    .SYNOPSIS
+        等待一个公开 execution 到达终态，但不预先把 FAILED 当作 E2E 失败。
+
+    .DESCRIPTION
+        普通 Success 验收会在下一步要求 SUCCEEDED；启用 AUTOPILOT 时则必须先允许首次 execution 以 FAILED
+        或 PARTIALLY_SUCCEEDED 停止，才能由服务端触发受治理恢复。将“等待终态”和“断言成功”拆开可避免
+        脚本在恢复尚未启动时过早失败，同时仍只依赖公开 execution API。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AccessToken,
+        [Parameter(Mandatory = $true)][long]$TaskId,
+        [Parameter(Mandatory = $true)][long]$ExecutionId,
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = $ExecutionTimeoutSeconds,
+        [string]$Operation = '等待同步 execution 终态'
+    )
+
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    $terminalStates = @('SUCCEEDED', 'FAILED', 'PARTIALLY_SUCCEEDED', 'CANCELLED', 'MANUALLY_TERMINATED', 'SKIPPED')
+    $execution = $null
+    $state = 'NOT_VISIBLE_YET'
+    do {
+        $execution = Get-SyncExecutionById `
+            -AccessToken $AccessToken `
+            -TaskId $TaskId `
+            -ExecutionId $ExecutionId `
+            -Operation '查询同步 execution'
         $state = if ($null -eq $execution) {
             'NOT_VISIBLE_YET'
         } else {
             Get-SafeStatusToken -Text (Get-FieldValue -Object $execution -Names @('executionState', 'state')) -Fallback 'UNKNOWN'
         }
-        if ($terminalStates -contains $state) { break }
+        if ($terminalStates -contains $state) {
+            return [pscustomobject]@{ Execution = $execution; State = $state; ExecutionId = $ExecutionId }
+        }
         Start-Sleep -Seconds 2
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
     if ($null -eq $execution) {
-        Stop-E2E -Name '真实同步执行' -Detail '确认接口返回了 executionId，但在超时前始终无法从任务执行历史查询到它。'
+        Stop-E2E -Name $Operation -Detail '确认接口返回了 executionId，但在超时前始终无法从任务执行历史查询到它。'
     }
-    $state = Get-SafeStatusToken -Text (Get-FieldValue -Object $execution -Names @('executionState', 'state')) -Fallback 'UNKNOWN'
+    Stop-E2E -Name $Operation -Detail "execution 在超时前没有进入公开终态；最后状态=$state。"
+}
+
+function Get-SyncExecutionObjectLedger {
+    <#
+    .SYNOPSIS
+        查询一个 execution 的公开对象级账本。
+
+    .DESCRIPTION
+        failed-object retry 会把失败对象重置为 PENDING，并使父 execution 重回 QUEUED。这个列表是验证该控制面
+        事实和后续 worker 终态的公开依据；它不要求也不会读取 recovery GET 中不存在的 failedObjectRetry
+        嵌套对象。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AccessToken,
+        [Parameter(Mandatory = $true)][long]$TaskId,
+        [Parameter(Mandatory = $true)][long]$ExecutionId,
+        [string]$Operation = '查询同步对象账本'
+    )
+
+    $objectsPage = Invoke-GatewayJson `
+        -Method 'GET' `
+        -Path "/api/sync/sync-tasks/$TaskId/executions/$ExecutionId/objects?current=1&size=100" `
+        -AccessToken $AccessToken `
+        -Body $null `
+        -Operation $Operation
+    return @(Get-PageRecords $objectsPage)
+}
+
+function Assert-SyncExecutionSucceeded {
+    <#
+    .SYNOPSIS
+        用 execution、对象账本和日志三个公开 API 证明 worker 已成功完成。
+
+    .DESCRIPTION
+        recovery status 的 executionState/executionFinishedAt 只是 current execution 的低敏投影，不能替代
+        此处的 worker 事实。该函数因此重新通过普通 execution 和 object execution API 查询 currentExecutionId，
+        再检查账本和运行日志；无论首次执行直接成功，还是失败对象被 Autopilot 重新排队后成功，证据口径一致。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AccessToken,
+        [Parameter(Mandatory = $true)][long]$TaskId,
+        [Parameter(Mandatory = $true)][long]$ExecutionId,
+        [Parameter(Mandatory = $true)][object]$Execution
+    )
+
+    $state = Get-SafeStatusToken -Text (Get-FieldValue -Object $Execution -Names @('executionState', 'state')) -Fallback 'UNKNOWN'
     if ($state -ne 'SUCCEEDED') {
         $errorMessage = Get-LowSensitiveMessage `
-            -Text (Get-FieldValue -Object $execution -Names @('errorMessage', 'failureReason')) `
+            -Text (Get-FieldValue -Object $Execution -Names @('errorMessage', 'failureReason')) `
             -Fallback '执行未成功；请在任务运行详情查看失败阶段、日志和 Agent 恢复入口。'
         Stop-E2E -Name '真实同步执行' -Detail "execution 状态=$state；$errorMessage"
     }
 
-    $recordsRead = [long](Get-FieldValue -Object $execution -Names @('recordsRead'))
-    $recordsWritten = [long](Get-FieldValue -Object $execution -Names @('recordsWritten'))
-    $failedRecords = [long](Get-FieldValue -Object $execution -Names @('failedRecordCount'))
+    $recordsRead = [long](Get-FieldValue -Object $Execution -Names @('recordsRead'))
+    $recordsWritten = [long](Get-FieldValue -Object $Execution -Names @('recordsWritten'))
+    $failedRecords = [long](Get-FieldValue -Object $Execution -Names @('failedRecordCount'))
     if ($failedRecords -ne 0 -or $recordsRead -le 0 -or $recordsWritten -le 0) {
         Stop-E2E -Name '同步记录计数' -Detail "execution 已成功但计数不合理：read=$recordsRead、written=$recordsWritten、failed=$failedRecords。"
     }
@@ -1446,13 +1737,7 @@ function Wait-SyncExecutionResult {
     Add-Check -Name '真实同步执行' -Status 'PASS' -Detail 'worker 已把本次 execution 推进到 SUCCEEDED。'
     Add-Check -Name '同步记录计数' -Status 'PASS' -Detail "read=$recordsRead、written=$recordsWritten、failed=$failedRecords。"
 
-    $objectsPage = Invoke-GatewayJson `
-        -Method 'GET' `
-        -Path "/api/sync/sync-tasks/$TaskId/executions/$ExecutionId/objects?current=1&size=100" `
-        -AccessToken $AccessToken `
-        -Body $null `
-        -Operation '查询同步对象账本'
-    $objects = @(Get-PageRecords $objectsPage)
+    $objects = @(Get-SyncExecutionObjectLedger -AccessToken $AccessToken -TaskId $TaskId -ExecutionId $ExecutionId)
     if ($objects.Count -le 0) {
         Stop-E2E -Name '同步对象账本' -Detail 'execution 已成功但没有对象级账本，无法证明每条源表到目标表映射的执行结果。'
     }
@@ -1460,8 +1745,8 @@ function Wait-SyncExecutionResult {
         Stop-E2E -Name '同步对象账本' -Detail "期望对象数=$ExpectedObjectCount，实际对象数=$($objects.Count)。"
     }
     $failedObjects = @($objects | Where-Object {
-        (Get-SafeStatusToken -Text (Get-FieldValue -Object $_ -Names @('objectState', 'state')) -Fallback 'UNKNOWN') -ne 'SUCCEEDED'
-    })
+            (Get-SafeStatusToken -Text (Get-FieldValue -Object $_ -Names @('objectState', 'state')) -Fallback 'UNKNOWN') -ne 'SUCCEEDED'
+        })
     if ($failedObjects.Count -gt 0) {
         Stop-E2E -Name '同步对象账本' -Detail "存在 $($failedObjects.Count) 个对象未成功；请在任务详情按对象查看日志。"
     }
@@ -1479,6 +1764,7 @@ function Wait-SyncExecutionResult {
     }
     Add-Check -Name '同步运行日志' -Status 'PASS' -Detail "已查询到 $($logs.Count) 条持久化阶段日志，正文未输出。"
     return [pscustomobject]@{
+        ExecutionId = $ExecutionId
         State = $state
         RecordsRead = $recordsRead
         RecordsWritten = $recordsWritten
@@ -1486,6 +1772,647 @@ function Wait-SyncExecutionResult {
         ObjectCount = $objects.Count
         LogCount = $logs.Count
     }
+}
+
+function Wait-SyncExecutionResult {
+    <#
+    .SYNOPSIS
+        等待本次真实 data-sync execution 成功并验证其公开 worker 证据。
+
+    .DESCRIPTION
+        这是普通 Success 场景与 Autopilot 恢复后共同复用的成功断言。启用 Autopilot 的调用方可以先使用
+        Wait-SyncExecutionTerminal 观察首次失败，再只在 recovery case=RECOVERED 时回到本函数验收最终 worker。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AccessToken,
+        [Parameter(Mandatory = $true)][long]$TaskId,
+        [Parameter(Mandatory = $true)][long]$ExecutionId
+    )
+
+    $terminal = Wait-SyncExecutionTerminal -AccessToken $AccessToken -TaskId $TaskId -ExecutionId $ExecutionId
+    return (Assert-SyncExecutionSucceeded `
+            -AccessToken $AccessToken `
+            -TaskId $TaskId `
+            -ExecutionId $ExecutionId `
+            -Execution $terminal.Execution)
+}
+
+function Get-AutopilotRecoverySnapshot {
+    <#
+    .SYNOPSIS
+        读取一个真实同步 execution 的公开 Autopilot recovery 快照。
+
+    .DESCRIPTION
+        该函数是 Autopilot E2E 的唯一恢复状态数据源。它只经由 Gateway 调用
+        GET /api/sync/sync-tasks/{taskId}/executions/{executionId}/autopilot-recovery，因而 data-sync
+        会按当前 project-owner 的 JWT、项目范围和 execution 归属重新授权。函数不访问 Kafka、数据库、
+        Prometheus、Docker 或内部 controller，也不会把 JSON 正文输出到终端。
+
+        返回值只用于后续白名单字段断言。HTTP 404、授权拒绝、空响应或非 JSON 已由 Invoke-GatewayJson
+        统一收敛为失败，不能被解释为“Autopilot 尚未运行”。这样不会把部署遗漏、路由缺失或权限问题误报为
+        正常的异步等待。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AccessToken,
+        [Parameter(Mandatory = $true)][long]$TaskId,
+        [Parameter(Mandatory = $true)][long]$ExecutionId
+    )
+
+    return (Invoke-GatewayJson `
+        -Method 'GET' `
+        -Path "/api/sync/sync-tasks/$TaskId/executions/$ExecutionId/autopilot-recovery" `
+        -AccessToken $AccessToken `
+        -Body $null `
+        -Operation '查询 Autopilot recovery 快照')
+}
+
+function Get-AutopilotRecoverySnapshotSection {
+    <#
+    .SYNOPSIS
+        从公开快照读取一个受命名约束的低敏 section。
+
+    .DESCRIPTION
+        不同服务版本可能把快照根对象包装为 autopilotRecovery、recovery 或 data。本函数只接受调用方列出的
+        section 名称，并拒绝空对象，避免递归搜寻时意外消费模型原文、工具参数或任意诊断正文。对于关键 section
+        缺失，调用者必须明确失败，不能以空值推断某一步已完成。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    $root = Get-FieldValue -Object $Snapshot -Names @('autopilotRecovery', 'autopilot_recovery', 'recovery')
+    if ($null -eq $root) {
+        $root = $Snapshot
+    }
+    return (Get-FieldValue -Object $root -Names $Names)
+}
+
+function Get-AutopilotRecoveryStatus {
+    <#
+    .SYNOPSIS
+        读取并规范化公开快照中的 case 状态。
+
+    .DESCRIPTION
+        状态只接受有限的控制面枚举。AUTO_APPROVED 只是策略决策，RECOVERY_STARTED 只是已交给受治理
+        worker，二者都不能作为恢复成功。此函数故意不把未知字符串当成“处理中”，使 API 合同漂移在 E2E
+        中立即可见。
+    #>
+    param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    # SyncAutopilotRecoveryStatusView is a flat public view. Do not invent a nested recovery-case object from
+    # source knowledge or an internal DTO: the E2E must consume precisely the Gateway response contract.
+    return (Get-SafeStatusToken -Text (
+            Get-FieldValue -Object $Snapshot -Names @('caseState')
+        ) -Fallback 'UNKNOWN')
+}
+
+function Get-AutopilotRecoveryCase {
+    <#
+    .SYNOPSIS
+        获取公开快照中的持久化 recovery case 摘要。
+
+    .DESCRIPTION
+        case 是正常恢复循环、授权和成功终态断言的锚点。若接口仍未创建 case，函数返回空；轮询器可以在有限
+        等待内重试。例外是 consumerResultStatus=ATTENTION_REQUIRED：服务端可在创建 case 前持久化一个有界
+        停止事实，因此该状态不应被误判为“等待中”或要求虚构 case。
+    #>
+    param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    # The public view exposes caseId plus its scalar state/cycle fields at the root. Returning the root preserves
+    # the existing bounded numeric helper without pretending the API returned an unexposed nested receipt.
+    $caseId = Get-FieldValue -Object $Snapshot -Names @('caseId')
+    if ($null -eq $caseId -or [string]::IsNullOrWhiteSpace(([string]$caseId).Trim())) {
+        return $null
+    }
+    return $Snapshot
+}
+
+function Get-AutopilotAttentionRequiredStatus {
+    <#
+    .SYNOPSIS
+        从扁平公开状态投影识别 Autopilot 的有界停止结果。
+
+    .DESCRIPTION
+        ATTENTION_REQUIRED 可以来自持久化 recovery case，也可以来自尚未创建 case 的 consumer callback。二者
+        都代表服务端已经停止自动路径，而不是 worker 成功。此 helper 只读取 caseState、consumerResultStatus
+        与有限的 cycle/maxCycles 字段，不读取原因正文、内部回执或模型输出。
+    #>
+    param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    $caseState = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('caseState')
+    ) -Fallback 'UNKNOWN'
+    $consumerStatus = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('consumerResultStatus')
+    ) -Fallback 'UNKNOWN'
+    return ($caseState -eq 'ATTENTION_REQUIRED' -or $consumerStatus -eq 'ATTENTION_REQUIRED')
+}
+
+function Get-AutopilotRecoveryCycleValue {
+    <#
+    .SYNOPSIS
+        从 recovery case 中读取一个受限的非负循环计数。
+
+    .DESCRIPTION
+        maxCycles 是首次显式确认时的授权边界；当前 cycle 必须是整数且不能超过该边界。函数不允许空值、
+        小数、负数或模型文本进入循环判断，避免因 PowerShell 的静默数值转换把无效响应误判为第 0 轮。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Case,
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $raw = Get-FieldValue -Object $Case -Names $Names
+    $text = if ($null -eq $raw) { '' } else { ([string]$raw).Trim() }
+    if ($text -notmatch '^[0-9]{1,2}$') {
+        Stop-E2E -Name 'Autopilot recovery 循环合同' -Detail "$Label 缺失或不是受限非负整数。"
+    }
+    return [int]$text
+}
+
+function Get-AutopilotRecoveryItems {
+    <#
+    .SYNOPSIS
+        读取公开快照的一个低敏列表 section。
+
+    .DESCRIPTION
+        该 helper 只展开固定字段名对应的数组，并统一单项/数组的 PowerShell 表示。它不对 snapshot 做递归
+        扫描，因此不会因为服务端新增任何大字段而把原始日志、模型输出、SQL 或样本数据带进 E2E 断言。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    return @(Get-Items (Get-AutopilotRecoverySnapshotSection -Snapshot $Snapshot -Names $Names))
+}
+
+function Test-AutopilotReceiptIdentifier {
+    <#
+    .SYNOPSIS
+        判断公开回执是否携带稳定的非敏感标识。
+
+    .DESCRIPTION
+        E2E 不显示 receipt ID、digest 或 action fingerprint，但必须确认它们存在，才能证明观测到的是一次
+        可审计的服务端回执而非模型建议。允许大小写字母、数字、冒号、横线、下划线和点，长度上限防止异常
+        响应把大段正文伪装成 ID。
+    #>
+    param([AllowNull()][object]$Value)
+
+    $text = if ($null -eq $Value) { '' } else { ([string]$Value).Trim() }
+    # Receipt IDs can be UUIDs, numeric database IDs, or digest-prefixed tokens. Their field name already comes
+    # from an explicit public contract allowlist, so accepting a short numeric ID is safer than rejecting a valid
+    # receipt merely because a deployment uses compact identifiers.
+    return $text -match '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'
+}
+
+function Assert-AutopilotAuthorizationSnapshot {
+    <#
+    .SYNOPSIS
+        验证公开快照可观察的首次授权边界。
+
+    .DESCRIPTION
+        recovery status 只公开 riskLevel、cycle 和 maxCycles，不重复公开 policy ID、receipt 或 action allowlist。
+        首次 confirm-and-execute 已验证过授权盒；这里把状态中的循环和风险字段与该已验证快照逐轮比对，防止
+        后续投影把恢复带出第一次确认的边界。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][object]$AuthorizationSnapshot
+    )
+
+    $maxCyclesRaw = Get-FieldValue -Object $Snapshot -Names @('maxCycles')
+    $maxCyclesText = if ($null -eq $maxCyclesRaw) { '' } else { ([string]$maxCyclesRaw).Trim() }
+    $riskLevel = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('riskLevel')
+    ) -Fallback 'UNKNOWN'
+    if ($maxCyclesText -notmatch '^[1-9][0-9]?$') {
+        Stop-E2E -Name 'Autopilot 授权边界' -Detail "公开 recovery 快照缺少受限 maxCycles：maxCycles=$maxCyclesText。"
+    }
+    $snapshotMaxCycles = [int]$maxCyclesText
+    if ($snapshotMaxCycles -ne [int]$AuthorizationSnapshot.MaxRecoveryCycles -or
+        $snapshotMaxCycles -gt $AutopilotMaxRecoveryCycles -or $snapshotMaxCycles -gt 10 -or
+        $riskLevel -ne 'LOW') {
+        Stop-E2E -Name 'Autopilot 授权边界' -Detail "公开 recovery 快照未保持首次低风险授权范围：maxCycles=$snapshotMaxCycles、risk=$riskLevel。"
+    }
+    Add-Check -Name 'Autopilot 授权边界' -Status 'PASS' -Detail "公开快照保持低风险边界（maxCycles=$snapshotMaxCycles，risk=$riskLevel）。"
+    return $snapshotMaxCycles
+}
+
+function Get-AutopilotCurrentExecutionId {
+    <#
+    .SYNOPSIS
+        从扁平 Autopilot 公开状态读取当前 execution 标识。
+
+    .DESCRIPTION
+        recovery URL 始终以 root execution 定位，但 failed-object retry 或未来 replay 可以推进
+        currentExecutionId。RECOVERED 后必须用这个值重新查询普通 execution、对象账本和日志，不能把 root
+        URL 的投影误当作最终 worker 证据。
+    #>
+    param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    $value = Get-FieldValue -Object $Snapshot -Names @('currentExecutionId')
+    if (-not (Test-PositiveIdentifier $value)) {
+        Stop-E2E -Name 'Autopilot current execution' -Detail '公开 recovery 状态缺少可信 currentExecutionId，无法验证恢复后的普通 worker 事实。'
+    }
+    return [long]$value
+}
+
+function Test-AutopilotRecoveryEligibleInitialState {
+    <#
+    .SYNOPSIS
+        判断首次同步终态是否能进入已授权的自治恢复路径。
+
+    .DESCRIPTION
+        当前 data-sync 只为 FAILED 和 PARTIALLY_SUCCEEDED 的真实失败建立 Autopilot 触发。SUCCEEDED 必须直接
+        按普通成功路径验收；取消、手工终止和跳过不能被脚本伪装为可自动恢复的失败。
+    #>
+    param([Parameter(Mandatory = $true)][string]$State)
+
+    return $State -in @('FAILED', 'PARTIALLY_SUCCEEDED')
+}
+
+function Assert-AutopilotModelEvidence {
+    <#
+    .SYNOPSIS
+        断言真实 Autopilot 快照中的模型 SEARCH/SKIP 决策及条件化 RAG 证据。
+
+    .DESCRIPTION
+        SyncAutopilotRecoveryStatusView 公开四个扁平 retrieval 字段，而不是嵌套内部证据对象。SEARCH 必须
+        有正数 evidenceCount 和 sha256: 摘要；SKIP 必须显式报告零 count 且 digest 为空。这样 E2E 能验证同一
+        recovery 的条件化检索语义，同时不读取 RAG 文本、引用正文或内部审计结构。
+    #>
+    param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    $decision = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('retrievalDecision')
+    ) -Fallback 'UNKNOWN'
+    $strategy = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('retrievalStrategy')
+    ) -Fallback 'UNKNOWN'
+    $countRaw = Get-FieldValue -Object $Snapshot -Names @('retrievalEvidenceCount')
+    $countText = if ($null -eq $countRaw) { '' } else { ([string]$countRaw).Trim() }
+    $digest = [string](Get-FieldValue -Object $Snapshot -Names @('retrievalEvidenceDigest'))
+    $digest = $digest.Trim()
+    if ($strategy -eq 'UNKNOWN' -or $countText -notmatch '^[0-9]{1,4}$') {
+        Stop-E2E -Name 'Autopilot 模型决策' -Detail '公开 recovery 状态缺少合法 retrievalStrategy 或 retrievalEvidenceCount。'
+    }
+    $count = [int]$countText
+    if ($decision -eq 'SEARCH') {
+        if ($count -le 0 -or $digest -notmatch '^sha256:') {
+            Stop-E2E -Name 'Autopilot 模型决策' -Detail '模型选择 SEARCH，但扁平公开状态没有正数 retrievalEvidenceCount 或 sha256: retrievalEvidenceDigest。'
+        }
+        Add-Check -Name 'Autopilot 模型决策' -Status 'PASS' -Detail "模型在真实恢复循环中选择 $strategy 检索，并公开 $count 条摘要化证据。"
+    } elseif ($decision -eq 'SKIP') {
+        if ($count -ne 0 -or -not [string]::IsNullOrWhiteSpace($digest)) {
+            Stop-E2E -Name 'Autopilot 模型决策' -Detail '模型选择 SKIP，但扁平公开状态没有保持 retrievalEvidenceCount=0 且 retrievalEvidenceDigest 为空。'
+        }
+        Add-Check -Name 'Autopilot 模型决策' -Status 'PASS' -Detail "模型在真实诊断证据充分时选择 $strategy 跳过检索，未机械要求 RAG。"
+    } else {
+        Stop-E2E -Name 'Autopilot 模型/RAG 运行证据' -Detail '公开 autopilot-recovery GET 的 retrievalDecision 不是 SEARCH 或 SKIP，无法证明条件化检索语义。'
+    }
+    return $decision
+}
+
+function Assert-AutopilotPreviewAndQuarantineReceipts {
+    <#
+    .SYNOPSIS
+        验证公开视图中的可选 quarantine 应用结果。
+
+    .DESCRIPTION
+        当 recoveryAction=APPLY_QUARANTINE 时，SyncAutopilotRecoveryStatusView 必须报告 operation=APPLIED、
+        receipt=COMPLETED 以及正数 selected/affected count。该公开视图不含 preview 或 authorization receipt，
+        因而终态调用者会将缺少 preview/authorization linkage 作为不可证明的 E2E 缺口，而不是把它假定为
+        已发生。没有选择隔离时，此函数不要求隔离副作用。
+    #>
+    param([Parameter(Mandatory = $true)][object]$Snapshot)
+
+    $recoveryAction = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('recoveryAction')
+    ) -Fallback 'UNKNOWN'
+    if ($recoveryAction -ne 'APPLY_QUARANTINE') {
+        return $false
+    }
+    $operationState = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('quarantineOperationState')
+    ) -Fallback 'UNKNOWN'
+    $receiptState = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('quarantineReceiptState')
+    ) -Fallback 'UNKNOWN'
+    $selectedRaw = Get-FieldValue -Object $Snapshot -Names @('quarantineSelectedCount')
+    $selectedText = if ($null -eq $selectedRaw) { '' } else { ([string]$selectedRaw).Trim() }
+    $affectedRaw = Get-FieldValue -Object $Snapshot -Names @('quarantineAffectedCount')
+    $affectedText = if ($null -eq $affectedRaw) { '' } else { ([string]$affectedRaw).Trim() }
+    if ($operationState -ne 'APPLIED' -or $receiptState -ne 'COMPLETED' -or
+        $selectedText -notmatch '^[1-9][0-9]*$' -or $affectedText -notmatch '^[1-9][0-9]*$') {
+        Stop-E2E -Name 'Autopilot quarantine 回执' -Detail "公开 quarantine 状态不完整：operation=$operationState、receipt=$receiptState、selected=$selectedText、affected=$affectedText。"
+    }
+    Add-Check -Name 'Autopilot quarantine 回执' -Status 'PASS' -Detail "公开视图证明可选 quarantine 已应用（selected=$selectedText，affected=$affectedText）。"
+    return $true
+}
+
+function Assert-AutopilotFailedObjectRetry {
+    <#
+    .SYNOPSIS
+        验证失败对象重试已由服务端排队并交给 worker。
+
+    .DESCRIPTION
+        一条 AUTO_APPROVED 决策、Kafka 投递标记或指标增加均不足以证明恢复已执行。公开 status view 以
+        consumerResultStatus=RECOVERY_STARTED 和 reason=AUTOPILOT_FAILED_OBJECTS_REQUEUED 表示失败对象重试
+        已进入受治理消费者路径。最终 RECOVERED 时还会由 executionState 的 worker 终态断言要求成功。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][string]$CaseState
+    )
+
+    $status = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('consumerResultStatus')
+    ) -Fallback 'UNKNOWN'
+    $reasonCode = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('consumerResultReasonCode')
+    ) -Fallback 'UNKNOWN'
+    if ($status -eq 'RECOVERY_STARTED' -and $reasonCode -eq 'AUTOPILOT_FAILED_OBJECTS_REQUEUED') {
+        Add-Check -Name 'Autopilot failed-object retry' -Status 'PASS' -Detail '公开消费者结果证明失败对象重试已排队。'
+        return $true
+    }
+    if ($CaseState -in @('RECOVERY_STARTED', 'RECOVERED')) {
+        Stop-E2E -Name 'Autopilot failed-object retry' -Detail "公开消费者结果不能证明失败对象已重试排队：status=$status、reason=$reasonCode。"
+    }
+    return $false
+}
+
+function Assert-AutopilotWorkerTerminal {
+    <#
+    .SYNOPSIS
+        验证已重试 execution 的 worker 终态与恢复 case 终态一致。
+
+    .DESCRIPTION
+        RECOVERED 不能仅由 case 状态声称。公开 status view 的 executionState=SUCCEEDED 是 worker 已完成的
+        运行事实，且只能使用 executionFinishedAt 证明完成时间。ATTENTION_REQUIRED 是有界自动停止，不要求
+        WorkerTerminal=true，调用者不得将它叙述为 worker 成功。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][string]$CaseState
+    )
+
+    $workerState = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $Snapshot -Names @('executionState')
+    ) -Fallback 'UNKNOWN'
+    if ($CaseState -eq 'RECOVERED') {
+        $executionFinishedAt = Get-FieldValue -Object $Snapshot -Names @('executionFinishedAt')
+        $executionFinishedAtText = if ($null -eq $executionFinishedAt) { '' } else { ([string]$executionFinishedAt).Trim() }
+        if ($workerState -ne 'SUCCEEDED' -or [string]::IsNullOrWhiteSpace($executionFinishedAtText)) {
+            Stop-E2E -Name 'Autopilot worker terminal' -Detail "case 已 RECOVERED，但 worker terminal=$workerState，不是成功终态。"
+        }
+        Add-Check -Name 'Autopilot worker terminal' -Status 'PASS' -Detail '公开 executionState 和 executionFinishedAt 证明恢复 worker 已成功终态。'
+        return $true
+    }
+    if ($CaseState -eq 'ATTENTION_REQUIRED') {
+        return $false
+    }
+    return $false
+}
+
+function Assert-AutopilotRecoverySnapshot {
+    <#
+    .SYNOPSIS
+        对一次公开 Autopilot recovery 快照执行所有运行时不变量检查。
+
+    .DESCRIPTION
+        该函数将授权、模型检索、可选 preview/quarantine、失败对象重试、worker 和循环状态串成同一份公开
+        快照的证据链。它不创建任务、不补造 execution、不对恢复 API 发送 POST，也不读取源代码/指标作为
+        替代证据。RECOVERED 必须含可复核 worker 事实；ATTENTION_REQUIRED 只验证有界停止，绝不虚称 worker
+        已成功。返回的摘要仅保存低敏状态和计数，供轮询器决定是否已经达到这两个可接受结果。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [AllowNull()][object]$AuthorizationSnapshot
+    )
+
+    $case = Get-AutopilotRecoveryCase -Snapshot $Snapshot
+    $caseState = Get-AutopilotRecoveryStatus -Snapshot $Snapshot
+    if ($null -eq $case) {
+        if (Get-AutopilotAttentionRequiredStatus -Snapshot $Snapshot) {
+            # A callback-only bounded stop is still a public recovery result. Validate its flat SEARCH/SKIP
+            # projection before accepting the stop so this exceptional shape cannot bypass the retrieval contract.
+            $decision = Assert-AutopilotModelEvidence -Snapshot $Snapshot
+            $cycle = Get-AutopilotRecoveryCycleValue -Case $Snapshot -Names @('cycle') -Label 'cycle'
+            $publicMaxCyclesRaw = Get-FieldValue -Object $Snapshot -Names @('maxCycles')
+            $publicMaxCyclesText = if ($null -eq $publicMaxCyclesRaw) { '' } else { ([string]$publicMaxCyclesRaw).Trim() }
+            $maxCycles = if ([string]::IsNullOrWhiteSpace($publicMaxCyclesText)) {
+                if ($null -eq $AuthorizationSnapshot) {
+                    Stop-E2E -Name 'Autopilot ATTENTION_REQUIRED 边界' -Detail '无 recovery case 的公开停止结果没有 maxCycles，且本地没有首次授权快照可验证其边界。'
+                }
+                [int]$AuthorizationSnapshot.MaxRecoveryCycles
+            } else {
+                Get-AutopilotRecoveryCycleValue -Case $Snapshot -Names @('maxCycles') -Label 'maxCycles'
+            }
+            $reasonCode = Get-SafeStatusToken -Text (
+                Get-FieldValue -Object $Snapshot -Names @('consumerResultReasonCode')
+            ) -Fallback 'UNKNOWN'
+            if ($reasonCode -eq 'UNKNOWN' -or $maxCycles -le 0 -or $maxCycles -gt $AutopilotMaxRecoveryCycles -or
+                ($null -ne $AuthorizationSnapshot -and $maxCycles -ne [int]$AuthorizationSnapshot.MaxRecoveryCycles) -or
+                $cycle -gt $maxCycles) {
+                Stop-E2E -Name 'Autopilot ATTENTION_REQUIRED 边界' -Detail "无 recovery case 的公开停止结果越过首次授权边界：cycle=$cycle、maxCycles=$maxCycles。"
+            }
+            Add-Check -Name 'Autopilot ATTENTION_REQUIRED 边界' -Status 'PASS' -Detail "公开 consumer callback 在 cycle=$cycle/$maxCycles 停止自动路径，未声称 worker 成功。"
+            return [pscustomobject]@{
+                HasCase = $false
+                State = 'ATTENTION_REQUIRED'
+                Cycle = $cycle
+                MaxCycles = $maxCycles
+                RetrievalDecision = $decision
+                QuarantineApplied = $false
+                RetryQueued = $false
+                WorkerTerminal = $false
+                IsTerminal = $true
+            }
+        }
+        return [pscustomobject]@{
+            HasCase = $false
+            State = $caseState
+            Cycle = $null
+            MaxCycles = $null
+            IsTerminal = $false
+        }
+    }
+    if ($caseState -notin @(
+            'AUTO_APPROVED',
+            'RECOVERY_STARTED',
+            'RECOVERED',
+            'ATTENTION_REQUIRED',
+            'WAITING_APPROVAL',
+            'MANUALLY_APPROVED',
+            'REJECTED',
+            'CANCELLED'
+        )) {
+        Stop-E2E -Name 'Autopilot recovery 状态' -Detail "公开快照返回未知 recovery case 状态=$caseState。"
+    }
+    $authorizedMaxCycles = if ($null -eq $AuthorizationSnapshot) {
+        $maxCyclesRaw = Get-FieldValue -Object $Snapshot -Names @('maxCycles')
+        $maxCyclesText = if ($null -eq $maxCyclesRaw) { '' } else { ([string]$maxCyclesRaw).Trim() }
+        if ($maxCyclesText -notmatch '^[1-9][0-9]?$') {
+            Stop-E2E -Name 'Autopilot 授权边界' -Detail '公开 recovery 快照缺少受限 maxCycles。'
+        }
+        [int]$maxCyclesText
+    } else {
+        Assert-AutopilotAuthorizationSnapshot -Snapshot $Snapshot -AuthorizationSnapshot $AuthorizationSnapshot
+    }
+    $cycle = Get-AutopilotRecoveryCycleValue -Case $case -Names @('cycle', 'recoveryCycle', 'recovery_cycle') -Label 'cycle'
+    $caseMaxCycles = Get-AutopilotRecoveryCycleValue -Case $case -Names @('maxCycles', 'max_cycles', 'maxRecoveryCycles', 'max_recovery_cycles') -Label 'case.maxCycles'
+    if ($caseMaxCycles -ne $authorizedMaxCycles -or $caseMaxCycles -gt $AutopilotMaxRecoveryCycles -or $cycle -gt $caseMaxCycles) {
+        Stop-E2E -Name 'Autopilot recovery 循环合同' -Detail "公开 case 循环越过首次授权边界：cycle=$cycle、caseMaxCycles=$caseMaxCycles、authorizationMaxCycles=$authorizedMaxCycles。"
+    }
+    if ($caseState -in @('REJECTED', 'CANCELLED', 'WAITING_APPROVAL', 'MANUALLY_APPROVED')) {
+        Stop-E2E -Name 'Autopilot recovery 状态' -Detail "首次 AUTOPILOT 授权后的恢复进入非自动终点=$caseState；本 E2E 只接受 RECOVERED 或有界 ATTENTION_REQUIRED。"
+    }
+
+    $decision = Assert-AutopilotModelEvidence -Snapshot $Snapshot
+    $quarantineApplied = if ($caseState -eq 'ATTENTION_REQUIRED') { $false } else { Assert-AutopilotPreviewAndQuarantineReceipts -Snapshot $Snapshot }
+    $retryQueued = if ($caseState -eq 'ATTENTION_REQUIRED') { $false } else { Assert-AutopilotFailedObjectRetry -Snapshot $Snapshot -CaseState $caseState }
+    $workerTerminal = if ($caseState -eq 'ATTENTION_REQUIRED') { $false } else { Assert-AutopilotWorkerTerminal -Snapshot $Snapshot -CaseState $caseState }
+    return [pscustomobject]@{
+        HasCase = $true
+        State = $caseState
+        Cycle = $cycle
+        MaxCycles = $caseMaxCycles
+        RetrievalDecision = $decision
+        QuarantineApplied = $quarantineApplied
+        RetryQueued = $retryQueued
+        WorkerTerminal = $workerTerminal
+        IsTerminal = ($caseState -in @('RECOVERED', 'ATTENTION_REQUIRED'))
+    }
+}
+
+function Wait-AutopilotRecoveryResult {
+    <#
+    .SYNOPSIS
+        轮询公开 recovery GET，直至真实恢复完成或安全停在 ATTENTION_REQUIRED。
+
+    .DESCRIPTION
+        首次 execution 失败不是 E2E 的最终结论。启用 AUTOPILOT 后，本函数以执行超时和首次授权的
+        maxCycles 为双边界，持续读取同一 task/execution 的公开 recovery 快照。只有看到完整运行时证据链
+        后才接受 RECOVERED；若恢复不可行，则必须在不超过 maxCycles 的前提下到达 ATTENTION_REQUIRED。
+        到期、case 未出现、状态停滞、授权越界、回执缺失或任何未知状态都失败，绝不借助源码、Docker 输出、
+        Kafka 偏移或 metrics 冒充恢复成功。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AccessToken,
+        [Parameter(Mandatory = $true)][long]$TaskId,
+        [Parameter(Mandatory = $true)][long]$ExecutionId,
+        [Parameter(Mandatory = $true)][object]$AuthorizationSnapshot
+    )
+
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($ExecutionTimeoutSeconds)
+    $lastSummary = $null
+    $seenRecoveryOutcome = $false
+    do {
+        $snapshot = Get-AutopilotRecoverySnapshot -AccessToken $AccessToken -TaskId $TaskId -ExecutionId $ExecutionId
+        $summary = Assert-AutopilotRecoverySnapshot -Snapshot $snapshot -AuthorizationSnapshot $AuthorizationSnapshot
+        $lastSummary = $summary
+        if (-not $summary.HasCase -and -not $summary.IsTerminal) {
+            Start-Sleep -Seconds 2
+            continue
+        }
+        $seenRecoveryOutcome = $true
+        if ($summary.State -eq 'RECOVERED') {
+            if (-not $summary.RetryQueued) {
+                Stop-E2E -Name 'Autopilot RECOVERED 运行证据' -Detail 'case 已 RECOVERED，但公开消费者结果不能证明 failed-object retry 已排队。'
+            }
+            $currentExecutionId = Get-AutopilotCurrentExecutionId -Snapshot $snapshot
+            Add-Check -Name 'Autopilot 最终恢复' -Status 'PASS' -Detail "真实恢复循环在 cycle=$($summary.Cycle)/$($summary.MaxCycles) 到达 RECOVERED。"
+            $summary | Add-Member -MemberType NoteProperty -Name CurrentExecutionId -Value $currentExecutionId
+            return $summary
+        }
+        if ($summary.State -eq 'ATTENTION_REQUIRED') {
+            if ($summary.Cycle -gt $summary.MaxCycles) {
+                Stop-E2E -Name 'Autopilot ATTENTION_REQUIRED 边界' -Detail "不可恢复路径没有在 maxCycles 内停止：cycle=$($summary.Cycle)、maxCycles=$($summary.MaxCycles)。"
+            }
+            Add-Check -Name 'Autopilot 最终恢复' -Status 'PASS' -Detail "不可恢复路径在 cycle=$($summary.Cycle)/$($summary.MaxCycles) 停于 ATTENTION_REQUIRED，未无限重试且未声称 worker 成功。"
+            return $summary
+        }
+        Start-Sleep -Seconds 2
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+
+    if (-not $seenRecoveryOutcome) {
+        Stop-E2E -Name 'Autopilot recovery 轮询' -Detail '初始 execution 未成功后，在超时前始终没有出现公开 recovery case 或持久化 ATTENTION_REQUIRED 停止结果；无法证明自治恢复已经收敛。'
+    }
+    $lastState = if ($null -eq $lastSummary) { 'UNKNOWN' } else { $lastSummary.State }
+    Stop-E2E -Name 'Autopilot recovery 轮询' -Detail "公开 recovery 快照在超时前未达到 RECOVERED 或 ATTENTION_REQUIRED；最后状态=$lastState。"
+}
+
+function Invoke-AutopilotSuccessRecoveryFlow {
+    <#
+    .SYNOPSIS
+        执行已授权 Success 场景的首次终态与自治恢复分流。
+
+    .DESCRIPTION
+        该函数把真实 E2E 的关键时序固定在一个位置：先等待 root execution 终态；首次成功按普通 worker
+        证据验收；只有 FAILED/PARTIALLY_SUCCEEDED 才等待 recovery；RECOVERED 后再用 currentExecutionId 验证
+        普通 execution、对象账本和日志；ATTENTION_REQUIRED 只返回有界停止摘要。四个 ScriptBlock 让离线回归
+        能复用这条生产分流而不访问 Gateway，正常入口则传入实际公开 API helper。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][long]$TaskId,
+        [Parameter(Mandatory = $true)][long]$ExecutionId,
+        [Parameter(Mandatory = $true)][object]$AuthorizationSnapshot,
+        [Parameter(Mandatory = $true)][scriptblock]$WaitTerminal,
+        [Parameter(Mandatory = $true)][scriptblock]$AssertSucceeded,
+        [Parameter(Mandatory = $true)][scriptblock]$WaitRecovery
+    )
+
+    $initialTerminal = & $WaitTerminal $ExecutionId '等待首次同步 execution 终态'
+    if ($null -eq $initialTerminal) {
+        Stop-E2E -Name 'Autopilot 首次 execution' -Detail '首次 execution 终态查询没有返回公开结果。'
+    }
+    if ($initialTerminal.State -eq 'SUCCEEDED') {
+        $summary = & $AssertSucceeded $ExecutionId $initialTerminal.Execution
+        Add-Check -Name 'Autopilot 恢复分流' -Status 'PASS' -Detail '首次 execution 已成功，未进入恢复路径。'
+        return [pscustomobject]@{
+            Outcome = 'INITIAL_SUCCEEDED'
+            ExecutionSummary = $summary
+            RecoverySummary = $null
+        }
+    }
+    if (-not (Test-AutopilotRecoveryEligibleInitialState -State $initialTerminal.State)) {
+        Stop-E2E -Name 'Autopilot 首次 execution' -Detail "首次 execution 进入不支持自治恢复的终态=$($initialTerminal.State)。"
+    }
+
+    Add-Check -Name 'Autopilot 恢复分流' -Status 'PASS' -Detail "首次 execution 状态=$($initialTerminal.State)，开始轮询受治理恢复结果。"
+    $recoverySummary = & $WaitRecovery $AuthorizationSnapshot
+    if ($null -eq $recoverySummary) {
+        Stop-E2E -Name 'Autopilot recovery 轮询' -Detail '自治恢复轮询没有返回公开收敛摘要。'
+    }
+    if ($recoverySummary.State -eq 'RECOVERED') {
+        if (-not (Test-PositiveIdentifier $recoverySummary.CurrentExecutionId)) {
+            Stop-E2E -Name 'Autopilot current execution' -Detail 'RECOVERED 没有返回可信 currentExecutionId，无法验证最终 worker 事实。'
+        }
+        $currentExecutionId = [long]$recoverySummary.CurrentExecutionId
+        $currentTerminal = & $WaitTerminal $currentExecutionId '等待 Autopilot current execution 终态'
+        if ($null -eq $currentTerminal) {
+            Stop-E2E -Name 'Autopilot current execution' -Detail 'RECOVERED 后的 current execution 终态查询没有返回公开结果。'
+        }
+        $summary = & $AssertSucceeded $currentExecutionId $currentTerminal.Execution
+        return [pscustomobject]@{
+            Outcome = 'RECOVERED'
+            ExecutionSummary = $summary
+            RecoverySummary = $recoverySummary
+        }
+    }
+    if ($recoverySummary.State -eq 'ATTENTION_REQUIRED') {
+        # This is intentionally not an AssertSucceeded call: bounded autonomous stop is not worker success.
+        Add-Check -Name 'Autopilot 有界停止' -Status 'PASS' -Detail '恢复已停在 ATTENTION_REQUIRED；未将此状态计为 worker 成功。'
+        return [pscustomobject]@{
+            Outcome = 'ATTENTION_REQUIRED'
+            ExecutionSummary = $null
+            RecoverySummary = $recoverySummary
+        }
+    }
+    Stop-E2E -Name 'Autopilot recovery 轮询' -Detail "自治恢复返回了不支持的收敛状态=$($recoverySummary.State)。"
 }
 
 function Add-RolesFromItems {
@@ -1753,9 +2680,10 @@ function Get-RequiredRolesForStage {
         必须等用户显式确认提交后才被纳入强制成功集合。这个函数把该时序集中在一个地方，避免注册断言和
         durable fact 断言各自维护一套角色规则而再次发生前后不一致。
 
-        Recovery 的目标是产生带审批门禁的恢复方案，而非自动创建或重试任务，所以无论传入哪个阶段，
-        都继续要求知识、恢复和监控角色。-RequireAllSixRolesExecuted 是显式诊断覆盖项，优先级最高，
-        用于人工验证所有角色同时可用，不能作为日常 Success/Recovery 验收的默认要求。
+        Recovery 的目标是基于可审计诊断证据产生受治理恢复方案，所以无论传入哪个阶段都要求恢复和监控角色。
+        知识角色是否执行由 Recovery 模型的 SEARCH/SKIP 决策决定，并由专门证据断言验证。
+        -RequireAllSixRolesExecuted 是显式诊断覆盖项，优先级最高，用于人工验证所有角色同时可用，
+        不能作为日常 Success/Recovery 验收的默认要求。
     #>
     param(
         [ValidateSet('Planning', 'PostConfirmation')]
@@ -1817,9 +2745,9 @@ function Assert-RoleEvidence {
         DATA_SYNC_AGENT 成功完成。PRECHECK_AGENT 和 MONITOR_AGENT 需要真实 taskId/executionId，不能在
         尚未创建任务时被当作失败。它们只在显式确认后的 durable facts 阶段成为 Success 的强制门禁。
 
-        Recovery 场景维持原有边界：验证 KNOWLEDGE_AGENT、RECOVERY_AGENT、MONITOR_AGENT 的受治理参与，
-        但本脚本永远不会自动批准恢复动作。-RequireAllSixRolesExecuted 仅用于人工构造的全角色诊断场景，
-        默认关闭，避免为了测试而无意义地触发 RAG 或高风险恢复分析。
+        Recovery 场景始终验证 RECOVERY_AGENT、MONITOR_AGENT 的受治理参与；KNOWLEDGE_AGENT 只有在
+        RECOVERY_AGENT 明确选择 SEARCH 时才成为必需角色。-RequireAllSixRolesExecuted 仅用于人工构造的
+        全角色诊断场景，默认关闭，避免为了测试而机械触发 RAG 或高风险恢复分析。
     #>
     param(
         [Parameter(Mandatory = $true)][object]$Response,
@@ -1849,7 +2777,47 @@ function Assert-RoleEvidence {
     )
     if ($missingExecuted.Count -gt 0) {
         $nonCompletedText = if ($evidence.NonCompleted.Count -gt 0) { $evidence.NonCompleted -join '、' } else { '无结果' }
-        Stop-E2E -Name '专业 Agent 参与' -Detail "当前 $Stage 阶段缺少成功完成结果：$($missingExecuted -join '、')；未完成状态=$nonCompletedText。PARTIALLY_FAILED 不属于成功完成。成功场景中的恢复 Agent 只有在失败上下文中才应执行；若本次是恢复验收，请提供真实 TaskId/ExecutionId 和失败信息。"
+        $dataSyncGovernanceNote = ''
+        if ($missingExecuted -contains 'DATA_SYNC_AGENT') {
+            $dataSyncResult = Get-SpecialistResultByRole -Response $Response -Role 'DATA_SYNC_AGENT'
+            $dataSyncError = Get-SafeStatusToken -Text (
+                Get-FieldValue -Object $dataSyncResult -Names @('errorCode', 'error_code')
+            ) -Fallback 'NONE'
+            if ($dataSyncError -eq 'DATA_SYNC_SPECIALIST_SIDE_EFFECT_REJECTED') {
+                $dataSyncOutput = Get-FieldValue -Object $dataSyncResult -Names @('structuredOutput')
+                # 失败详情只能显示代码内固定的控制键名，不能把模型值、JSON 路径、工具参数或配置正文
+                # 拼进终端。即使未来 Python 返回了额外字段，这个白名单也会让它们在 E2E 边界被丢弃。
+                $safeControlFieldNames = @(
+                    'action', 'actions', 'execute', 'executed', 'execution', 'executionid',
+                    'publish', 'published', 'publishresult', 'persist', 'persisted', 'run',
+                    'runresult', 'save', 'saved', 'sideeffect', 'sideeffects', 'taskid',
+                    'toolcall', 'toolcalls', 'depthlimit'
+                )
+                $activeFields = @(
+                    Get-Items (
+                        Get-FieldValue -Object $dataSyncOutput -Names @(
+                            'activeConfigurationControlFields',
+                            'active_configuration_control_fields'
+                        )
+                    ) | ForEach-Object {
+                        ([string]$_).Trim().ToLowerInvariant()
+                    } | Where-Object {
+                        $_ -in $safeControlFieldNames
+                    } | Select-Object -Unique
+                )
+                $fieldCount = [int](Get-FieldValue -Object $dataSyncOutput -Names @(
+                        'quarantinedConfigurationFieldCount',
+                        'quarantined_configuration_field_count'
+                    ))
+                $activeFieldText = if ($activeFields.Count -gt 0) {
+                    $activeFields -join ','
+                } else {
+                    '未投影'
+                }
+                $dataSyncGovernanceNote = "；DATA_SYNC 安全门命中控制键=[$activeFieldText]，控制字段数=$fieldCount"
+            }
+        }
+        Stop-E2E -Name '专业 Agent 参与' -Detail "当前 $Stage 阶段缺少成功完成结果：$($missingExecuted -join '、')；未完成状态=$nonCompletedText$dataSyncGovernanceNote。PARTIALLY_FAILED 不属于成功完成。成功场景中的恢复 Agent 只有在失败上下文中才应执行；若本次是恢复验收，请提供真实 TaskId/ExecutionId 和失败信息。"
     }
     $waitingNote = if ($recoveryWaitingAllowed) {
         'RECOVERY_AGENT 已完成只读阶段并进入受治理等待态，后续 grounded/bridge 门禁仍必须通过。'
@@ -1956,7 +2924,8 @@ function Invoke-SpecialistStatusAggregationRegressionTest {
         3. 失败批次没有可归因的失败角色时不得误报 PASS；
         4. 失败批次只包含完成角色的矛盾响应也不得误报 PASS；
         5. PASS 安全摘要不会被错误拦截，真实敏感载荷仍会回退；
-        6. 生命周期确认只能选择含四个同步步骤的同一 Durable Run。
+        6. 生命周期确认只能选择含四个同步步骤的同一 Durable Run；
+        7. Recovery 可基于权威诊断证据 SKIP RAG，只有选择 SEARCH 时才要求 KNOWLEDGE_AGENT。
 
         夹具不包含用户目标、数据源、SQL、模型回复、工具参数或凭据。该函数仅由
         -RunSpecialistStatusAggregationRegressionTest 调用，避免把回归行为混入正常 PlanOnly 或真实 E2E 流程。
@@ -2143,7 +3112,344 @@ function Invoke-SpecialistStatusAggregationRegressionTest {
         throw '回归失败：Recovery WAITING_FOR_INPUT 被错误计入已完成执行角色。'
     }
 
-    Write-Host '[PASS] Specialist 脚本回归：状态聚合、低敏成功摘要和生命周期 Run 选择均符合预期。' -ForegroundColor Green
+    # 同一份低敏 evidence audit 分别覆盖模型 SKIP 和 SEARCH。夹具只使用摘要、固定引用和时间，
+    # 不包含日志正文、知识片段或修复参数，因此可以安全地在本地退出码回归中运行。
+    $regressionRetrievedAt = '2026-08-11T13:00:00Z'
+    $regressionQueryDigest = 'sha256:' + ('1' * 64)
+    $regressionEvidenceDigest = 'sha256:' + ('2' * 64)
+    $evidenceAuditFixture = [pscustomobject]@{
+        queryDigest = $regressionQueryDigest
+        evidenceDigest = $regressionEvidenceDigest
+        retrievedAt = $regressionRetrievedAt
+        evidenceCount = 1
+        sourceTypes = @('EXECUTION_LOG', 'STRUCTURED_API')
+        evidenceRecords = @(
+            [pscustomobject]@{
+                evidenceId = 'diagnostic-evidence-fixture'
+                sourceType = 'EXECUTION_LOG'
+                sourceRef = 'execution-log://fixture'
+                retrievedAt = $regressionRetrievedAt
+                queryDigest = $regressionQueryDigest
+            }
+        )
+    }
+    $recoveryOutputFixture = [pscustomobject]@{
+        diagnosticEvidenceGate = [pscustomobject]@{ satisfied = $true; ragRequired = $false }
+        evidenceAudit = $evidenceAuditFixture
+        retrievalDecision = 'SKIP'
+        retrievalStrategy = 'STRUCTURED_DIAGNOSTIC'
+        executed = $false
+        readOnly = $true
+        planAvailable = $true
+        repairActions = @([pscustomobject]@{ actionType = 'RETRY_EXECUTION' })
+    }
+    $skipRetrievalResponse = [pscustomobject]@{
+        specialistAgentExecution = [pscustomobject]@{
+            results = @(
+                [pscustomobject]@{
+                    agentRole = 'RECOVERY_AGENT'
+                    status = 'COMPLETED'
+                    structuredOutput = $recoveryOutputFixture
+                },
+                [pscustomobject]@{ agentRole = 'MONITOR_AGENT'; status = 'COMPLETED' }
+            )
+        }
+    }
+    $originalScenario = $script:Scenario
+    try {
+        $script:Scenario = 'Recovery'
+        Assert-RagAndRecoveryEvidence -Response $skipRetrievalResponse
+
+        $searchOutputFixture = $recoveryOutputFixture.PSObject.Copy()
+        $searchOutputFixture.retrievalDecision = 'SEARCH'
+        $searchOutputFixture.retrievalStrategy = 'RAG'
+        $searchRetrievalResponse = [pscustomobject]@{
+            specialistAgentExecution = [pscustomobject]@{
+                results = @(
+                    [pscustomobject]@{
+                        agentRole = 'KNOWLEDGE_AGENT'
+                        status = 'COMPLETED'
+                        evidenceReferences = @('rag-evidence-fixture')
+                        structuredOutput = [pscustomobject]@{
+                            grounded = $true
+                            citations = @([pscustomobject]@{ citationId = 'citation-fixture' })
+                        }
+                    },
+                    [pscustomobject]@{
+                        agentRole = 'RECOVERY_AGENT'
+                        status = 'COMPLETED'
+                        structuredOutput = $searchOutputFixture
+                    },
+                    [pscustomobject]@{ agentRole = 'MONITOR_AGENT'; status = 'COMPLETED' }
+                )
+            }
+        }
+        Assert-RagAndRecoveryEvidence -Response $searchRetrievalResponse
+    } finally {
+        $script:Scenario = $originalScenario
+    }
+
+    Write-Host '[PASS] Specialist 脚本回归：状态聚合、生命周期 Run 与 Recovery 自主检索决策均符合预期。' -ForegroundColor Green
+}
+
+function Invoke-AutopilotPublicContractRegressionTest {
+    <#
+    .SYNOPSIS
+        离线回归 Autopilot recovery 的公开扁平状态合同和自治恢复分流。
+
+    .DESCRIPTION
+        这组夹具刻意只使用 Gateway 的 SyncAutopilotRecoveryStatusView 可公开字段。它不模拟 Kafka、worker、
+        数据库、RAG 正文或内部 recovery case，因此可以在没有容器、凭据和网络的 CI 中稳定执行。测试覆盖：
+        - RECOVERED 使用扁平 SEARCH 证据、executionFinishedAt 和 currentExecutionId；
+        - ATTENTION_REQUIRED 是有界停止，不把它包装成 worker 成功；
+        - callback 先于 case 落库时，仍以首次授权快照约束循环上限；
+        - 只有 FAILED/PARTIALLY_SUCCEEDED 才进入自治恢复分支。
+
+        负例调用真实断言后会撤销其测试期 FAIL 记录。这样既能确认错误合同确实被拒绝，又不会把一个预期的
+        夹具拒绝伪装成此离线回归本身失败。
+    #>
+    param()
+
+    function Assert-ExpectedAutopilotEvidenceRejection {
+        param(
+            [Parameter(Mandatory = $true)][string]$Name,
+            [Parameter(Mandatory = $true)][object]$Snapshot
+        )
+
+        $checkCount = $script:Checks.Count
+        $failureCount = $script:FailureCount
+        $rejected = $false
+        try {
+            # Stop-E2E writes its expected fixture failure to the Information stream. Suppress only that expected
+            # local signal so the standalone regression output remains an unambiguous PASS/FAIL result.
+            $null = Assert-AutopilotModelEvidence -Snapshot $Snapshot 6>$null
+        } catch {
+            if (-not (Test-SafeE2EException -Exception $_.Exception)) {
+                throw
+            }
+            $rejected = $true
+        } finally {
+            while ($script:Checks.Count -gt $checkCount) {
+                $script:Checks.RemoveAt($script:Checks.Count - 1)
+            }
+            $script:FailureCount = $failureCount
+        }
+        if (-not $rejected) {
+            throw "Autopilot 公开合同回归失败：$Name 没有被真实断言拒绝。"
+        }
+    }
+
+    # The authorization snapshot is the one fact a recovery GET may legitimately compare against. It contains no
+    # secret or recovery payload and lets the fixture prove that a callback-only bounded stop cannot enlarge cycles.
+    $authorizationSnapshot = [pscustomobject]@{
+        MaxRecoveryCycles = 3
+        MaxTotalDurationMinutes = 120
+    }
+
+    # No legacy nested evidence object is present. A valid SEARCH response is completely described by the four flat fields.
+    # The digest deliberately has a non-hex suffix: the public contract requires the sha256: prefix, not exposure of
+    # a specific internal digest serialization length.
+    $recoveredSearchSnapshot = [pscustomobject]@{
+        caseId = 'autopilot-recovered-fixture'
+        caseState = 'RECOVERED'
+        cycle = 1
+        maxCycles = 3
+        riskLevel = 'LOW'
+        retrievalDecision = 'SEARCH'
+        retrievalStrategy = 'HISTORY_CASE_RAG'
+        retrievalEvidenceCount = 2
+        retrievalEvidenceDigest = 'sha256:flat-public-contract-digest'
+        consumerResultStatus = 'RECOVERY_STARTED'
+        consumerResultReasonCode = 'AUTOPILOT_FAILED_OBJECTS_REQUEUED'
+        recoveryAction = 'RETRY_EXECUTION'
+        executionState = 'SUCCEEDED'
+        executionFinishedAt = '2026-08-12T01:02:03Z'
+        currentExecutionId = 902
+    }
+    $recoveredSummary = Assert-AutopilotRecoverySnapshot `
+        -Snapshot $recoveredSearchSnapshot `
+        -AuthorizationSnapshot $authorizationSnapshot
+    $currentExecutionId = Get-AutopilotCurrentExecutionId -Snapshot $recoveredSearchSnapshot
+    if ($recoveredSummary.State -ne 'RECOVERED' -or -not $recoveredSummary.WorkerTerminal -or
+        -not $recoveredSummary.RetryQueued -or $recoveredSummary.RetrievalDecision -ne 'SEARCH' -or
+        $currentExecutionId -ne 902) {
+        throw 'Autopilot 公开合同回归失败：RECOVERED 没有保留 SEARCH、worker 终态或 currentExecutionId 证据。'
+    }
+
+    # A persisted ATTENTION_REQUIRED case has SKIP evidence but intentionally lacks a successful worker terminal.
+    # The assertion must accept its bounded stop and report WorkerTerminal=false rather than require a made-up success.
+    $attentionSkipSnapshot = [pscustomobject]@{
+        caseId = 'autopilot-attention-fixture'
+        caseState = 'ATTENTION_REQUIRED'
+        cycle = 2
+        maxCycles = 3
+        riskLevel = 'LOW'
+        retrievalDecision = 'SKIP'
+        retrievalStrategy = 'STRUCTURED_DIAGNOSTIC'
+        retrievalEvidenceCount = 0
+        retrievalEvidenceDigest = ''
+        executionState = 'FAILED'
+    }
+    $attentionSummary = Assert-AutopilotRecoverySnapshot `
+        -Snapshot $attentionSkipSnapshot `
+        -AuthorizationSnapshot $authorizationSnapshot
+    if ($attentionSummary.State -ne 'ATTENTION_REQUIRED' -or -not $attentionSummary.IsTerminal -or
+        $attentionSummary.WorkerTerminal -or $attentionSummary.RetryQueued -or
+        $attentionSummary.RetrievalDecision -ne 'SKIP') {
+        throw 'Autopilot 公开合同回归失败：ATTENTION_REQUIRED 被错误地当成 worker 成功或未保留 SKIP 合同。'
+    }
+
+    # The consumer can persist a bounded stop before a recovery case exists. Omit maxCycles deliberately so this
+    # branch proves it uses the already verified first-confirmation snapshot instead of demanding WorkerTerminal.
+    $callbackAttentionSnapshot = [pscustomobject]@{
+        consumerResultStatus = 'ATTENTION_REQUIRED'
+        consumerResultReasonCode = 'AUTOPILOT_CYCLE_LIMIT_REACHED'
+        cycle = 3
+        retrievalDecision = 'SKIP'
+        retrievalStrategy = 'STRUCTURED_DIAGNOSTIC'
+        retrievalEvidenceCount = 0
+        retrievalEvidenceDigest = ''
+        executionState = 'FAILED'
+    }
+    $callbackAttentionSummary = Assert-AutopilotRecoverySnapshot `
+        -Snapshot $callbackAttentionSnapshot `
+        -AuthorizationSnapshot $authorizationSnapshot
+    if ($callbackAttentionSummary.HasCase -or $callbackAttentionSummary.State -ne 'ATTENTION_REQUIRED' -or
+        $callbackAttentionSummary.Cycle -ne 3 -or $callbackAttentionSummary.MaxCycles -ne 3 -or
+        $callbackAttentionSummary.WorkerTerminal -or $callbackAttentionSummary.RetrievalDecision -ne 'SKIP') {
+        throw 'Autopilot 公开合同回归失败：无 case 的 ATTENTION_REQUIRED 没有按首次授权边界停止。'
+    }
+
+    # Positive fixtures prove the accepted public shape; these negative fixtures prevent future loosening of the
+    # SEARCH/SKIP count-and-digest invariant while keeping the regression output free of expected [FAIL] noise.
+    $invalidSearchSnapshot = $recoveredSearchSnapshot.PSObject.Copy()
+    $invalidSearchSnapshot.retrievalEvidenceCount = 0
+    $invalidSearchSnapshot.retrievalEvidenceDigest = ''
+    Assert-ExpectedAutopilotEvidenceRejection -Name 'SEARCH without evidence' -Snapshot $invalidSearchSnapshot
+
+    $invalidSkipSnapshot = $attentionSkipSnapshot.PSObject.Copy()
+    $invalidSkipSnapshot.retrievalEvidenceDigest = 'sha256:not-empty-for-skip'
+    Assert-ExpectedAutopilotEvidenceRejection -Name 'SKIP with evidence digest' -Snapshot $invalidSkipSnapshot
+
+    $initialStates = @(
+        [pscustomobject]@{ State = 'SUCCEEDED'; Eligible = $false },
+        [pscustomobject]@{ State = 'FAILED'; Eligible = $true },
+        [pscustomobject]@{ State = 'PARTIALLY_SUCCEEDED'; Eligible = $true },
+        [pscustomobject]@{ State = 'CANCELLED'; Eligible = $false }
+    )
+    foreach ($initialState in $initialStates) {
+        if ((Test-AutopilotRecoveryEligibleInitialState -State $initialState.State) -ne $initialState.Eligible) {
+            throw "Autopilot 公开合同回归失败：首次 execution 状态=$($initialState.State) 的恢复分流不符合合同。"
+        }
+    }
+
+    # Reuse the production flow with local probes. The probes stand in only for public API calls; their trace proves
+    # the ordering and target execution ID without fabricating a worker success or contacting any service.
+    $initialSuccessTrace = [System.Collections.Generic.List[string]]::new()
+    $initialSuccessFlow = Invoke-AutopilotSuccessRecoveryFlow `
+        -TaskId 701 `
+        -ExecutionId 901 `
+        -AuthorizationSnapshot $authorizationSnapshot `
+        -WaitTerminal {
+            param([long]$candidateExecutionId, [string]$operation)
+            $initialSuccessTrace.Add("wait:$candidateExecutionId") | Out-Null
+            return [pscustomobject]@{
+                State = 'SUCCEEDED'
+                Execution = [pscustomobject]@{ executionState = 'SUCCEEDED' }
+            }
+        } `
+        -AssertSucceeded {
+            param([long]$candidateExecutionId, [object]$candidateExecution)
+            $initialSuccessTrace.Add("assert:$candidateExecutionId") | Out-Null
+            return [pscustomobject]@{ ExecutionId = $candidateExecutionId; State = 'SUCCEEDED' }
+        } `
+        -WaitRecovery {
+            param([object]$authorization)
+            throw 'Autopilot 公开合同回归失败：首次成功错误地进入 recovery 轮询。'
+        }
+    if ($initialSuccessFlow.Outcome -ne 'INITIAL_SUCCEEDED' -or
+        (@($initialSuccessTrace) -join ',') -ne 'wait:901,assert:901') {
+        throw 'Autopilot 公开合同回归失败：首次成功没有走普通 execution 验收路径。'
+    }
+
+    $recoveredTrace = [System.Collections.Generic.List[string]]::new()
+    $recoveredFlow = Invoke-AutopilotSuccessRecoveryFlow `
+        -TaskId 701 `
+        -ExecutionId 901 `
+        -AuthorizationSnapshot $authorizationSnapshot `
+        -WaitTerminal {
+            param([long]$candidateExecutionId, [string]$operation)
+            $recoveredTrace.Add("wait:$candidateExecutionId") | Out-Null
+            $state = if ($candidateExecutionId -eq 901) { 'FAILED' } else { 'SUCCEEDED' }
+            return [pscustomobject]@{
+                State = $state
+                Execution = [pscustomobject]@{ executionState = $state }
+            }
+        } `
+        -AssertSucceeded {
+            param([long]$candidateExecutionId, [object]$candidateExecution)
+            $recoveredTrace.Add("assert:$candidateExecutionId") | Out-Null
+            return [pscustomobject]@{ ExecutionId = $candidateExecutionId; State = 'SUCCEEDED' }
+        } `
+        -WaitRecovery {
+            param([object]$authorization)
+            $recoveredTrace.Add('recovery:901') | Out-Null
+            return [pscustomobject]@{
+                State = 'RECOVERED'
+                CurrentExecutionId = 902
+                Cycle = 1
+                MaxCycles = 3
+                WorkerTerminal = $true
+            }
+        }
+    if ($recoveredFlow.Outcome -ne 'RECOVERED' -or $recoveredFlow.ExecutionSummary.ExecutionId -ne 902 -or
+        (@($recoveredTrace) -join ',') -ne 'wait:901,recovery:901,wait:902,assert:902') {
+        throw 'Autopilot 公开合同回归失败：RECOVERED 没有按 currentExecutionId 重新验收普通 worker 事实。'
+    }
+
+    $attentionTrace = [System.Collections.Generic.List[string]]::new()
+    $attentionFlow = Invoke-AutopilotSuccessRecoveryFlow `
+        -TaskId 701 `
+        -ExecutionId 901 `
+        -AuthorizationSnapshot $authorizationSnapshot `
+        -WaitTerminal {
+            param([long]$candidateExecutionId, [string]$operation)
+            $attentionTrace.Add("wait:$candidateExecutionId") | Out-Null
+            return [pscustomobject]@{
+                State = 'PARTIALLY_SUCCEEDED'
+                Execution = [pscustomobject]@{ executionState = 'PARTIALLY_SUCCEEDED' }
+            }
+        } `
+        -AssertSucceeded {
+            param([long]$candidateExecutionId, [object]$candidateExecution)
+            throw 'Autopilot 公开合同回归失败：ATTENTION_REQUIRED 错误地调用了 worker 成功验收。'
+        } `
+        -WaitRecovery {
+            param([object]$authorization)
+            $attentionTrace.Add('recovery:901') | Out-Null
+            return [pscustomobject]@{
+                State = 'ATTENTION_REQUIRED'
+                Cycle = 3
+                MaxCycles = 3
+                WorkerTerminal = $false
+            }
+        }
+    if ($attentionFlow.Outcome -ne 'ATTENTION_REQUIRED' -or $null -ne $attentionFlow.ExecutionSummary -or
+        (@($attentionTrace) -join ',') -ne 'wait:901,recovery:901') {
+        throw 'Autopilot 公开合同回归失败：ATTENTION_REQUIRED 没有停在有界恢复结果，或被误作 worker 成功。'
+    }
+
+    $modelEvidenceSource = (Get-Command -Name Assert-AutopilotModelEvidence -CommandType Function -ErrorAction Stop).ScriptBlock.ToString()
+    $legacyNestedEvidenceField = 'rag' + 'Evidence'
+    if ($modelEvidenceSource -match [regex]::Escape($legacyNestedEvidenceField) -or
+        $modelEvidenceSource -notmatch 'retrievalDecision' -or
+        $modelEvidenceSource -notmatch 'retrievalStrategy' -or
+        $modelEvidenceSource -notmatch 'retrievalEvidenceCount' -or
+        $modelEvidenceSource -notmatch 'retrievalEvidenceDigest') {
+        throw 'Autopilot 公开合同回归失败：模型检索断言不再只消费四个扁平公开字段。'
+    }
+
+    Write-Host '[PASS] Autopilot 公开合同回归：扁平检索、executionFinishedAt、currentExecutionId、有界停止和首次失败分流均符合预期。' -ForegroundColor Green
 }
 
 function Get-SpecialistResultByRole {
@@ -2190,70 +3496,138 @@ function Test-TrueFlag {
 function Assert-RagAndRecoveryEvidence {
     <#
     .SYNOPSIS
-        验证 Recovery 场景的 RAG -> 审批准备链路，且确认 Recovery 尚未执行。
+        验证 Recovery 的诊断证据门、模型检索决策和受治理动作边界。
 
     .DESCRIPTION
-        六角色名册只能证明角色存在，不能证明故障恢复确实引用了历史案例。Recovery 场景因此还必须看到
-        KNOWLEDGE_AGENT 的 grounded=true、至少一条低敏引用和至少一条 evidenceReference；随后检查
-        RECOVERY_AGENT 的结构化结果声明 requiresApproval/javaToolPlanPending=true 且 executed=false。
-        Success 场景按需不调用 RAG，因此没有 KNOWLEDGE_AGENT 结果是合法的；只有当响应确实包含
-        KNOWLEDGE_AGENT 时才检查其低敏结果。函数不显示引用 ID、标题、正文、恢复参数、SQL 或模型输出。
+        Recovery 并不机械执行 RAG。RECOVERY_AGENT 必须先提供可复算的诊断 evidence gate，其中包含来源类型、
+        查询摘要、证据摘要、时间和 evidence ID。模型在这些事实足够时可以返回 SKIP，直接使用执行日志、
+        结构化 API 或监控事实；只有返回 SEARCH 时，本函数才要求 KNOWLEDGE_AGENT 完成 grounded 检索。
+
+        无论是否检索，Python 都只能生成只读草案或 Java ToolPlan 建议，不能执行恢复副作用。函数只检查低敏
+        元数据和计数，不输出 evidence ID、sourceRef、引用标题/正文、修复参数、SQL 或模型原文。
     #>
     param([Parameter(Mandatory = $true)][object]$Response)
 
     $knowledgeResult = Get-SpecialistResultByRole -Response $Response -Role 'KNOWLEDGE_AGENT'
-    if ($null -eq $knowledgeResult) {
-        if ($Scenario -eq 'Recovery') {
-            Stop-E2E -Name 'RAG 专业结果' -Detail '恢复场景没有 KNOWLEDGE_AGENT 的结构化结果，无法确认历史案例检索链路。建议检查 RAG 注册、项目范围和 specialist durable runner。'
+    if ($Scenario -ne 'Recovery') {
+        if ($null -eq $knowledgeResult) {
+            Add-Check -Name 'RAG 专业结果' -Status 'PASS' -Detail 'Success 场景未提出知识检索需求，RAG 按需待命。'
+            return
         }
-        Add-Check -Name 'RAG 专业结果' -Status 'PASS' -Detail 'Success 场景未提出知识或故障案例检索需求，RAG 按需待命，未强制调用。'
+        $knowledgeStatus = Get-SafeStatusToken -Text (Get-FieldValue -Object $knowledgeResult -Names @('status')) -Fallback 'UNKNOWN'
+        if ($knowledgeStatus -ne 'COMPLETED') {
+            Stop-E2E -Name 'RAG 专业结果' -Detail "KNOWLEDGE_AGENT 状态=$knowledgeStatus，知识专业 turn 没有完成。"
+        }
+        $knowledgeOutput = Get-FieldValue -Object $knowledgeResult -Names @('structuredOutput')
+        $grounded = Test-TrueFlag (Get-FieldValue -Object $knowledgeOutput -Names @('grounded'))
+        $citations = @(Get-Items (Get-FieldValue -Object $knowledgeOutput -Names @('citations')))
+        if ($grounded -and $citations.Count -gt 0) {
+            Add-Check -Name 'RAG 专业结果' -Status 'PASS' -Detail "KNOWLEDGE_AGENT 已完成按需检索（引用数=$($citations.Count)）。"
+        } else {
+            Add-Check -Name 'RAG 专业结果' -Status 'WARN' -Detail 'KNOWLEDGE_AGENT 已执行，但本次 Success 需求没有 grounded 引用；不阻断清晰同步任务。'
+        }
         return
     }
-    $knowledgeStatus = Get-SafeStatusToken -Text (Get-FieldValue -Object $knowledgeResult -Names @('status')) -Fallback 'UNKNOWN'
-    if ($knowledgeStatus -ne 'COMPLETED') {
-        Stop-E2E -Name 'RAG 专业结果' -Detail "KNOWLEDGE_AGENT 状态=$knowledgeStatus，知识专业 turn 没有完成。建议检查 RAG 服务健康状态和项目可见知识范围。"
+
+    $recoveryResult = Get-SpecialistResultByRole -Response $Response -Role 'RECOVERY_AGENT'
+    if ($null -eq $recoveryResult) {
+        Stop-E2E -Name '恢复诊断证据' -Detail '没有 RECOVERY_AGENT 结构化结果，无法验证诊断证据门和检索决策。'
+    }
+    $recoveryOutput = Get-FieldValue -Object $recoveryResult -Names @('structuredOutput')
+    $evidenceGate = Get-FieldValue -Object $recoveryOutput -Names @('diagnosticEvidenceGate', 'diagnostic_evidence_gate')
+    $evidenceAudit = Get-FieldValue -Object $recoveryOutput -Names @('evidenceAudit', 'evidence_audit')
+    if ($null -eq $evidenceGate -or -not (Test-TrueFlag (Get-FieldValue -Object $evidenceGate -Names @('satisfied')))) {
+        Stop-E2E -Name '恢复诊断证据' -Detail 'RECOVERY_AGENT 没有通过可审计诊断 evidence gate，不能进入模型修复决策。'
+    }
+    if (Test-TrueFlag (Get-FieldValue -Object $evidenceGate -Names @('ragRequired', 'rag_required'))) {
+        Stop-E2E -Name '恢复诊断证据' -Detail '诊断 evidence gate 错误地把 RAG 设为强制条件；检索应由模型根据现有证据自主决定。'
+    }
+    if ($null -eq $evidenceAudit) {
+        Stop-E2E -Name '恢复诊断证据' -Detail 'RECOVERY_AGENT 缺少 evidenceAudit，Java 无法复算来源、时间和证据摘要。'
     }
 
-    $knowledgeOutput = Get-FieldValue -Object $knowledgeResult -Names @('structuredOutput')
-    $grounded = Test-TrueFlag (Get-FieldValue -Object $knowledgeOutput -Names @('grounded'))
-    $citations = @(Get-Items (Get-FieldValue -Object $knowledgeOutput -Names @('citations')))
-    $evidenceReferences = @(Get-Items (Get-FieldValue -Object $knowledgeResult -Names @('evidenceReferences')))
-    if ($Scenario -eq 'Recovery') {
-        if (-not $grounded -or $citations.Count -le 0 -or $evidenceReferences.Count -le 0) {
-            Stop-E2E -Name 'RAG 案例证据' -Detail 'Recovery 已执行 KNOWLEDGE_AGENT，但没有返回 grounded 引用证据；恢复方案不能脱离历史案例直接进入审批。建议检查 RAG 索引、项目范围和 evidence gate。'
+    $queryDigest = [string](Get-FieldValue -Object $evidenceAudit -Names @('queryDigest', 'query_digest'))
+    $evidenceDigest = [string](Get-FieldValue -Object $evidenceAudit -Names @('evidenceDigest', 'evidence_digest'))
+    $retrievedAt = [string](Get-FieldValue -Object $evidenceAudit -Names @('retrievedAt', 'retrieved_at'))
+    $evidenceCount = [int](Get-FieldValue -Object $evidenceAudit -Names @('evidenceCount', 'evidence_count'))
+    $sourceTypes = @(Get-Items (Get-FieldValue -Object $evidenceAudit -Names @('sourceTypes', 'source_types'))) | ForEach-Object {
+        ([string]$_).Trim().ToUpperInvariant()
+    }
+    $evidenceRecords = @(Get-Items (Get-FieldValue -Object $evidenceAudit -Names @('evidenceRecords', 'evidence_records')))
+    if ($queryDigest -notmatch '^sha256:[0-9a-fA-F]{64}$' -or $evidenceDigest -notmatch '^sha256:[0-9a-fA-F]{64}$') {
+        Stop-E2E -Name '恢复诊断证据' -Detail 'evidenceAudit 的 queryDigest/evidenceDigest 不是可复算 SHA-256 合同。'
+    }
+    $parsedRetrievedAt = [DateTimeOffset]::MinValue
+    if ([string]::IsNullOrWhiteSpace($retrievedAt) -or
+        -not [DateTimeOffset]::TryParse($retrievedAt, [ref]$parsedRetrievedAt)) {
+        Stop-E2E -Name '恢复诊断证据' -Detail 'evidenceAudit 缺少带时区的合法 retrievedAt。'
+    }
+    if ($evidenceCount -le 0 -or $evidenceRecords.Count -ne $evidenceCount -or $sourceTypes.Count -le 0) {
+        Stop-E2E -Name '恢复诊断证据' -Detail 'evidenceAudit 的证据计数、记录或来源类型不完整。'
+    }
+    foreach ($record in $evidenceRecords) {
+        $evidenceId = [string](Get-FieldValue -Object $record -Names @('evidenceId', 'evidence_id'))
+        $sourceType = [string](Get-FieldValue -Object $record -Names @('sourceType', 'source_type'))
+        $sourceRef = [string](Get-FieldValue -Object $record -Names @('sourceRef', 'source_ref'))
+        $recordQueryDigest = [string](Get-FieldValue -Object $record -Names @('queryDigest', 'query_digest'))
+        $recordRetrievedAt = [string](Get-FieldValue -Object $record -Names @('retrievedAt', 'retrieved_at'))
+        $parsedRecordTime = [DateTimeOffset]::MinValue
+        if ([string]::IsNullOrWhiteSpace($evidenceId) -or [string]::IsNullOrWhiteSpace($sourceType) -or
+            [string]::IsNullOrWhiteSpace($sourceRef) -or $recordQueryDigest -ne $queryDigest -or
+            -not [DateTimeOffset]::TryParse($recordRetrievedAt, [ref]$parsedRecordTime)) {
+            Stop-E2E -Name '恢复诊断证据' -Detail '至少一条 evidenceRecord 缺少 ID、来源、时间、引用或一致的 queryDigest。'
         }
-        Add-Check -Name 'RAG 案例证据' -Status 'PASS' -Detail "Recovery 已获得 grounded RAG 证据（引用数=$($citations.Count)，证据引用数=$($evidenceReferences.Count)）。"
+    }
+    $authoritativeSources = @($sourceTypes | Where-Object { $_ -in @('EXECUTION_LOG', 'STRUCTURED_API', 'MONITORING_API') })
+    if ($authoritativeSources.Count -le 0) {
+        Stop-E2E -Name '恢复诊断证据' -Detail '诊断证据没有执行日志、结构化 API 或监控 API 等权威来源。'
+    }
+    Add-Check -Name '恢复诊断证据' -Status 'PASS' -Detail "诊断 evidence gate 已通过（证据数=$evidenceCount，来源类型数=$($sourceTypes.Count)），摘要和时间合同完整。"
 
-        $recoveryResult = Get-SpecialistResultByRole -Response $Response -Role 'RECOVERY_AGENT'
-        if ($null -eq $recoveryResult) {
-            Stop-E2E -Name '恢复审批准备' -Detail '没有 RECOVERY_AGENT 结构化结果，无法确认恢复方案是否已进入审批门禁。'
+    $retrievalDecision = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $recoveryOutput -Names @('retrievalDecision', 'retrieval_decision', 'ragDecision', 'rag_decision')
+    ) -Fallback 'UNKNOWN'
+    $retrievalStrategy = Get-SafeStatusToken -Text (
+        Get-FieldValue -Object $recoveryOutput -Names @('retrievalStrategy', 'retrieval_strategy')
+    ) -Fallback 'UNKNOWN'
+    if ($retrievalDecision -eq 'SEARCH') {
+        if ($null -eq $knowledgeResult) {
+            Stop-E2E -Name '模型检索决策' -Detail 'RECOVERY_AGENT 已选择 SEARCH，但响应中没有 KNOWLEDGE_AGENT 结果。'
         }
-        $recoveryOutput = Get-FieldValue -Object $recoveryResult -Names @('structuredOutput')
-        $requiresApproval = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('requiresApproval'))
-        $javaToolPlanPending = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('javaToolPlanPending'))
-        $executed = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('executed'))
-        $planAvailable = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('planAvailable'))
-        $readOnly = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('readOnly'))
-        $repairActionCount = @(Get-Items (Get-FieldValue -Object $recoveryOutput -Names @('repairActions'))).Count
-        if ($executed) {
-            Stop-E2E -Name '恢复审批准备' -Detail 'Recovery specialist 声称已经在 Python 中执行恢复动作；任何恢复副作用都必须进入 Java 工具治理，已终止验收。'
+        $knowledgeStatus = Get-SafeStatusToken -Text (Get-FieldValue -Object $knowledgeResult -Names @('status')) -Fallback 'UNKNOWN'
+        $knowledgeOutput = Get-FieldValue -Object $knowledgeResult -Names @('structuredOutput')
+        $grounded = Test-TrueFlag (Get-FieldValue -Object $knowledgeOutput -Names @('grounded'))
+        $citations = @(Get-Items (Get-FieldValue -Object $knowledgeOutput -Names @('citations')))
+        $evidenceReferences = @(Get-Items (Get-FieldValue -Object $knowledgeResult -Names @('evidenceReferences')))
+        if ($knowledgeStatus -ne 'COMPLETED' -or -not $grounded -or
+            $citations.Count -le 0 -or $evidenceReferences.Count -le 0) {
+            Stop-E2E -Name '模型检索决策' -Detail '模型选择 SEARCH 后，KNOWLEDGE_AGENT 没有返回完整 grounded 引用证据。'
         }
-        if ($requiresApproval) {
-            if (-not $javaToolPlanPending) {
-                Stop-E2E -Name '恢复审批准备' -Detail 'Recovery 已提出高风险动作，但没有声明等待 Java ToolPlan；重试、改表或数据修复不得绕过审批。'
-            }
-            Add-Check -Name '恢复审批准备' -Status 'PASS' -Detail "Recovery 已生成 $repairActionCount 个待审批动作，等待 Java 控制面，不会自动执行。"
-        } elseif ($planAvailable -or $readOnly -or $repairActionCount -gt 0) {
-            # Recovery 允许先提出只读诊断或 preview。这些动作本身无需制造一张用户审批单，
-            # 但仍必须由后续 Bridge 做工具可见性、schema、RBAC 和结果引用校验，不能在 specialist 内执行。
-            Add-Check -Name '恢复审批准备' -Status 'PASS' -Detail "Recovery 已生成 $repairActionCount 个低风险诊断/预览建议；当前无需审批，仍等待 Java 受控工具链处理。"
-        } else {
-            Stop-E2E -Name '恢复审批准备' -Detail 'Recovery 没有形成可交接动作或人话恢复草案；请检查诊断事实是否足够，以及模型是否按规范动作合同返回建议。'
-        }
-    } elseif ($grounded -and $citations.Count -gt 0) {
-        Add-Check -Name 'RAG 专业结果' -Status 'PASS' -Detail "KNOWLEDGE_AGENT 已完成并返回低敏证据统计（引用数=$($citations.Count)）；Success 场景继续按控制面任务结果验收。"
+        Add-Check -Name '模型检索决策' -Status 'PASS' -Detail "模型选择 $retrievalStrategy 检索并获得 grounded 证据（引用数=$($citations.Count)）。"
+    } elseif ($retrievalDecision -eq 'SKIP') {
+        Add-Check -Name '模型检索决策' -Status 'PASS' -Detail "模型基于现有权威诊断证据自主跳过 RAG（策略=$retrievalStrategy），未机械调用知识检索。"
     } else {
-        Add-Check -Name 'RAG 专业结果' -Status 'WARN' -Detail 'KNOWLEDGE_AGENT 已完成，但本次 Success 需求没有可用案例引用；按设计不阻断清晰的同步任务验收。'
+        Stop-E2E -Name '模型检索决策' -Detail "RECOVERY_AGENT 返回未知检索决策=$retrievalDecision；只允许 SEARCH 或 SKIP。"
+    }
+
+    $requiresApproval = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('requiresApproval'))
+    $javaToolPlanPending = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('javaToolPlanPending'))
+    $executed = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('executed'))
+    $planAvailable = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('planAvailable'))
+    $readOnly = Test-TrueFlag (Get-FieldValue -Object $recoveryOutput -Names @('readOnly'))
+    $repairActionCount = @(Get-Items (Get-FieldValue -Object $recoveryOutput -Names @('repairActions'))).Count
+    if ($executed) {
+        Stop-E2E -Name '恢复治理边界' -Detail 'Recovery specialist 声称已经在 Python 中执行恢复动作；副作用必须进入 Java 治理链。'
+    }
+    if ($requiresApproval) {
+        if (-not $javaToolPlanPending) {
+            Stop-E2E -Name '恢复治理边界' -Detail 'Recovery 提出高风险动作但没有等待 Java ToolPlan，不能建立审批事实。'
+        }
+        Add-Check -Name '恢复治理边界' -Status 'PASS' -Detail "Recovery 已生成 $repairActionCount 个待审批动作并停在 Java 控制面。"
+    } elseif ($planAvailable -or $readOnly -or $repairActionCount -gt 0) {
+        Add-Check -Name '恢复治理边界' -Status 'PASS' -Detail "Recovery 已生成 $repairActionCount 个低风险诊断/预览建议，仍由 Java bridge 校验后续动作。"
+    } else {
+        Stop-E2E -Name '恢复治理边界' -Detail 'Recovery 没有形成可交接动作或恢复草案。'
     }
 }
 
@@ -2676,6 +4050,17 @@ if ($RunSpecialistStatusAggregationRegressionTest) {
     }
 }
 
+if ($RunAutopilotPublicContractRegressionTest) {
+    try {
+        Invoke-AutopilotPublicContractRegressionTest
+        Complete-E2EProcess -ExitCode 0
+    } catch {
+        $message = Get-LowSensitiveMessage -Text $_.Exception.Message -Fallback 'Autopilot 公开合同回归失败；请检查扁平状态夹具、自治恢复分流和有界停止断言。'
+        Write-Host "[FAIL] $message" -ForegroundColor Red
+        Complete-E2EProcess -ExitCode 1
+    }
+}
+
 if ($RunRequestContractRegressionTest) {
     try {
         Assert-BasicInputs
@@ -2742,6 +4127,8 @@ try {
     # 初始规划响应只证明专业 Agent 已形成受治理计划，不能被误当成任务已经创建。只有调用方显式传入
     # -ConfirmAndExecute，脚本才选择最新完整 Durable Run 并调用 Java 确认入口。确认回执随后必须同时证明
     # 四个生命周期工具成功、可信 task/execution 已生成，以及 PRECHECK/MONITOR 已基于真实资源再次复核。
+    # 启用 AUTOPILOT 时，首次 execution 仍先按普通终态读取：首次成功照常验收；首次失败才进入同一 root
+    # execution 的公开 recovery 轮询。这样不会让自治授权吞掉正常成功，也不会把第一次失败过早报成 E2E 失败。
     if ($Scenario -eq 'Success' -and $ConfirmAndExecute) {
         $runReference = Get-LifecycleRunReference -Response $response
         if ($null -eq $runReference) {
@@ -2752,15 +4139,55 @@ try {
             Stop-E2E -Name 'Agent Run 显式确认' -Detail '确认接口没有返回结构化执行回执，无法证明任务已经创建并提交。'
         }
         $lifecycle = Assert-ConfirmedLifecycle -Confirmation $confirmation
+        $autopilotAuthorizationSnapshot = $null
+        if ($EnableAutopilot) {
+            $autopilotAuthorizationSnapshot = Assert-ConfirmedAutopilotSnapshot `
+                -Confirmation $confirmation `
+                -Reference $runReference
+        }
         $continuation = Get-FieldValue -Object $confirmation -Names @('postConfirmContinuation', 'continuation')
         if ($null -eq $continuation) {
             Stop-E2E -Name '后置 PRECHECK/MONITOR' -Detail '确认回执缺少 postConfirmContinuation，无法验证真实资源产生后的专业 Agent 复核。'
         }
         $postVerification = Assert-PostBridgeVerification -Response $continuation
-        $executionSummary = Wait-SyncExecutionResult `
-            -AccessToken $accessToken `
-            -TaskId $lifecycle.TaskId `
-            -ExecutionId $lifecycle.ExecutionId
+        if (-not $EnableAutopilot) {
+            $executionSummary = Wait-SyncExecutionResult `
+                -AccessToken $accessToken `
+                -TaskId $lifecycle.TaskId `
+                -ExecutionId $lifecycle.ExecutionId
+        } else {
+            # Delegate the full first-terminal/recovery/current-execution sequence so the offline regression exercises
+            # the same branching contract as the real Gateway path.
+            $autopilotFlow = Invoke-AutopilotSuccessRecoveryFlow `
+                -TaskId $lifecycle.TaskId `
+                -ExecutionId $lifecycle.ExecutionId `
+                -AuthorizationSnapshot $autopilotAuthorizationSnapshot `
+                -WaitTerminal {
+                    param([long]$candidateExecutionId, [string]$operation)
+                    Wait-SyncExecutionTerminal `
+                        -AccessToken $accessToken `
+                        -TaskId $lifecycle.TaskId `
+                        -ExecutionId $candidateExecutionId `
+                        -Operation $operation
+                } `
+                -AssertSucceeded {
+                    param([long]$candidateExecutionId, [object]$candidateExecution)
+                    Assert-SyncExecutionSucceeded `
+                        -AccessToken $accessToken `
+                        -TaskId $lifecycle.TaskId `
+                        -ExecutionId $candidateExecutionId `
+                        -Execution $candidateExecution
+                } `
+                -WaitRecovery {
+                    param([object]$authorization)
+                    Wait-AutopilotRecoveryResult `
+                        -AccessToken $accessToken `
+                        -TaskId $lifecycle.TaskId `
+                        -ExecutionId $lifecycle.ExecutionId `
+                        -AuthorizationSnapshot $authorization
+                }
+            $executionSummary = $autopilotFlow.ExecutionSummary
+        }
     } elseif ($Scenario -eq 'Success') {
         Add-Check -Name '成功场景执行边界' -Status 'PASS' -Detail '未传 -ConfirmAndExecute，本次只验证审批前计划；没有创建或启动同步任务。'
     } else {

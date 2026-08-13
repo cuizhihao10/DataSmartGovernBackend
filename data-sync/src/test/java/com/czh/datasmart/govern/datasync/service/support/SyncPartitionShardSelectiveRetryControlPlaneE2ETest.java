@@ -246,7 +246,9 @@ class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
                 executionMapper,
                 taskMapper,
                 new SyncQuerySupport(),
-                auditSupport);
+                auditSupport,
+                mock(SyncCallbackIdempotencySupport.class),
+                new com.fasterxml.jackson.databind.ObjectMapper());
     }
 
     private SyncBatchRunnerBridgePlanSupport bridgePlanSupport() {

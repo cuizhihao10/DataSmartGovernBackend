@@ -278,7 +278,9 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                 executionMapper,
                 taskMapper,
                 new SyncQuerySupport(),
-                mock(SyncAuditSupport.class));
+                mock(SyncAuditSupport.class),
+                mock(SyncCallbackIdempotencySupport.class),
+                new com.fasterxml.jackson.databind.ObjectMapper());
     }
 
     private LifecycleFixture lifecycleFixture(SyncErrorSampleMapper errorSampleMapper) {

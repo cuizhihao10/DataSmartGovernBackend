@@ -98,7 +98,7 @@ docker compose up -d neo4j minio chroma alertmanager
 
 ### 4.2 应用数据库迁移
 
-如果你是全新数据库卷，初始化脚本会创建基础库表，但历史增量迁移仍建议按文件名顺序检查。当前仓库尚未接入统一迁移框架，因此本地联调时要特别注意 schema 是否和代码一致。
+核心 Java 服务的 PostgreSQL schema 已按服务隔离并接入 Flyway；全新数据库卷会由各服务按版本执行迁移。MySQL 初始化与 `docker/mysql/migrations` 只保留给尚未下线的兼容路径，历史存量导入仍需按迁移文档执行并对账。本地联调必须检查 Flyway 版本、校验和和目标 schema，不能只看到容器健康就假定数据库与源码一致。
 
 迁移命令示例：
 
@@ -411,7 +411,7 @@ GET http://localhost:8090/agent/metrics
 |场景|本场景必须实际执行的角色|关键通过条件|
 |---|---|---|
 |Success|`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`MONITOR_AGENT`|数据源和元数据经授权读取；DATA_SYNC bridge 接受 Java ToolPlan；Java 的权限/审批/outbox/worker receipt 反馈产生可信 task/execution 后，再执行只读 PRECHECK/MONITOR；每个实际 turn 有 durable fact|
-|Recovery|`KNOWLEDGE_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`|失败事实与 grounded RAG 证据进入 Recovery；恢复 bridge 进入审批/Java handoff 等待态；`directExecution=false` 且未接受审批；缺参动作跳过但完整只读预览可继续；实际 turn 有 durable fact|
+|Recovery（六 Agent 历史黑盒）|`KNOWLEDGE_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`|失败事实与 grounded RAG 证据进入 Recovery；该历史场景的恢复 bridge 进入审批/Java handoff 等待态，`directExecution=false` 且未接受审批；缺参动作跳过但完整只读预览可继续；实际 turn 有 durable fact。它不是随后加入的 Autopilot retry/quarantine E2E。|
 
 Success 和 Recovery 应针对隔离的本地验收数据、且可关联到同一项目范围的真实控制面事实；Recovery 需要已有失败 `TaskId` 或 `ExecutionId`，不会自动制造或批准恢复动作。执行时只设置 `DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD` 等本地凭据变量，脚本会把 token、响应正文、prompt、SQL、工具参数和连接信息收敛为低敏摘要。
 
@@ -591,16 +591,29 @@ POST http://localhost:8086/internal/sync-workers/run-once
 
 如果上述条件不满足，worker loop 应该 fail-closed，而不是“尽力猜测”如何同步。
 
+这里的 `run-once` 不是 Autopilot Kafka trigger consumer；当受限链路把失败对象重新排队后，它才是处理这些对象的既有 data-sync worker。单独一条 `AUTO_APPROVED`、本节 worker 入口或 smoke 成功都不能证明 Kafka 消费、Python 规划、重试和最终 receipt 已构成无人值守恢复 E2E。
+
 ## 8. 当前闭环缺口
 
 当前项目已经开始从能力扩展转向闭环收敛，但还不能把本地 runbook 视为商业部署完成态。主要缺口包括：
 
-- 数据库迁移仍是手动执行，缺少 Flyway/Liquibase 级别的 schema 版本治理。
+- PostgreSQL 服务 schema 已由模块级 Flyway 管理；仍需在客户环境对 MySQL 存量导入、版本校验和、回滚点与新增 V20 等增量迁移保留实际执行证据，不能把源码中的迁移文件当作已部署事实。
 - 服务到服务调用仍在逐步从临时 Header/HMAC 迁移到 OIDC service account、mTLS 或 service mesh 身份。
 - data-sync receipt 已具备本地 outbox/retry/dead-letter；后续仍需要在真实联调中验证 task-management 故障、恢复和死信告警路径。
 - data-sync 最小执行闭环主要支持 FULL/ONE_TIME_MIGRATION 单批，增量 checkpoint handoff、多批循环和分片并发仍需谨慎收敛。
+- Autopilot 的当前工作树已具备 V20-V25 durable schema、data-sync controller/outbox/scheduler、Agent Runtime Kafka consumer、Java 到 Python 规划调用、证据与双策略复核、受限失败对象重试、preview/selector/receipt 约束的 quarantine、worker/final receipt、sidecar compensation，以及专用低基数指标和 Prometheus 告警。V25 只投影模型自主 `SEARCH`/`SKIP`、检索策略和 evidence-ID digest，不保存证据正文。目标环境仍需保留实际 Flyway、broker/HTTP/worker/receipt、补偿与告警演练证据；`AUTO_APPROVED` 不能代替最终 receipt，`WAITING_APPROVAL` 与 `ATTENTION_REQUIRED` 必须保留为明确停点。
 - Agent 侧 tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、LLM provider 还需要整理成最小闭口清单。
 - Compose 是本地开发工具，不是生产部署方案；生产仍需要 Kubernetes/Helm、Secret Manager、TLS、外部数据库、审计、备份和容量规划。
+
+### 8.1 2026-08-11 Autopilot 触发投递静态审计补充
+
+**已验证（源码与模块回归）**：当前工作树已有 `V20`-`V25` PostgreSQL migration、失败 execution 到 `SyncAutopilotRecoveryTriggerPublisher` 的调用、本地 durable outbox、`KafkaTemplate` producer、consumer result、V23 sidecar compensation、V24 quarantine receipt、V25 retrieval evidence projection 和调度器；完整 Compose 显式开启 `datasmart.agent.autopilot-recovery-trigger.v1` listener。consumer 会重新校验 session/root Run/授权快照，再以内部服务令牌调用 Python 的 Recovery/RAG 规划入口。Python 候选返回 Java 后还要经过诊断证据和 Java/data-sync 双策略；当前执行分支只允许首次授权范围内的 `RETRY_EXECUTION`，以及带真实 preview、精确 selector 和 durable receipt 的 `APPLY_QUARANTINE`，Python 本身不执行 data-sync 写操作。普通规划将 RAG 作为模型可选能力而非规则强制计划。2026-08-11 本机 `data-sync` 模块回归为 `279` tests、`2` skipped，`agent-runtime` 为 `645/645`，没有失败。
+
+**仍需本轮运行验证**：当前运行数据库只应用到 V22，V23/V24/V25 表或列尚未出现，说明现有 data-sync 容器早于最新源码。2026-08-13 源码已经把真实 retry receipt 后的 PRECHECK/MONITOR 复核接到固定内部入口，并以 checkpoint、turn ID 和 Java fact sink 保证重放幂等和失败向 Kafka 传播；模块回归为 Python `1150 passed / 1 skipped`、Agent Runtime `693 passed`。仍必须重建并重启 data-sync/agent-runtime/Python Runtime，确认 V23/V24/V25 Flyway、broker 投递/重投递、可信状态重建、Provider 自主 `SEARCH`/`SKIP` 规划、失败对象 retry/quarantine、worker 处理、最终 receipt、恢复写动作后的 durable fact、指标和告警；不能从源码、producer、outbox 或 `AUTO_APPROVED` 推断无人值守恢复已经在真实环境发生。
+
+**当前环境状态**：本机 Compose、Kafka、PostgreSQL、Gateway、Agent Runtime、Python Runtime、data-sync 和前端均在运行且健康，完整 Compose 已显式开启 Autopilot listener；但镜像仍需按最新源码重建，V23/V24 尚未应用。该差距属于待执行部署验证，不是模块测试失败。
+
+**剩余事项**：用最新源码镜像验证 V23/V24、消费后可信状态重建、授权/作用域/循环/风险复核和 Python 规划调用；再以真实失败 execution 验证模型 `SEARCH`/`SKIP`、双策略、同幂等键失败对象 retry、真实 preview/selector/receipt quarantine、worker 处理与成功/失败 receipt 收敛。随后验证死信、重复投递、过期授权、Provider 失败、V23 compensation、V24 receipt 回放和审批停点的指标/告警，并分别证明低风险自动 retry/quarantine 及高风险人工审批 E2E。
 
 ## 9. 下一步收敛建议
 
@@ -611,3 +624,18 @@ POST http://localhost:8086/internal/sync-workers/run-once
 3. 把 Agent 能力整理为最小闭口清单：tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、LLM provider。
 4. 对模型层保持 provider-neutral 策略，优先接入成熟推理服务、缓存、限流、重试、token budget 和可观测，而不是在本项目内做底层算法或微调。
 5. 做一次真实故障演练：暂停 task-management、让 data-sync 产生 receipt、确认 outbox RETRY_WAIT、恢复 task-management 后确认 DELIVERED。
+
+### 8.2 2026-08-13 Autopilot 自主检索与无人值守恢复复核
+
+本轮已完成并复核以下代码闭环：普通同步规划把 RAG 暴露为模型可见工具，由模型根据当前证据自主选择 `SEARCH` 或 `SKIP`；Recovery 规划强制使用持久化 RAG 证据。恢复动作仍由 Java/data-sync 控制面执行，Python 只负责受约束的决策与证据编排。首次授权后，授权盒子内的低风险 `RETRY_EXECUTION` 可以无人值守排队、执行和有界重试；达到最大循环次数、授权过期、证据不足、双策略不一致或高风险动作时，系统会停在 `ATTENTION_REQUIRED`/审批边界，不会无限循环或越权写入。
+
+本轮验证证据：
+
+- Python 全量回归：`1162 passed, 1 skipped`；Recovery 聚焦回归：`24 passed`。
+- JDK 21 下 `agent-runtime`、`data-sync` 及其依赖模块编译成功。
+- Frontend `lint`、`build` 以及 API/WebSocket、Agent control-plane、Specialist audit、confirmation gate、live contract 和 data-sync locator 合同测试全部通过。
+- 使用最新源码构建并启动的 `data-sync`、`agent-runtime`、`python-ai-runtime` 容器均为 healthy；Agent Runtime 日志确认 Autopilot 主 topic、两级 retry topic 和 DLT consumer 已加入 Kafka consumer group。
+- durable Specialist fact 已 fail-closed：事实未持久化时 Python 返回 HTTP `503`，Kafka 消费不 ACK，交给既有有界重试/DLT；相同可信 binding 的 terminal checkpoint 重放保持幂等。
+- 离线六 Specialist 合同回归证明了模型可自主 `SEARCH`/`SKIP`、失败对象可受治理重排队，以及最大循环后进入 `ATTENTION_REQUIRED`。
+
+本轮没有宣称完成真实生产写动作 E2E。宿主机未配置 `DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD`，因此没有执行需要 project-owner 登录的真实 `-Execute -ConfirmAndExecute -EnableAutopilot` Recovery 黑盒。仍需在隔离环境补充真实 Keycloak 授权、V20-V25 Flyway 状态、Kafka 投递/重投递、Python Provider/RAG、worker receipt、post-action `PRECHECK_AGENT`/`MONITOR_AGENT` durable fact、指标告警以及低风险自动 retry/quarantine 和高风险审批停点证据。

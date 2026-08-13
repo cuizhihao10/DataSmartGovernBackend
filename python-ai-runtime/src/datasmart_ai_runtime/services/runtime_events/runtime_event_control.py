@@ -79,10 +79,19 @@ class RuntimeEventControlHandler:
     ) -> dict[str, Any]:
         """处理一条控制消息并返回协议响应。
 
-        响应固定包含：
+        输入是已经完成 JSON 字段归一化的 `RuntimeEventControlMessage`，可选的 `access_context` 是网关
+        已认证身份，不能由客户端正文替代。`lastSequence` 和 `afterSequence` 都属于前端 envelope 的全局
+        展示序号；`sourceCursors` 则属于 Java 投影、Redis Stream、Kafka 等外部 source 各自的稳定坐标。
+        两类游标不能互相代替。
+
+        输出固定包含：
         - `messageType`：本次处理的控制消息类型；
         - `subscription`：订阅会话快照；
         - `accepted`：当前消息已被状态机接受。
+
+        副作用由会话状态机承担：subscribe 创建会话，ack/heartbeat 可推进 envelope ack 或回写外部 ack，
+        reconnect 生成 replay。reconnect 收到的 `sourceCursors` 只会用于下一次外部 replay 的起点，绝不
+        在控制层直接调用外部 source，因此响应仍只包含既有的低敏订阅和 replay 摘要。
 
         如果订阅建立或重连产生 replay envelope，该 envelope 会包含在 `subscription.replayEnvelope` 中。
         """
@@ -105,7 +114,16 @@ class RuntimeEventControlHandler:
         *,
         override_request_identity: bool = True,
     ) -> RuntimeEventSessionSnapshot:
-        """按控制消息类型分发到会话状态机。"""
+        """按控制消息类型分发到会话状态机。
+
+        这是 WebSocket/HTTP 边界和领域状态机之间唯一的控制分发点。它接收已解析的控制消息，返回更新后
+        的不可变会话快照，并把身份合并和授权限制在 subscribe 分支。ack、heartbeat 和 reconnect 只能
+        使用已有 subscriptionId，不能借控制帧替换租户、角色或订阅范围。
+
+        对重连而言，`afterSequence` 决定 envelope 级回放从哪里继续；`sourceCursors` 与其并行传给会话
+        管理器，决定每个已配置外部 source 的读取起点。两者同时保留，避免 REST/WebSocket 重放把 Java、
+        Redis 或 Kafka 的源级游标误当成全局 sequence。
+        """
 
         if message.message_type == RuntimeEventControlMessageType.SUBSCRIBE:
             if message.request is None:
@@ -143,7 +161,11 @@ class RuntimeEventControlHandler:
             after_sequence = message.after_sequence
             if after_sequence is None and message.request is not None:
                 after_sequence = message.request.after_sequence
-            return self._session_manager.reconnect(subscription_id, after_sequence=after_sequence)
+            return self._session_manager.reconnect(
+                subscription_id,
+                after_sequence=after_sequence,
+                source_cursors=message.source_cursors,
+            )
 
         if message.message_type == RuntimeEventControlMessageType.UNSUBSCRIBE:
             subscription_id = self._require_subscription_id(message)
@@ -250,7 +272,13 @@ def control_message_from_payload(payload: Any) -> RuntimeEventControlMessage:
     - 回放起点：`afterSequence`、`after_sequence`；
     - 订阅请求：`subscription`、`request`。
 
-    这类兼容逻辑放在边界层，领域对象内部保持统一字段，避免核心服务被前端命名细节污染。
+    这类兼容逻辑放在边界层，领域对象内部保持统一字段，避免核心服务被前端命名细节污染。这里还要区分
+    两套游标：`lastSequence`/`afterSequence` 是 envelope 级序号；`sourceCursors` 是外部 source 的源级
+    续传位置。对于 reconnect，后者会采用严格的正整数解析，之后仍由会话层检查 source 是否已配置并
+    以单调方式合并。ack/heartbeat 保留既有的宽进严出解析与外部 ack 语义。
+
+    输入不是对象、控制类型未知或基础字段无法转换时，调用方会得到稳定的低敏格式错误，而不会回显原始
+    WebSocket payload、游标内容或下游连接细节。本函数只构造领域对象，不创建会话，也不会发起 replay。
     """
 
     if not isinstance(payload, Mapping):
@@ -267,12 +295,18 @@ def control_message_from_payload(payload: Any) -> RuntimeEventControlMessage:
         raise RuntimeEventControlMessageError("事件控制消息字段格式不正确。")
     try:
         message_type = RuntimeEventControlMessageType(raw_type)
+        raw_source_cursors = payload.get("sourceCursors", payload.get("source_cursors", {}))
+        source_cursors = (
+            _reconnect_source_cursors_from_payload(raw_source_cursors)
+            if message_type == RuntimeEventControlMessageType.RECONNECT
+            else _source_cursors_from_payload(raw_source_cursors)
+        )
         return RuntimeEventControlMessage(
             message_type=message_type,
             subscription_id=payload.get("subscriptionId") or payload.get("subscription_id"),
             request=_subscription_request_from_payload(request_payload) if request_payload else None,
             last_sequence=_optional_int(payload.get("lastSequence", payload.get("last_sequence"))),
-            source_cursors=_source_cursors_from_payload(payload.get("sourceCursors", payload.get("source_cursors", {}))),
+            source_cursors=source_cursors,
             after_sequence=_optional_int(payload.get("afterSequence", payload.get("after_sequence"))),
             reason=payload.get("reason"),
             attributes=dict(attributes),
@@ -339,8 +373,13 @@ def _source_cursors_from_payload(value: Any) -> dict[str, int]:
     - `afterSequence`：表示展示层 envelope 已经处理到哪个序号；
     - `sourceCursors`：表示 Java 投影、未来 Redis Stream/Kafka 回放源各自读到的稳定 cursor。
 
-    这里采用“宽进严出”策略：只有对象形态、sourceName 非空、cursor 可转为正整数时才保留。
-    这样一个坏游标不会让整个 subscribe/reconnect 失败，也不会把负数游标传给下游造成全量回放。
+    此函数服务于 subscribe、ack 和 heartbeat 的既有兼容路径，采用“宽进严出”策略：只有对象形态、
+    sourceName 非空、cursor 可转为正整数时才保留。它的输出只是一份脱离原始 JSON 的整数副本，不会
+    修改会话，也不会直接调用 Java/Redis/Kafka。
+
+    reconnect 因为会把游标写回可持久化的回放状态，改用下面的
+    `_reconnect_source_cursors_from_payload(...)` 做更严格的边界校验；这能在不改变 ACK/heartbeat 语义
+    的前提下阻止布尔值、浮点数或字符串游标进入重连状态。
     """
 
     if not isinstance(value, dict):
@@ -356,4 +395,33 @@ def _source_cursors_from_payload(value: Any) -> dict[str, int]:
             continue
         if normalized_cursor > 0:
             cursors[source_name] = normalized_cursor
+    return cursors
+
+
+def _reconnect_source_cursors_from_payload(value: Any) -> dict[str, int]:
+    """严格解析 reconnect 控制帧中的外部 source 游标。
+
+    `sourceCursors` 的每一项都是“某个外部 source 已读取到哪里”，不是展示给前端的 envelope sequence。
+    因此它会影响下一次 Java REST replay、Redis Stream 或 Kafka replay 的扫描起点，不能沿用所有类型都
+    可强制转换的宽松规则。
+
+    输入必须是 JSON 对象，键必须是非空字符串，值必须是正整数且不能是 Python `bool`。输出是新的
+    `{sourceName: cursor}` 字典；无效项会被逐项丢弃，不会用 0、负数、浮点截断值或字符串覆盖已有会话
+    游标。这里尚不知道当前会话装配了哪些 source，未知 source 的 fail-closed 过滤和单调合并由
+    `RuntimeEventSessionManager` 完成。
+
+    本函数没有网络、存储或会话副作用。客户端即使带来坏条目，重连仍可使用服务器已保存的可信游标继续
+    回放，且响应不会回显被拒绝的原始值。
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    cursors: dict[str, int] = {}
+    for raw_source_name, raw_cursor in value.items():
+        if not isinstance(raw_source_name, str):
+            continue
+        source_name = raw_source_name.strip()
+        if not source_name or isinstance(raw_cursor, bool) or not isinstance(raw_cursor, int) or raw_cursor <= 0:
+            continue
+        cursors[source_name] = max(cursors.get(source_name, 0), raw_cursor)
     return cursors

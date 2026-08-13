@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Function;
 
 /**
  * Agent 会话服务。
@@ -191,14 +192,12 @@ public class AgentSessionService {
 
     AgentSessionView bindTool(String sessionId, BindAgentToolRequest request) {
         ensureRuntimeEnabled();
-        AgentSessionRecord session = findSession(sessionId);
-        synchronized (session) {
+        return mutateExistingSession(sessionId, session -> {
             ensureSessionCanMutate(session);
             ensureToolLimit(session.getToolBindings().size(), 1);
             session.addToolBinding(toBindingRecord(request));
-            memoryStore.save(session);
             return toSessionView(session);
-        }
+        });
     }
 
     /**
@@ -217,8 +216,7 @@ public class AgentSessionService {
 
     AgentRunView startRun(String sessionId, StartAgentRunRequest request, String traceId) {
         ensureRuntimeEnabled();
-        AgentSessionRecord session = findSession(sessionId);
-        synchronized (session) {
+        return mutateExistingSession(sessionId, session -> {
             ensureSessionCanMutate(session);
             ensureRunLimit(session);
             boolean explicitHumanApproval = Boolean.TRUE.equals(request.requireHumanApproval());
@@ -240,9 +238,8 @@ public class AgentSessionService {
             );
             session.addRun(run);
             toolExecutionAuditService.createPlanAudits(session, run, traceId);
-            memoryStore.save(session);
             return toRunView(run);
-        }
+        });
     }
 
     /**
@@ -258,17 +255,15 @@ public class AgentSessionService {
 
     AgentRunView cancelRun(String sessionId, String runId) {
         ensureRuntimeEnabled();
-        AgentSessionRecord session = findSession(sessionId);
-        synchronized (session) {
+        return mutateExistingSession(sessionId, session -> {
             AgentRunRecord run = findRun(session, runId);
             if (run.getState().isTerminal()) {
                 throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
                         "Agent Run 已进入终态，不能重复取消，runId=" + runId);
             }
             run.cancel("Agent Run 已由控制面取消；当前版本尚未下发真实编排任务，因此无需等待下游确认。");
-            memoryStore.save(session);
             return toRunView(run);
-        }
+        });
     }
 
     /**
@@ -282,11 +277,10 @@ public class AgentSessionService {
     public AgentSessionView setPinned(String sessionId, boolean pinned, AgentSessionAccessContext accessContext) {
         AgentSessionRecord session = findSession(sessionId);
         ensureMutationAccess(session, accessContext);
-        synchronized (session) {
-            session.setPinned(pinned);
-            memoryStore.save(session);
-            return toSessionView(session);
-        }
+        return mutateExistingSession(sessionId, currentSession -> {
+            currentSession.setPinned(pinned);
+            return toSessionView(currentSession);
+        });
     }
 
     /**
@@ -300,11 +294,32 @@ public class AgentSessionService {
     public AgentSessionView setArchived(String sessionId, boolean archived, AgentSessionAccessContext accessContext) {
         AgentSessionRecord session = findSession(sessionId);
         ensureMutationAccess(session, accessContext);
-        synchronized (session) {
-            session.setArchived(archived);
-            memoryStore.save(session);
-            return toSessionView(session);
-        }
+        return mutateExistingSession(sessionId, currentSession -> {
+            currentSession.setArchived(archived);
+            return toSessionView(currentSession);
+        });
+    }
+
+    /**
+     * Executes one existing-session change through the store's atomic aggregate boundary.
+     *
+     * <p>All callers of this helper change a freshly loaded session. In PostgreSQL mode the store holds the parent
+     * and child row locks until the callback and persistence complete; in memory mode it holds the current session
+     * monitor. This prevents an older service snapshot from deleting a Run, message, confirmation receipt, or tool
+     * binding written by another Runtime instance. New-session creation intentionally keeps using {@code save}
+     * because no concurrent caller can yet know its generated session ID.</p>
+     *
+     * @param sessionId existing session to mutate
+     * @param mutation synchronous domain change; do not perform remote network calls inside it
+     * @param <T> view returned after the change is durably persisted
+     * @return non-null callback result
+     * @throws PlatformBusinessException when the session disappeared before the atomic mutation acquired its lock
+     */
+    private <T> T mutateExistingSession(String sessionId, Function<AgentSessionRecord, T> mutation) {
+        return memoryStore.mutateAtomically(sessionId, mutation)
+                .orElseThrow(() -> new PlatformBusinessException(
+                        PlatformErrorCode.NOT_FOUND,
+                        "Agent 会话不存在，sessionId=" + sessionId));
     }
 
     /**
@@ -334,7 +349,10 @@ public class AgentSessionService {
             ensureRunCanAcceptToolDecision(run);
             AgentToolExecutionAuditView decision = toolExecutionAuditService.approve(sessionId, runId, auditId, request);
             runStateCoordinator.reconcileAfterToolDecision(session, run);
-            memoryStore.save(session);
+            if (!memoryStore.updateRunAfterToolDecision(sessionId, run)) {
+                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "Agent Run changed while approval was being reconciled, runId=" + runId);
+            }
             return decision;
         }
     }
@@ -367,7 +385,10 @@ public class AgentSessionService {
             ensureRunCanAcceptToolDecision(run);
             AgentToolExecutionAuditView decision = toolExecutionAuditService.reject(sessionId, runId, auditId, request);
             runStateCoordinator.reconcileAfterToolDecision(session, run);
-            memoryStore.save(session);
+            if (!memoryStore.updateRunAfterToolDecision(sessionId, run)) {
+                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "Agent Run changed while rejection was being reconciled, runId=" + runId);
+            }
             return decision;
         }
     }
@@ -405,7 +426,9 @@ public class AgentSessionService {
                         "Agent Run 正在等待人工确认，不能执行工具，runId=" + runId);
             }
             AgentToolExecutionResultView result = toolExecutionService.execute(session, run, auditId, traceId);
-            memoryStore.save(session);
+            // Tool execution mutates the durable audit/output stores, not the session or Run aggregate. Saving the
+            // whole session here would only replace child snapshots and could erase a continuation Run appended by
+            // another Runtime instance.
             return result;
         }
     }

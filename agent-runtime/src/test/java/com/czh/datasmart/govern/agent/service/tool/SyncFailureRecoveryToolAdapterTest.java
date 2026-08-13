@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.client.ExpectedCount.once;
@@ -61,6 +62,7 @@ class SyncFailureRecoveryToolAdapterTest {
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(jsonPath("$.executionId").value(373))
                 .andExpect(jsonPath("$.quarantineAllRetryableInExecution").value(true))
+                .andExpect(jsonPath("$.reason").value("USER_CONFIRMED_AGENT_DIRTY_RECORD_QUARANTINE"))
                 .andRespond(withSuccess(successEnvelope("""
                         {"taskId":31,"executionId":373,"selectedCount":2,"eligibleCount":2,
                          "affectedCount":0,"operationState":"PREVIEWED","issueCodes":[],
@@ -74,6 +76,37 @@ class SyncFailureRecoveryToolAdapterTest {
 
         assertTrue(outcome.success());
         assertEquals("PREVIEWED", outcome.output().get("operationState"));
+        server.verify();
+    }
+
+    /**
+     * Autopilot preview must bind the digest to the exact reason later reconstructed by the internal apply route.
+     */
+    @Test
+    void shouldUseServerOwnedAutopilotReasonForSystemRecoveryPreview() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AgentToolExecutionOutputStore store = new AgentToolExecutionOutputStore();
+        store.save(snapshot("audit-diagnosis", SyncFailureRecoveryToolAdapter.DIAGNOSE), Map.of(
+                "taskId", 31L, "executionId", 373L));
+        SyncFailureRecoveryToolAdapter adapter = adapter(builder, store);
+
+        server.expect(once(), requestTo("http://data-sync.test/sync-tasks/31/errors/quarantine/preview"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.reason")
+                        .value("AUTOPILOT_PREAUTHORIZED_DIRTY_RECORD_QUARANTINE"))
+                .andRespond(withSuccess(successEnvelope("""
+                        {"taskId":31,"executionId":373,"selectedCount":1,"eligibleCount":1,
+                         "affectedCount":0,"operationState":"PREVIEWED","issueCodes":[]}
+                        """), MediaType.APPLICATION_JSON));
+
+        AgentToolExecutionOutcome outcome = adapter.execute(context(
+                SyncFailureRecoveryToolAdapter.DIRTY_QUARANTINE_PREVIEW,
+                Map.of("diagnosisRef", reference(
+                        SyncFailureRecoveryToolAdapter.DIAGNOSE, "audit-diagnosis", null)),
+                Map.of("interactionOrigin", "SYSTEM_RECOVERY")));
+
+        assertTrue(outcome.success());
         server.verify();
     }
 
@@ -96,7 +129,10 @@ class SyncFailureRecoveryToolAdapterTest {
             byte[] responseBody = """
                     {"answer":"先扩大目标字符字段，再重试失败对象。",
                      "citations":[{"documentId":"runbook-1"}],
-                     "retrievalSummary":{"candidateCount":1}}
+                     "retrievalSummary":{"candidateCount":1,
+                       "evidenceDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","evidenceCount":1,
+                       "sourceTypes":["rag"],"retrievedAt":"2026-08-11T00:00:00Z",
+                       "scope":{"tenantId":"10","projectId":"101"}}}
                     """.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", MediaType.APPLICATION_JSON_VALUE);
             exchange.sendResponseHeaders(200, responseBody.length);
@@ -118,7 +154,11 @@ class SyncFailureRecoveryToolAdapterTest {
             AgentToolExecutionOutcome outcome = adapter.execute(context(
                     SyncFailureRecoveryToolAdapter.RAG_LOOKUP,
                     Map.of("diagnosisRef", reference(
-                            SyncFailureRecoveryToolAdapter.DIAGNOSE, "audit-diagnosis", null))));
+                            SyncFailureRecoveryToolAdapter.DIAGNOSE, "audit-diagnosis", null),
+                            "retrievalStrategy", "RAG",
+                            "tenantId", 999L,
+                            "projectId", 999L,
+                            "question", "model-overridden-question")));
             ObservedHttpRequest request = observedRequest.get();
 
             assertTrue(outcome.success(), () -> outcome.errorCode() + ": " + outcome.message());
@@ -127,9 +167,63 @@ class SyncFailureRecoveryToolAdapterTest {
             assertEquals("POST /agent/rag/query HTTP/1.1", request.requestLine());
             assertTrue(request.contentType().startsWith(MediaType.APPLICATION_JSON_VALUE));
             assertNull(request.upgrade());
+            assertEquals("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ((Map<?, ?>) outcome.output().get("evidenceAudit")).get("evidenceDigest"));
             assertTrue(request.body().contains("\"tenantId\":10"));
             assertTrue(request.body().contains("\"projectId\":101"));
             assertTrue(request.body().contains("TARGET_COLUMN_TOO_NARROW PostgreSQL 安全修复案例"));
+            assertTrue(request.body().contains("\"retrievalMode\":\"hybrid\""));
+            assertFalse(request.body().contains("model-overridden-question"));
+            assertFalse(request.body().contains("\"tenantId\":999"));
+            assertFalse(request.body().contains("\"projectId\":999"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void shouldMapModelSelectedWikiRetrievalToGovernedHybridQuery() throws Exception {
+        assertRecoveryStrategyRequest("WIKI", "hybrid", "wiki");
+    }
+
+    @Test
+    void shouldMapExactSearchAndGitHistoryRetrievalStrategies() throws Exception {
+        assertRecoveryStrategyRequest("EXACT_SEARCH", "lexical", null);
+        assertRecoveryStrategyRequest("GIT_HISTORY", "hybrid", "git_history");
+    }
+
+    @Test
+    void shouldRejectEvidenceAuditOutsideCurrentTenantProjectScope() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/agent/rag/query", exchange -> {
+            byte[] responseBody = """
+                    {"retrievalSummary":{"evidenceDigest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                      "evidenceCount":1,"sourceTypes":["wiki"],
+                      "retrievedAt":"2026-08-11T00:00:00Z",
+                      "scope":{"tenantId":"10","projectId":"999"}}}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", MediaType.APPLICATION_JSON_VALUE);
+            exchange.sendResponseHeaders(200, responseBody.length);
+            exchange.getResponseBody().write(responseBody);
+            exchange.close();
+        });
+        server.start();
+        try {
+            RestClient.Builder builder = RestClient.builder();
+            AgentToolExecutionOutputStore store = new AgentToolExecutionOutputStore();
+            store.save(snapshot("audit-diagnosis-scope", SyncFailureRecoveryToolAdapter.DIAGNOSE), Map.of(
+                    "ragQuery", "trusted-question"
+            ));
+            SyncFailureRecoveryToolAdapter adapter = adapter(
+                    builder, store, "http://127.0.0.1:" + server.getAddress().getPort());
+
+            AgentToolExecutionOutcome outcome = adapter.execute(context(
+                    SyncFailureRecoveryToolAdapter.RAG_LOOKUP,
+                    Map.of("diagnosisRef", reference(
+                            SyncFailureRecoveryToolAdapter.DIAGNOSE, "audit-diagnosis-scope", null))));
+
+            assertFalse(outcome.success());
+            assertEquals("SYNC_RECOVERY_VALIDATION_FAILED", outcome.errorCode());
         } finally {
             server.stop(0);
         }
@@ -188,6 +282,52 @@ class SyncFailureRecoveryToolAdapterTest {
                 new AgentToolOutputReferenceResolver(store));
     }
 
+    private void assertRecoveryStrategyRequest(String strategy,
+                                               String retrievalMode,
+                                               String sourceType) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicReference<String> body = new AtomicReference<>();
+        server.createContext("/agent/rag/query", exchange -> {
+            body.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] responseBody = """
+                    {"retrievalSummary":{"evidenceDigest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                      "evidenceCount":1,"sourceTypes":["runbook"],
+                      "retrievedAt":"2026-08-11T00:00:00Z",
+                      "scope":{"tenantId":"10","projectId":"101"}}}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", MediaType.APPLICATION_JSON_VALUE);
+            exchange.sendResponseHeaders(200, responseBody.length);
+            exchange.getResponseBody().write(responseBody);
+            exchange.close();
+        });
+        server.start();
+        try {
+            RestClient.Builder builder = RestClient.builder();
+            AgentToolExecutionOutputStore store = new AgentToolExecutionOutputStore();
+            store.save(snapshot("audit-diagnosis-strategy", SyncFailureRecoveryToolAdapter.DIAGNOSE), Map.of(
+                    "ragQuery", "trusted-question"
+            ));
+            SyncFailureRecoveryToolAdapter adapter = adapter(
+                    builder, store, "http://127.0.0.1:" + server.getAddress().getPort());
+
+            AgentToolExecutionOutcome outcome = adapter.execute(context(
+                    SyncFailureRecoveryToolAdapter.RAG_LOOKUP,
+                    Map.of("diagnosisRef", reference(
+                                    SyncFailureRecoveryToolAdapter.DIAGNOSE, "audit-diagnosis-strategy", null),
+                            "retrievalStrategy", strategy)));
+
+            assertTrue(outcome.success(), () -> outcome.errorCode() + ": " + outcome.message());
+            assertTrue(body.get().contains("\"retrievalMode\":\"" + retrievalMode + "\""));
+            if (sourceType == null) {
+                assertFalse(body.get().contains("\"sourceTypes\""));
+            } else {
+                assertTrue(body.get().contains("\"sourceTypes\":[\"" + sourceType + "\"]"));
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
     /** Low-sensitive transport facts captured by the raw contract endpoint. */
     private record ObservedHttpRequest(String requestLine, String contentType, String upgrade, String body) {
     }
@@ -208,6 +348,12 @@ class SyncFailureRecoveryToolAdapterTest {
     }
 
     private AgentToolExecutionContext context(String toolCode, Map<String, Object> planArguments) {
+        return context(toolCode, planArguments, Map.of());
+    }
+
+    private AgentToolExecutionContext context(String toolCode,
+                                              Map<String, Object> planArguments,
+                                              Map<String, Object> variables) {
         AgentSessionRecord session = new AgentSessionRecord(
                 "session-001", 10L, 101L, null, "1001",
                 "PROJECT_OWNER", "USER", "101:OWNER",
@@ -224,7 +370,7 @@ class SyncFailureRecoveryToolAdapterTest {
                 false, false, List.of("RECOVER"), "测试同步恢复工具",
                 planArguments, Map.of("projectScoped", true), Map.of("missingFields", List.of()),
                 AgentToolExecutionState.PLANNED, "trace-recovery", "同步恢复测试", LocalDateTime.now());
-        return new AgentToolExecutionContext(session, run, audit, Map.of(), "trace-recovery");
+        return new AgentToolExecutionContext(session, run, audit, variables, "trace-recovery");
     }
 
     private String successEnvelope(String data) {

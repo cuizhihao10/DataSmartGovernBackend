@@ -19,6 +19,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -99,6 +100,170 @@ class DataSyncTaskManagementReceiptPublisherTest {
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * Autopilot 恢复触发不能依赖 task-management 展示投影开关。
+     */
+    @Test
+    void publishFailedShouldTriggerAutopilotEvenWhenReceiptProjectionIsDisabled() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        SyncAutopilotRecoveryTriggerPublisher triggerPublisher = mock(SyncAutopilotRecoveryTriggerPublisher.class);
+        DataSyncTaskManagementReceiptProperties properties = new DataSyncTaskManagementReceiptProperties();
+        properties.setEnabled(false);
+        DataSyncTaskManagementReceiptPublisher publisher = new DataSyncTaskManagementReceiptPublisher(
+                outboxService, properties, triggerPublisher);
+
+        publisher.publishFailed(task(), execution(), actor(), "TARGET_TIMEOUT", List.of("TARGET_TIMEOUT"));
+
+        verify(triggerPublisher).publishFailed(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                eq("TARGET_TIMEOUT"),
+                eq(List.of("TARGET_TIMEOUT")));
+        verify(outboxService, never()).enqueueAndDispatch(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * 成功收敛同样不能依赖 task-management 展示投影开关，否则夜间恢复成功后 case 会永久停在执行中。
+     */
+    @Test
+    void publishCompleteShouldCloseAutopilotEvenWhenReceiptProjectionIsDisabled() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        SyncAutopilotRecoveryTriggerPublisher triggerPublisher = mock(SyncAutopilotRecoveryTriggerPublisher.class);
+        DataSyncTaskManagementReceiptProperties properties = new DataSyncTaskManagementReceiptProperties();
+        properties.setEnabled(false);
+        DataSyncTaskManagementReceiptPublisher publisher = new DataSyncTaskManagementReceiptPublisher(
+                outboxService, properties, triggerPublisher);
+        SyncTask task = task();
+        SyncExecution execution = execution();
+
+        publisher.publishComplete(task, execution, actor(), response());
+
+        verify(triggerPublisher).publishSucceeded(task, execution);
+        verify(outboxService, never()).enqueueAndDispatch(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * Autopilot 的独立事务失败时，原有 task-management 失败投影仍必须继续写入自己的 outbox。
+     *
+     * <p>这条回归保护“恢复控制面”和“执行事实投影”的故障隔离：前者可以回滚并等待告警处理，
+     * 后者不能因此丢失已经发生的 execution failed 事实。</p>
+     */
+    /**
+     * PARTIALLY_SUCCEEDED remains a partial result for task-management, but failed objects must still open
+     * the bounded Autopilot recovery path even when the receipt projection is disabled.
+     */
+    @Test
+    void publishPartiallySucceededShouldTriggerAutopilotForFailedObjectsEvenWhenReceiptProjectionIsDisabled() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        SyncAutopilotRecoveryTriggerPublisher triggerPublisher = mock(SyncAutopilotRecoveryTriggerPublisher.class);
+        DataSyncTaskManagementReceiptProperties properties = new DataSyncTaskManagementReceiptProperties();
+        properties.setEnabled(false);
+        DataSyncTaskManagementReceiptPublisher publisher = new DataSyncTaskManagementReceiptPublisher(
+                outboxService, properties, triggerPublisher);
+        SyncTask task = task();
+        SyncExecution execution = execution();
+
+        publisher.publishPartiallySucceeded(task, execution, actor(), response(), List.of("FAILED_OBJECT_TIMEOUT"));
+
+        verify(triggerPublisher).publishFailed(
+                eq(task), eq(execution), eq("PARTIAL_OBJECT_FAILURE"), eq(List.of("FAILED_OBJECT_TIMEOUT")));
+        verify(outboxService, never()).enqueueAndDispatch(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    /** A partial receipt without a failed-object count must not manufacture an Autopilot recovery. */
+    @Test
+    void publishPartiallySucceededShouldNotTriggerAutopilotWithoutFailedObjects() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        SyncAutopilotRecoveryTriggerPublisher triggerPublisher = mock(SyncAutopilotRecoveryTriggerPublisher.class);
+        DataSyncTaskManagementReceiptProperties properties = new DataSyncTaskManagementReceiptProperties();
+        properties.setEnabled(false);
+        DataSyncTaskManagementReceiptPublisher publisher = new DataSyncTaskManagementReceiptPublisher(
+                outboxService, properties, triggerPublisher);
+        SyncExecution execution = execution();
+        execution.setFailedRecordCount(0L);
+        DatasourceRunOnceResponse response = response();
+        response.setBatchFailedRecordCount(0L);
+        response.setTotalFailedRecordCount(0L);
+
+        publisher.publishPartiallySucceeded(task(), execution, actor(), response, List.of("FAILED_OBJECT_TIMEOUT"));
+
+        verify(triggerPublisher, never()).publishFailed(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void publishFailedShouldContinueReceiptProjectionWhenAutopilotTransactionFails() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        SyncAutopilotRecoveryTriggerPublisher triggerPublisher = mock(SyncAutopilotRecoveryTriggerPublisher.class);
+        SyncAutopilotRecoverySidecarCompensationService compensationService =
+                mock(SyncAutopilotRecoverySidecarCompensationService.class);
+        SyncAutopilotRecoveryMetrics metrics = mock(SyncAutopilotRecoveryMetrics.class);
+        doThrow(new IllegalStateException("outbox insert failed"))
+                .when(triggerPublisher).publishFailed(
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+        DataSyncTaskManagementReceiptProperties properties = new DataSyncTaskManagementReceiptProperties();
+        properties.setEnabled(true);
+        DataSyncTaskManagementReceiptPublisher publisher = new DataSyncTaskManagementReceiptPublisher(
+                outboxService, properties, triggerPublisher, compensationService, metrics);
+        SyncTask task = task();
+        SyncExecution execution = execution();
+        SyncActorContext actor = actor();
+
+        publisher.publishFailed(task, execution, actor, "TARGET_TIMEOUT", List.of("TARGET_TIMEOUT"));
+
+        TaskManagementExecutionReceiptRequest request = capturedRequest(outboxService, task, execution, actor);
+        assertThat(request.getEventType()).isEqualTo("FAILED");
+        assertThat(request.getFailed()).isTrue();
+        verify(compensationService).recordFailedTrigger(task, execution,
+                "TARGET_TIMEOUT", List.of("TARGET_TIMEOUT"));
+        verify(metrics).recordTriggerSidecarFailure();
+    }
+
+    @Test
+    void publishCompleteShouldContinueReceiptProjectionAndRecordCompensationWhenFinalizationTransactionFails() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        SyncAutopilotRecoveryTriggerPublisher triggerPublisher = mock(SyncAutopilotRecoveryTriggerPublisher.class);
+        SyncAutopilotRecoverySidecarCompensationService compensationService =
+                mock(SyncAutopilotRecoverySidecarCompensationService.class);
+        SyncAutopilotRecoveryMetrics metrics = mock(SyncAutopilotRecoveryMetrics.class);
+        doThrow(new IllegalStateException("case transition failed"))
+                .when(triggerPublisher).publishSucceeded(
+                        org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        DataSyncTaskManagementReceiptProperties properties = new DataSyncTaskManagementReceiptProperties();
+        properties.setEnabled(true);
+        DataSyncTaskManagementReceiptPublisher publisher = new DataSyncTaskManagementReceiptPublisher(
+                outboxService, properties, triggerPublisher, compensationService, metrics);
+        SyncTask task = task();
+        SyncExecution execution = execution();
+        SyncActorContext actor = actor();
+
+        publisher.publishComplete(task, execution, actor, response());
+
+        TaskManagementExecutionReceiptRequest request = capturedRequest(outboxService, task, execution, actor);
+        assertThat(request.getEventType()).isEqualTo("COMPLETE");
+        assertThat(request.getCompleted()).isTrue();
+        verify(compensationService).recordSuccessfulFinalization(task, execution);
+        verify(metrics).recordFinalizationSidecarFailure();
     }
 
     private TaskManagementExecutionReceiptRequest capturedRequest(DataSyncTaskManagementReceiptOutboxService outboxService,

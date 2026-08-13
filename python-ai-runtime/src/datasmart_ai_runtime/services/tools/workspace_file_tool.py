@@ -324,17 +324,43 @@ class WorkspaceFileToolService:
         项目代号被写入日志/事件的风险。
         """
 
+        root = self.resolve_workspace_root(workspace_root, workspace_reference)
+        path_parts = self.validate_relative_path(relative_path)
+        target = root.joinpath(*path_parts).resolve()
+        if not (target == root or root in target.parents):
+            raise ValueError("WORKSPACE_FILE_PATH_ESCAPE_BLOCKED")
+        return target, _path_digest("/".join(path_parts))
+
+    def resolve_workspace_root(self, workspace_root: str, workspace_reference: str) -> Path:
+        """返回已验证的真实 workspace 根目录，供同一执行边界内的只读工具复用。
+
+        输入中的 ``workspace_root`` 是受控执行器注入的真实文件系统路径，绝不能来自模型的
+        tool call；``workspace_reference`` 则是可进入审计和计划的低敏引用。本方法同时验证工具
+        开关、引用格式和 root allowlist，成功时只把 ``Path`` 交给进程内后续逻辑，调用方不得把
+        它序列化到 ToolPlan、运行时事件或模型上下文中。
+
+        把这一步公开为执行层复用边界，可以让文本检索等新只读能力继承完全相同的 workspace
+        授权规则，而不是重新拼接一套容易产生路径逃逸差异的校验代码。
+        """
+
         if not self._settings.enabled:
             raise ValueError("WORKSPACE_FILE_TOOL_DISABLED")
         if not _is_safe_workspace_reference(workspace_reference):
             raise ValueError("WORKSPACE_FILE_REFERENCE_INVALID")
         root = Path(workspace_root).resolve()
         self._validate_workspace_root(root)
-        path_parts = self._safe_relative_parts(relative_path)
-        target = root.joinpath(*path_parts).resolve()
-        if not (target == root or root in target.parents):
-            raise ValueError("WORKSPACE_FILE_PATH_ESCAPE_BLOCKED")
-        return target, _path_digest("/".join(path_parts))
+        return root
+
+    def validate_relative_path(self, relative_path: str) -> tuple[str, ...]:
+        """验证并拆分 workspace 内相对路径，返回安全路径段而不执行文件 I/O。
+
+        此方法拒绝绝对路径、``..``、隐藏路径、凭据目录和受限文件名/后缀。返回值只能用于已由
+        :meth:`resolve_workspace_root` 验证过的 root 下拼接路径；它不是一个向外暴露真实路径的
+        序列化工具。文本搜索会对遍历到的每个相对路径复用这里的规则，避免扫描时绕过文件读取
+        已建立的隐藏与凭据防护。
+        """
+
+        return self._safe_relative_parts(relative_path)
 
     def _validate_workspace_root(self, root: Path) -> None:
         """校验 workspace root 是否在 allowlist 中。"""

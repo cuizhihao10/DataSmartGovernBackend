@@ -4,7 +4,7 @@
 
 本清单用于把当前项目从“持续扩展功能”推进到“可验收、可演示、可继续生产化”的收敛状态。它不是新的功能规划，也不是要求继续无限补模块；它的核心作用是固定当前项目的交付边界，让后续每一次变更都能先判断自己属于“闭环缺口修复”“生产化加固”还是“暂缓的新能力扩展”。
 
-当前仓库已经具备完整的本地容器化闭环：基础中间件、Keycloak 认证中心、gateway、8 个 Java 微服务、Python AI Runtime、Prometheus、Grafana、Chroma、Neo4j、MinIO 都可以在同一套 Compose 栈中启动，并通过只读 smoke 验证关键控制面。这个结论只代表“本地单机集成闭环已经成立”，不等于“生产发布完全完成”。
+仓库已具备本地容器化集成所需的 Compose 定义，并保留基础中间件、Keycloak 认证中心、gateway、8 个 Java 微服务、Python AI Runtime、Prometheus、Grafana、Chroma、Neo4j、MinIO 的既有只读 smoke 验证记录。本次文档收敛未启动 Compose 或执行 Docker E2E；这些历史本地集成证据不能外推为当前 Autopilot 恢复链路或生产发布已完成。
 
 ## 2. 已闭环能力
 
@@ -216,7 +216,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 - Python `SpecialistAgentRegistry` 和 `SpecialistAgentCoordinator` 按角色、checkpoint、租户/项目/操作者范围、delegation 和工具白名单 fail-closed 调度；依赖波次通过低敏 handoff 传递，不把 prompt、SQL、工具参数、凭据、样本或模型原文交给 Java fact store。
 - `DATA_SYNC_AGENT` 只生成配置/ToolPlan 草案，必须经过 Java ToolPlan bridge；Java 控制面负责权限、审批、outbox、worker receipt 和执行反馈；成功反馈再触发 PRECHECK/MONITOR 资源复核。
-- `RECOVERY_AGENT` 只读取失败事实和 RAG 证据生成待审批方案，Recovery 验收要求停在 Java handoff/审批等待态，不自动批准或执行。单项只读预览缺少可验证配置时以 `RECOVERY_ACTION_INPUT_INCOMPLETE` 跳过该项，其他完整只读预览仍可继续；没有任何完整动作时明确等待补参，不创建不可执行 ToolPlan。
+- `RECOVERY_AGENT` 只读取失败事实和 RAG 证据生成受治理候选，Python 本身不批准或执行写操作。普通或高风险 Recovery 仍停在 Java handoff/审批；但首次确认已固化 Autopilot 授权、且范围、白名单、风险、证据、幂等、循环和总时长均通过时，Java/data-sync 会实际执行有界 `RETRY_EXECUTION`，或在真实 preview、精确 selector 和持久回执都通过后执行 `APPLY_QUARANTINE`。单项只读预览缺少可验证配置时以 `RECOVERY_ACTION_INPUT_INCOMPLETE` 跳过该项，其他完整只读预览仍可继续；没有任何完整动作时明确等待补参，不创建不可执行 ToolPlan。
 - Agent Runtime `V5__specialist_agent_turn_facts.sql` 提供按 session/run 的低敏 durable fact，记录角色、状态、范围、checkpoint 和 handoff/bridge 引用，不保存 prompt、SQL、工具参数、凭据、样本或模型原文；permission-admin `V48__specialist_agent_turn_fact_route_policy.sql` 提供对应内部登记和只读查询路由策略，Compose overlay 已启用 fact fail-closed、数据源/data-sync 控制面地址和相关依赖。
 - Java ToolPlan bridge 只接收 `DATA_SYNC_AGENT`/`RECOVERY_AGENT` 的受控候选，Java 负责权限、审批、outbox、worker receipt 和反馈；反馈含可信 `taskId`/`executionId` 后，才在独立只读波次运行 `PRECHECK_AGENT`/`MONITOR_AGENT`。
 
@@ -245,7 +245,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 - 最终收敛：`codex-migration-handoff-2026-08-09.md`、`final-convergence-delivery-checklist.md`、`final-delivery-closure-runbook.md`、`final-platform-closure-audit.md`、`local-e2e-closure-runbook.md`。
 - 产品与学习资料：`ai-agent-interview-answers.md`、`ai-agent-project-technical-learning-path.md`、`ai-agent-resume-project-experience.md`、`ai-agent-technology-radar.md`、`platform-product-roadmap.md`。
 
-这些文档直接限定了本轮代码审查：PostgreSQL/pgvector 是持久化目标，Kafka 保持 Java/Python 异步边界，JDK 21/Spring Boot 3.5.11 不漂移；六 Specialist 必须在 durable checkpoint、权限、双主体审批、审计、幂等和低敏可观测性边界内运行；RAG 证据、LangGraph checkpoint 与 Specialist turn fact 必须可持久化且按 application/tenant/project/session/run 范围隔离；Recovery 只能形成受治理 handoff，不能自动批准；Gateway、data-sync 与前端 API/WebSocket 必须消费同一合同。生产资料把备份恢复、容量、故障演练、Keycloak、Secret 注入和监控保持为发布门禁；产品/学习资料仅解释长期八 Agent 蓝图，不能覆盖本轮真实六角色 roster 或被当作上线证据。
+以上为 `12 + 5 + 11 + 5 + 5 = 38` 份文档；分类是审查约束和证据归属，不是成熟度排名。迁移/架构组固定 PostgreSQL/pgvector、Kafka Java/Python 异步边界及 JDK 21/Spring Boot 3.5.11；Agent/RAG 组要求 `SEARCH`/`SKIP`、RAG 证据、LangGraph checkpoint 与 Specialist turn fact 都按 application/tenant/project/session/run 范围持久化隔离；生产运维组把备份恢复、容量、故障演练、Keycloak、Secret 注入、监控和真实环境 E2E 保持为发布门禁；最终收敛组规定静态实现、历史本地验证和环境级证据不得混写；产品与学习组只解释长期蓝图，不能覆盖本轮真实六角色 roster 或被当作上线证据。对 Recovery 而言，审查结论是“Python 只计划，Java/data-sync 在首次授权盒内可有条件执行低风险 quarantine/retry”，而不是“每次都等待审批”或“零副作用”；但单条 `AUTO_APPROVED`、静态指标或旧的只读 Recovery 记录仍不能替代最终 receipt 和隔离环境 E2E。
 
 本轮验证证据（2026-08-10 最终复跑）：
 
@@ -260,6 +260,47 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 此前的 Provider 401 外部阻塞已被 2026-08-10 后续复验取代，六 Agent 黑盒门禁现已关闭：Success 请求 `six-agent-success-type-normalized-20260810112629` 创建任务 `91`、执行 `2245`，worker `SUCCEEDED` 且读写 `20/20`，18 项检查无失败，仅有按需 RAG 未触发的 1 项预期 warning；Recovery 请求 `six-agent-recovery-rag-durable-20260810214832` 获得 2 条 grounded citation、2 条 durable evidence reference、1 个 Java 只读 preview，后置 PRECHECK/MONITOR 均为 `EXECUTED`，11 项检查无失败和 warning，并以退出码 `0` 结束。
 
 独立数据库审计确认审批、审批确认、提交事实和异步命令 outbox 本轮均为 `0`。任务 `76` 仍只有 `1805 FAILED` 与 `1806 SUCCEEDED`；恢复计划 `9` 早于本轮请求；8 个 Java 工具审计全部为 `LOW/readOnly/SUCCEEDED`；两条 KNOWLEDGE durable 引用均为 `rag:sha256:`，LangGraph 三个 RAG 节点完整。失败退出码的非零传播合同仍由独立 PowerShell 回归覆盖。生产发布仍需独立完成 Secret 轮换、备份恢复、容量、故障演练、SBOM/签名和客户环境迁移证据，不能用本地黑盒通过替代这些门禁。
+
+## 7.7 2026-08-11 Autopilot 恢复控制面增量审查
+
+本次增量核对的是当前源码及聚焦单元/契约测试中的 Autopilot 授权、决策、执行和持久化合同，不能把它记为已完成的 Docker 或生产无人值守恢复交付。首次确认 Agent Run 的可选 `autopilotPolicy` 会在工具副作用前固化为不可被后续 Run 替换或扩大的 `autopilotAuthorization`；其范围包含 tenant/application/project、用户/actor/Agent/delegation、根 session/run、有效期、循环/时长预算和 SHA-256 摘要。
+
+- 模型可按错误新颖度、诊断覆盖、grounded citation 和置信度选择 `SEARCH` 或 `SKIP`。无 grounded 证据的 `SEARCH` 强制形成只读检索 turn，取得 durable evidence 后才重评恢复；`SKIP` 不放宽工具、授权、预算、风险或审批门禁。
+- data-sync 的确定性评估会把作用域/授权/动作不匹配拒绝为 `REJECTED`；高风险或审批动作置为 `WAITING_APPROVAL`；循环或时间预算耗尽、重复错误、证据/置信度/指纹不足置为 `ATTENTION_REQUIRED`。授权层自动风险上限固定为 `LOW`。低风险资格白名单包含 `RETRY_EXECUTION`、`APPLY_QUARANTINE`、`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS`，但当前 Java 执行器实际支持的写分支只有 `RETRY_EXECUTION` 和已验证 preview/selector/receipt 的 `APPLY_QUARANTINE`；其它候选没有执行器时必须停在 `ATTENTION_REQUIRED`。
+- V20-V25 提供低敏 case、策略快照、trigger outbox、消费者结果、sidecar compensation、quarantine receipt，以及模型 `SEARCH`/`SKIP` 决策与 evidence-ID digest 投影的 PostgreSQL schema；单独一条 `AUTO_APPROVED` 是可审计授权决策，只有后续 `RECOVERY_STARTED` 与成功/失败 receipt 才能证明副作用或最终状态，不能作为 HTTP、Kafka、Python 或 worker 已运行的独立证据。
+
+仍未闭环的事实差距是：V20-V25 的实际 Flyway 部署证据、显式启用的 Agent Runtime listener 与真实 broker 投递、共享内部服务令牌下的 Python 规划调用、data-sync retry/quarantine 被 worker 实际处理后的成功/失败 receipt、低基数指标与告警，以及隔离环境的低风险自动 retry/quarantine 和高风险人工审批 E2E。2026-08-13 已补齐此前单列的源码缺口：真实 retry receipt 后，Java 调用固定 Python post-action verification；Python 使用稳定 checkpoint/turn ID 运行 `PRECHECK_AGENT` 与 `MONITOR_AGENT`，并通过既有 Java fact sink 幂等登记 durable fact，任一依赖失败均传播到 Kafka retry。Python 全量 `1150 passed / 1 skipped`、Agent Runtime 全量 `693 passed` 证明模块合同成立，但尚无重建环境下的运行时闭环或发布就绪证据；所有验收和产品表述都必须保持这一边界。
+
+**本次聚焦复核（2026-08-12，未启动 Docker 或外部依赖）**：Java Maven 聚焦测试为 `45 passed`，其中 data-sync `17`、Agent Runtime `28`，覆盖双策略、`RETRY_EXECUTION`、receipt-bound `APPLY_QUARANTINE`、状态机、Kafka 消费结果和 `RECOVERED`/`ATTENTION_REQUIRED` 收敛。Python 的 Autopilot API、coordinator 与 investigation 聚焦组为 `19 passed`，覆盖模型自主 `SEARCH`/`SKIP`、一次性 RAG/preview 边界、真实 preview receipt、`APPLY_QUARANTINE` 指纹、终态 checkpoint 的精确重放及可信 binding 变化 fail-closed。此前“completed event replay”与“changed trusted binding replay”两项失败属于较早工作树快照；当前 `plan()` 会在任何 specialist/RAG/Java preview 调用前复用并校验 durable terminal checkpoint。该结果只证明当前源码和测试合同，不证明 Kafka 重投、Docker 或生产环境已经完成端到端验收。
+
+### 7.7.1 2026-08-11 Autopilot 触发投递静态审计补遗
+
+本补遗只记录本次对当前工作树（包含尚未提交的新增文件）的静态源码审查；它不替代既有验收记录，也不代表任何迁移、消息或恢复动作已在环境中执行。此前“尚无 controller、调度器、worker、Kafka/Python 执行绑定”的表述已被当前工作树反证：现有实现已包含该 topic 的 consumer、Java 到 Python 规划调用和受限重试分支；仍未证明的是这些部件在真实环境中共同运行后的端到端结果。
+
+**已验证（静态源码）**
+
+- V20-V25 已出现在 `data-sync` 的 PostgreSQL migration 源目录：V20 保存 case/策略快照，V21 保存低敏、幂等的 `data_sync_autopilot_recovery_trigger_outbox`、投递状态、退避和死信字段，V22 保存消费者结果，V23 保存 sidecar compensation journal，V24 保存 quarantine durable receipt，V25 保存经 Java 合同校验的 `SEARCH`/`SKIP`、策略、证据计数和 evidence-ID digest 投影。
+- `DataSyncTaskManagementReceiptPublisher.publishFailed(...)` 会调用 `SyncAutopilotRecoveryTriggerPublisher`。后者会对持久化授权快照执行有效期和 tenant/application/project 等作用域校验，受限失败后才创建固定 schema 的触发事件。
+- `SyncAutopilotRecoveryTriggerOutboxService` 会将该事件写入本地 outbox，事务提交后立即尝试投递；`SyncAutopilotRecoveryTriggerKafkaDispatcher` 使用 `KafkaTemplate` 发送到 `datasmart.agent.autopilot-recovery-trigger.v1`，失败记录进入有界退避或 `DEAD_LETTER`。`DataSyncApplication` 已启用调度，默认配置也开启 trigger、即时投递和定时补偿；V24 的 quarantine receipt 以独立幂等键复放，不把同一 dirty-row 状态变更执行两次。
+- `AgentAutopilotRecoveryTriggerKafkaConsumer` 已以 `@KafkaListener` 订阅同一 topic 和 consumer group；其 `autoStartup` 受 `datasmart.agent-runtime.autopilot-recovery.kafka.enabled` 控制，默认值为 `false`，因此必须显式配置后才会在运行环境消费。
+- consumer 将 payload 交给 `AgentAutopilotRecoveryTriggerConsumerService`，后者重新从 session/root Run/delegation 和持久化 `autopilotAuthorization` 校验作用域、期限和摘要，再由 `AgentAutopilotRecoveryPythonClient` 携带内部服务令牌调用 Python 的 `POST /internal/agent/autopilot/recovery/plan`。Python 入口只做受限 Recovery/RAG 规划，不写入 data-sync 业务数据。
+- `AgentAutopilotRecoveryExecutionService` 会对 Python 候选再次执行证据和 Java/data-sync 双策略校验；当前可进入执行分支的是 `RETRY_EXECUTION`，以及先验证真实 preview、精确 selector、scope、预算、指纹和 durable receipt 的 `APPLY_QUARANTINE`。两者都会在受控状态机中进入 `RECOVERY_STARTED`，data-sync 成功/失败回执再将活动 case 收敛为 `RECOVERED` 或 `ATTENTION_REQUIRED`，但这些仍是静态实现和聚焦测试证据。
+
+**未验证**
+
+- 当前源码确有精确 topic 的 Java consumer 和 Agent Runtime 到 Python 规划入口的调用绑定，但静态审查不能证明 listener 已启用、consumer group 已收到 broker 记录、内部令牌已正确配置，或 Python 规划已在真实 Provider/RAG 依赖上完成。不能以代码存在、producer 存在、outbox 标记为 `DELIVERED` 或 `AUTO_APPROVED` 推断已发生消费、规划或恢复。
+- 尚无 V20-V25 已由目标环境 Flyway 应用、broker 送达/重投递、可信状态重建、data-sync 决策与 retry/quarantine HTTP、worker 处理、成功或失败 receipt 收敛、恢复后 PRECHECK/MONITOR durable fact、指标或告警实际触发的运行证据。这些仍是隔离环境 E2E 的验收项。
+
+**环境阻塞**
+
+- 本轮遵守只读审查边界，未启动 Compose、未执行 Flyway、未向 Kafka/数据库写入，也未调用 Python 内部接口；且 Agent Runtime listener 默认关闭。当前未收集可用 broker、数据库、共享内部服务令牌、Provider 或容器运行时证据。缺少这些证据是本轮环境验证未执行，不应归类为代码失败。
+
+**剩余事项**
+
+- 在后续重构中保持 Python `AutopilotRecoveryCoordinator` 的 terminal checkpoint 重放合同：相同可信 binding 必须直接返回原终态，不得再次调用 specialist/RAG/Java preview；不同 project/workspace/task/execution/error binding 必须在任何规划前 fail-closed。当前聚焦回归已覆盖该合同，但仍需在真实 Kafka 重投递环境复验。
+- 在隔离环境显式启用 listener，并以同一 topic、consumer group、PostgreSQL session/checkpoint store 和共享内部服务令牌验证消费后可信状态重建；不得信任 Kafka payload 扩权。
+- 以真实失败 execution 验证 Python 规划、双策略、失败对象重新排队、worker 处理和 `RECOVERY_STARTED` 到成功/失败 receipt 的收敛；同时覆盖重复投递、过期授权、死信和 Provider 失败。
+- 为消费、规划、重试、最终 receipt 与人工审批停点建立低敏指标及告警；在分别完成低风险自动重试和高风险人工审批 E2E 后，才可将触发链路表述为实际闭环。
 
 ## 8. 总闸门入口（2026-08-06）
 
@@ -297,3 +338,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-dependency-r
 ```
 
 该恢复脚本只处理 Zookeeper/Kafka/Python Runtime 这类本地依赖漂移，不删除 volume、不重置数据库、不清空 Kafka topic、不触发 worker，也不读取业务数据。详细说明见 [final-delivery-closure-runbook.md](final-delivery-closure-runbook.md)。
+
+## 9. 2026-08-13 当前交付复核
+
+本轮针对“模型自主决定是否检索”和“首次授权后的无人值守自治恢复”完成了最小闭环收敛。普通规划的 RAG 是模型可选工具，不由规则强制调用；Recovery 规划强制检索并要求 durable evidence。低风险恢复动作在授权范围内可由 Kafka 触发、Java 控制面复核并投递到 data-sync 执行，失败会依据日志和受限策略在最大循环次数内重试；超出授权、风险、证据或循环边界则 fail-closed 并进入明确停点。
+
+本轮门禁结果：Python `1162 passed, 1 skipped`，Recovery 聚焦回归 `24 passed`；JDK 21 下 `agent-runtime`、`data-sync` 及依赖模块编译成功；Frontend lint、build 和 API/WebSocket 合同测试通过；最新构建的三个 Agent/同步相关容器 healthy，Kafka 主 topic、retry-1000、retry-2000 和 DLT consumer 已启动并加入 consumer group。durable fact 缺失会返回 HTTP `503` 且不 ACK Kafka，避免把未持久化的 Specialist 结论当成可执行事实。
+
+交付结论必须保持边界：以上是源码、模块回归、合同回归和本机容器启动证据，不等同于客户生产环境 E2E。由于本机没有 `DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD`，本轮未执行真实 project-owner 登录后的 Recovery 写动作，因此尚不能把真实 retry/quarantine receipt、worker 最终状态和 post-action `PRECHECK_AGENT`/`MONITOR_AGENT` fact 宣称为已完成。下一步只剩环境验收与缺陷修复，不再新增 Agent 或扩展公开 API。

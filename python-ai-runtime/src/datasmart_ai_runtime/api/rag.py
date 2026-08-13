@@ -145,6 +145,12 @@ def rag_query_from_payload(payload: Mapping[str, Any]) -> RagQuery:
         generate_answer=_bool(_first(payload, "generateAnswer", "generate_answer"), default=True),
         trace_id=_optional_text(_first(payload, "traceId", "trace_id")),
         session_id=_optional_text(_first(payload, "sessionId", "session_id")),
+        retrieval_mode=_text(_first(payload, "retrievalMode", "retrieval_mode"), default="hybrid"),
+        source_types=tuple(
+            str(value).strip().lower()
+            for value in _source_type_values(_first(payload, "sourceTypes", "source_types"))
+            if str(value).strip()
+        ),
     )
 
 
@@ -155,6 +161,18 @@ def _first(mapping: Mapping[str, Any], *keys: str) -> Any:
         if key in mapping:
             return mapping[key]
     return None
+
+
+def _source_type_values(value: Any) -> tuple[Any, ...]:
+    """Normalize one source type or a collection without iterating strings by character."""
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(value)
+    return (value,)
 
 
 def _required_text(value: Any) -> str:

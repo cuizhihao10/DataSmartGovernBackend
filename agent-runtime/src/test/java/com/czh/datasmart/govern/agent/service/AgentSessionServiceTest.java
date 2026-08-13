@@ -19,6 +19,7 @@ import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher
 import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
+import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionAccessContext;
@@ -43,6 +44,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static com.czh.datasmart.govern.agent.service.AgentSessionTestToolFixtures.metadataReadAdapterForTest;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 /**
  * Agent 会话服务单元测试。
@@ -78,7 +85,7 @@ class AgentSessionServiceTest {
                 new AgentToolExecutionOutputStore()
         );
         AgentRunStateCoordinator runStateCoordinator = new AgentRunStateCoordinator(auditService);
-        sessionStore = new AgentSessionMemoryStore();
+        sessionStore = spy(new AgentSessionMemoryStore());
         service = new AgentSessionService(
                 properties,
                 sessionStore,
@@ -246,6 +253,7 @@ class AgentSessionServiceTest {
         AgentSessionView approvedSession = service.createSession(highRiskSessionRequest("审批通过场景"));
         AgentRunView approvedRun = service.startRun(approvedSession.sessionId(), runRequest("创建治理任务草稿"), "trace-approve");
         AgentToolExecutionAuditView pendingApproval = firstWaitingApproval(approvedSession.sessionId(), approvedRun.runId());
+        clearInvocations(sessionStore);
 
         AgentToolExecutionAuditView approved = service.approveToolExecution(
                 approvedSession.sessionId(),
@@ -258,10 +266,17 @@ class AgentSessionServiceTest {
         assertEquals("owner-001", approved.approvalOperatorId());
         assertTrue(approved.message().contains("人工确认"));
         assertEquals("PLANNING", findRunView(approvedSession.sessionId(), approvedRun.runId()).state());
+        verify(sessionStore).updateRunAfterToolDecision(
+                eq(approvedSession.sessionId()),
+                org.mockito.ArgumentMatchers.argThat(run -> run != null
+                        && approvedRun.runId().equals(run.getRunId())
+                        && run.getState() == AgentRunState.PLANNING));
+        verify(sessionStore, never()).save(any());
 
         AgentSessionView rejectedSession = service.createSession(highRiskSessionRequest("审批拒绝场景"));
         AgentRunView rejectedRun = service.startRun(rejectedSession.sessionId(), runRequest("创建治理任务草稿"), "trace-reject");
         AgentToolExecutionAuditView pendingReject = firstWaitingApproval(rejectedSession.sessionId(), rejectedRun.runId());
+        clearInvocations(sessionStore);
 
         AgentToolExecutionAuditView rejected = service.rejectToolExecution(
                 rejectedSession.sessionId(),
@@ -274,6 +289,12 @@ class AgentSessionServiceTest {
         assertEquals("owner-001", rejected.approvalOperatorId());
         assertTrue(rejected.message().contains("人工拒绝"));
         assertEquals("REJECTED", findRunView(rejectedSession.sessionId(), rejectedRun.runId()).state());
+        verify(sessionStore).updateRunAfterToolDecision(
+                eq(rejectedSession.sessionId()),
+                org.mockito.ArgumentMatchers.argThat(run -> run != null
+                        && rejectedRun.runId().equals(run.getRunId())
+                        && run.getState() == AgentRunState.REJECTED));
+        verify(sessionStore, never()).save(any());
     }
 
     /**
@@ -284,6 +305,7 @@ class AgentSessionServiceTest {
         AgentSessionView session = service.createSession(baseSessionRequest());
         AgentRunView run = service.startRun(session.sessionId(), runRequest("读取数据源元数据"), "trace-execute");
         AgentToolExecutionAuditView planned = auditService.listByRun(session.sessionId(), run.runId()).getFirst();
+        clearInvocations(sessionStore);
 
         AgentToolExecutionResultView result = service.executeToolExecution(
                 session.sessionId(),
@@ -295,6 +317,8 @@ class AgentSessionServiceTest {
         assertEquals("SUCCEEDED", result.audit().state());
         assertEquals(1001L, result.output().get("datasourceId"));
         assertTrue(result.audit().outputSummary().contains("datasourceId"));
+        verify(sessionStore, never()).save(any());
+        verify(sessionStore, never()).updateRunLifecycle(any(), any());
     }
 
     /**

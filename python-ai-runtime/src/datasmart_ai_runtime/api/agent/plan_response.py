@@ -1056,6 +1056,19 @@ def _collect_control_plane_feedback(
 
     if control_plane_feedback_collector is None:
         return None
+    # Immediately after ingestion, datasource workers can still be committing a
+    # source/target metadata audit.  The collector's bounded method only polls
+    # those two read-only nodes and returns the latest Java-owned snapshot.  A
+    # fake or legacy collector may expose only ``collect``; retaining that
+    # fallback keeps the response assembler compatible with tests and older
+    # integrations without weakening the bridge's strict evidence checks.
+    bounded_collect = getattr(
+        control_plane_feedback_collector,
+        "collect_with_bounded_metadata_wait",
+        None,
+    )
+    if callable(bounded_collect):
+        return bounded_collect(plan)
     return control_plane_feedback_collector.collect(plan)
 
 

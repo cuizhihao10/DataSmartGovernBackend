@@ -49,6 +49,10 @@ chart 会生成一个 `secret-contract` ConfigMap，用来说明需要哪些 Sec
 
 打开这些开关前，必须完成权限、审批、审计、幂等、失败重试、死信、回滚和值班流程。
 
+`agent-runtime` 和 `python-ai-runtime` 的生产装配已明确收口到 PostgreSQL durable state：Agent session、审批确认、审计和 outbox 使用 `agent_runtime` schema；Python AI memory、RAG evidence 和 LangGraph checkpoint 的 DSN 从 Secret 注入并使用 `ai_memory` schema。这样容器重启或副本迁移不会把会话、事实或 checkpoint 静默退回进程内存。
+
+Autopilot 不是默认打开的写路径：默认 values 保持 data-sync trigger 和 Agent Runtime Kafka listener 关闭，生产示例才显式启用同一 topic/group。启用前仍需完成 Kafka ACL、死信和告警、首次授权范围、隔离故障 E2E 与回滚评审。
+
 ## 3. Chart 结构
 
 ```text
@@ -115,13 +119,20 @@ helm template datasmart-govern .\helm\datasmart-govern `
 
 ```powershell
 kubectl -n datasmart create secret generic datasmart-prod-secrets `
-  --from-literal=mysql-password=REPLACE_ME `
+  --from-literal=postgresql-password=REPLACE_ME `
   --from-literal=neo4j-password=REPLACE_ME `
   --from-literal=minio-access-key=REPLACE_ME `
   --from-literal=minio-secret-key=REPLACE_ME `
   --from-literal=gateway-signature-secret=REPLACE_ME `
+  --from-literal=agent-runtime-internal-service-token=REPLACE_ME `
+  --from-literal=agent-approval-fact-shared-token=REPLACE_ME `
+  --from-literal=agent-post-confirm-continuation-token=REPLACE_ME `
+  --from-literal=agent-workspace-text-search-service-token=REPLACE_ME `
+  --from-literal=ai-memory-postgresql-dsn=REPLACE_ME `
   --from-literal=model-api-key=REPLACE_ME
 ```
+
+`ai-memory-postgresql-dsn` must be a least-privilege PostgreSQL connection string scoped to the AI memory schema. It is intentionally a Secret because it contains database credentials. The production example enables workspace text search only with two explicit, read-only PVC mounts; replace their claim names with the customer-approved repository synchronization mechanism and never mount a host root or unrestricted filesystem path.
 
 安装或升级示例：
 

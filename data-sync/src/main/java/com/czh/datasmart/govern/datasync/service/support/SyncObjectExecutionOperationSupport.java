@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQuery
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
+import com.czh.datasmart.govern.datasync.entity.SyncCallbackIdempotency;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
@@ -27,6 +28,8 @@ import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncObjectExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -35,7 +38,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 对象级执行账本查询与恢复操作组件。
@@ -56,6 +61,8 @@ public class SyncObjectExecutionOperationSupport {
 
     private static final int DEFAULT_RETRY_ATTEMPT_BUDGET = 3;
     private static final int MAX_RETRY_ATTEMPT_BUDGET = 10;
+    private static final String IDEMPOTENCY_ACTION = "RETRY_FAILED_OBJECT_EXECUTIONS";
+    private static final Pattern SAFE_IDEMPOTENCY_KEY = Pattern.compile("^[A-Za-z0-9._:-]{1,128}$");
 
     /**
      * 审计 reason 的兜底敏感词。
@@ -88,6 +95,8 @@ public class SyncObjectExecutionOperationSupport {
     private final SyncTaskMapper taskMapper;
     private final SyncQuerySupport querySupport;
     private final SyncAuditSupport auditSupport;
+    private final SyncCallbackIdempotencySupport idempotencySupport;
+    private final ObjectMapper objectMapper;
 
     /**
      * 分页查询某个父 execution 下的对象级执行明细。
@@ -143,7 +152,29 @@ public class SyncObjectExecutionOperationSupport {
                                                     SyncExecution execution,
                                                     SyncObjectRetryRequest request,
                                                     SyncActorContext actorContext) {
+        String idempotencyKey = idempotencyKey(request);
+        String scopeKey = retryScopeKey(task, execution);
+        String requestDigest = retryRequestDigest(task, execution, request);
+        if (idempotencyKey != null && idempotencySupport.isDuplicate(
+                task.getTenantId(),
+                task.getId(),
+                execution.getId(),
+                IDEMPOTENCY_ACTION,
+                scopeKey,
+                idempotencyKey,
+                actorContext == null || actorContext.actorId() == null
+                        ? null : String.valueOf(actorContext.actorId()),
+                requestDigest)) {
+            return duplicateRetryResult(task, execution, idempotencyKey, scopeKey, requestDigest);
+        }
+
+        /*
+         * The idempotency check must precede the lifecycle check. After the first successful request,
+         * the execution is intentionally QUEUED; a caller replaying a lost HTTP response must receive
+         * the stored result instead of being rejected for no longer being in FAILED state.
+         */
         assertExecutionRetryable(execution);
+
         List<SyncObjectExecution> rows = objectExecutionMapper.selectByExecutionId(execution.getId());
         if (rows == null || rows.isEmpty()) {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
@@ -179,7 +210,7 @@ public class SyncObjectExecutionOperationSupport {
                 SyncAuditActionType.RETRY_OBJECT_EXECUTIONS,
                 actorContext,
                 auditPayload(selectedRows, reason, retryBudget, resetAttemptCount));
-        return new SyncObjectRetryResult(
+        SyncObjectRetryResult result = new SyncObjectRetryResult(
                 task.getId(),
                 execution.getId(),
                 selectedRows.size(),
@@ -188,6 +219,108 @@ public class SyncObjectExecutionOperationSupport {
                 List.of("OBJECT_LEVEL_RETRY_REQUEUED", "FAILED_OBJECTS_RESET_TO_PENDING"),
                 "已将 " + selectedRows.size() + " 个失败对象重置为可重试状态，父 execution 已重新进入 worker 队列"
         );
+        if (idempotencyKey != null) {
+            idempotencySupport.markSucceeded(
+                    task.getTenantId(), IDEMPOTENCY_ACTION, scopeKey, idempotencyKey, toJson(result));
+        }
+        return result;
+    }
+
+    /**
+     * 返回首次成功的对象级重试结果，而不是再次执行控制面副作用。
+     *
+     * <p>同一个键若绑定了不同请求摘要，说明调用方错误复用了幂等身份，必须 fail closed。
+     * 完全相同的请求只有在首次事务已经写入成功响应后才可回放；仍处于 PROCESSING 的并发请求
+     * 返回状态冲突，让上游稍后重试，避免把“尚未确定”伪装成成功。</p>
+     *
+     * @param task 已完成租户和资源归属校验的同步任务
+     * @param execution 当前失败对象所属 execution
+     * @param idempotencyKey 调用方稳定幂等键
+     * @param scopeKey 服务端生成的 task/execution 范围
+     * @param requestDigest 当前请求的低敏摘要
+     * @return 首次事务保存的控制面重试结果
+     */
+    private SyncObjectRetryResult duplicateRetryResult(SyncTask task,
+                                                        SyncExecution execution,
+                                                        String idempotencyKey,
+                                                        String scopeKey,
+                                                        String requestDigest) {
+        SyncCallbackIdempotency record = idempotencySupport.findRecord(
+                task.getTenantId(), IDEMPOTENCY_ACTION, scopeKey, idempotencyKey);
+        if (record == null || !Objects.equals(record.getRequestDigest(), requestDigest)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "对象级重试幂等键已绑定其他请求事实");
+        }
+        if (record.getResponseSummary() == null || record.getResponseSummary().isBlank()) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "对象级重试首次请求仍在处理中，请稍后使用同一幂等键重试");
+        }
+        try {
+            return objectMapper.readValue(record.getResponseSummary(), SyncObjectRetryResult.class);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("对象级重试幂等响应摘要无法解析", exception);
+        }
+    }
+
+    /**
+     * 读取并验证可选幂等键。
+     *
+     * <p>只允许短机器标识，避免把 prompt、SQL、URL、凭据或任意业务正文写入幂等表。
+     * 空值表示兼容原有人工单次重试；Autopilot 调用会传入稳定的 recovery eventId。</p>
+     */
+    private String idempotencyKey(SyncObjectRetryRequest request) {
+        String value = request == null || request.getIdempotencyKey() == null
+                ? null : request.getIdempotencyKey().trim();
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        if (!SAFE_IDEMPOTENCY_KEY.matcher(value).matches()) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "对象级重试 idempotencyKey 必须是安全的低敏机器标识");
+        }
+        return value;
+    }
+
+    /**
+     * 构造幂等唯一范围，使不同任务或 execution 可以安全复用相同外部键。
+     */
+    private String retryScopeKey(SyncTask task, SyncExecution execution) {
+        return "task:" + task.getId() + ":execution:" + execution.getId();
+    }
+
+    /**
+     * 对影响重试语义的低敏字段生成稳定摘要，用于拒绝同键异参。
+     *
+     * <p>对象 ID 和 ordinal 会先排序，避免集合顺序差异制造假冲突；审计 reason 先经过已有
+     * 低敏清洗。摘要不包含对象数据、连接信息、SQL 或日志正文。</p>
+     */
+    private String retryRequestDigest(SyncTask task,
+                                      SyncExecution execution,
+                                      SyncObjectRetryRequest request) {
+        List<Long> objectIds = request == null || request.getObjectExecutionIds() == null
+                ? List.of() : request.getObjectExecutionIds().stream().sorted().toList();
+        List<Integer> ordinals = request == null || request.getObjectOrdinals() == null
+                ? List.of() : request.getObjectOrdinals().stream().sorted().toList();
+        return SyncAutopilotDigestSupport.sha256(String.join("|",
+                String.valueOf(task.getTenantId()),
+                String.valueOf(task.getId()),
+                String.valueOf(execution.getId()),
+                objectIds.toString(),
+                ordinals.toString(),
+                String.valueOf(request == null ? null : request.getRetryAttemptBudget()),
+                String.valueOf(request == null ? null : request.getResetAttemptCount()),
+                sanitizeReason(request == null ? null : request.getReason())));
+    }
+
+    /**
+     * 把首次成功结果保存为低敏 JSON，供响应丢失后的相同请求回放。
+     */
+    private String toJson(SyncObjectRetryResult result) {
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("对象级重试幂等响应摘要序列化失败", exception);
+        }
     }
 
     private void assertExecutionRetryable(SyncExecution execution) {

@@ -158,6 +158,36 @@ datasmart:
       # 当前 data-sync 外层多批循环和避让重试尚未实现，因此默认不让 run-once 自行重试。
       # 后续接入 worker loop、退避策略和幂等写入后，再统一纳入 retryPolicy。
       default-max-retry-count: 0
+    autopilot-recovery-trigger:
+      # 首次授权后，execution 失败事实会先写本地 outbox，再通过 Kafka 唤醒 Agent Runtime。
+      # 每一项都保留安全默认值，同时允许 Compose/Kubernetes 通过环境变量显式覆盖。
+      enabled: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_ENABLED:true}
+      topic: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_TOPIC:datasmart.agent.autopilot-recovery-trigger.v1}
+      immediate-dispatch-enabled: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_IMMEDIATE_DISPATCH_ENABLED:true}
+      scheduler-enabled: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_SCHEDULER_ENABLED:true}
+      batch-size: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_BATCH_SIZE:20}
+      max-attempts: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_MAX_ATTEMPTS:8}
+      base-backoff-seconds: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_BASE_BACKOFF_SECONDS:15}
+      max-backoff-seconds: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_MAX_BACKOFF_SECONDS:900}
+      stale-dispatching-seconds: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_STALE_DISPATCHING_SECONDS:300}
+      send-timeout-ms: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_SEND_TIMEOUT_MS:5000}
+      initial-delay-ms: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_INITIAL_DELAY_MS:30000}
+      fixed-delay-ms: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_FIXED_DELAY_MS:15000}
+      sidecar-compensation:
+        # V23 journal retries a local governed sidecar call, not Kafka delivery. Keep it separately controllable
+        # so operators can pause local replay without disabling the trigger outbox's own retry scheduler.
+        enabled: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_ENABLED:true}
+        scheduler-enabled: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_SCHEDULER_ENABLED:true}
+        # Bound each pass so an outage backlog cannot monopolize the Spring scheduler thread.
+        batch-size: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_BATCH_SIZE:20}
+        # This is a local sidecar replay budget and intentionally differs from the Kafka trigger delivery budget.
+        max-attempts: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_MAX_ATTEMPTS:6}
+        base-backoff-seconds: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_BASE_BACKOFF_SECONDS:30}
+        max-backoff-seconds: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_MAX_BACKOFF_SECONDS:1800}
+        # A crash after a claim is reclaimable after this interval; claim tokens stop old claimants from writing.
+        stale-dispatching-seconds: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_STALE_DISPATCHING_SECONDS:300}
+        initial-delay-ms: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_INITIAL_DELAY_MS:45000}
+        fixed-delay-ms: ${DATASMART_DATA_SYNC_AUTOPILOT_SIDECAR_COMPENSATION_FIXED_DELAY_MS:30000}
     task-management-receipt:
       # 是否把 data-sync execution 的完成/失败低敏事实投递到 task-management。
       # 该能力用于把“下游真实执行结果”纳入平台任务中心、Agent timeline、运维诊断和告警闭环。

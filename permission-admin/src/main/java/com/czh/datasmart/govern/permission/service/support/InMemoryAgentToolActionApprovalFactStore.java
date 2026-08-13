@@ -62,8 +62,22 @@ public class InMemoryAgentToolActionApprovalFactStore implements AgentToolAction
         return candidate;
     }
 
+    /**
+     * Compares the immutable authorization binding of two writes for one fact ID.
+     *
+     * <p>The inputs are the existing durable fact and an incoming candidate; the
+     * output is {@code true} only when both describe the same tenant, subjects,
+     * action, server-derived fingerprint, and policy version after text
+     * normalization. This check is the in-memory counterpart of the PostgreSQL
+     * conflict predicate. Including the fingerprint prevents a caller from
+     * reusing a known fact ID to replace the approved action binding.</p>
+     *
+     * @param left fact that is already stored for the approval ID
+     * @param right candidate fact being registered for that same ID
+     * @return whether the candidate can safely advance the existing fact lifecycle
+     */
     private boolean sameImmutableScopeAndVersion(AgentToolActionApprovalFactRecord left,
-                                                 AgentToolActionApprovalFactRecord right) {
+                                                  AgentToolActionApprovalFactRecord right) {
         return Objects.equals(left.tenantId(), right.tenantId())
                 && Objects.equals(left.applicationId(), right.applicationId())
                 && Objects.equals(left.projectId(), right.projectId())
@@ -75,6 +89,7 @@ public class InMemoryAgentToolActionApprovalFactStore implements AgentToolAction
                 && sameText(left.delegationId(), right.delegationId())
                 && sameText(left.commandId(), right.commandId())
                 && sameText(left.toolCode(), right.toolCode())
+                && sameText(left.actionFingerprint(), right.actionFingerprint())
                 && sameText(left.policyVersion(), right.policyVersion());
     }
 

@@ -133,6 +133,11 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
+        if (request != null && request.getAutopilotPolicy() != null
+                && !"agent-runtime".equalsIgnoreCase(headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE))) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Only the trusted Agent Runtime may attach an Autopilot authorization snapshot");
+        }
         SyncActorContext actorContext = actorContext(tenantId, actorId, actorRole, traceId, headers);
         return PlatformApiResponse.success("同步任务创建向导草稿已保存",
                 dataSyncService.saveCreateWizardDraft(request, actorContext), traceId);

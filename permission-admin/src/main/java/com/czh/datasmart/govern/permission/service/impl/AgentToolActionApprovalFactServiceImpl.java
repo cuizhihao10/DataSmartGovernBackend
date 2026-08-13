@@ -18,8 +18,12 @@ import com.czh.datasmart.govern.permission.service.support.AgentToolActionApprov
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -38,6 +42,8 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
 
     private static final Pattern SAFE_FACT_ID_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,160}");
     private static final Pattern SAFE_SUBJECT_ID_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,160}");
+    private static final String ACTION_FINGERPRINT_PREFIX = "sha256:";
+    private static final String ACTION_FINGERPRINT_VERSION = "approval-action-v1";
     private static final int MAX_CODE_COUNT = 20;
     private static final int MAX_CODE_LENGTH = 128;
 
@@ -60,6 +66,19 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
         );
     }
 
+    /**
+     * Evaluates whether an approval fact can authorize the supplied controlled action.
+     *
+     * <p>The request's {@code actionFingerprint} is a compatibility-only field:
+     * it can originate from a model or any caller, so this method never uses it
+     * as proof of approval. Instead, it recalculates a fingerprint from the
+     * approval fact's trusted action binding and the scope-verified action
+     * fields in the evaluation request.</p>
+     *
+     * @param request current action context; its identifiers are untrusted until
+     *                they match the durable approval fact
+     * @return a fail-closed approval decision and low-sensitive audit codes
+     */
     @Override
     public AgentToolActionApprovalFactEvaluationView evaluate(AgentToolActionApprovalFactEvaluateRequest request) {
         if (request == null || blank(request.getApprovalFactId())) {
@@ -77,6 +96,22 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
                         List.of("APPROVAL_FACT_NOT_FOUND")));
     }
 
+    /**
+     * Replays one durable approval fact against the action currently being evaluated.
+     *
+     * <p>All request fields arrive from a caller and are therefore compared to
+     * the durable fact before they participate in fingerprint calculation. A
+     * persisted fingerprint is an integrity copy of the server calculation,
+     * never a value supplied by the requester. A missing or mismatched persisted
+     * fingerprint fails closed: legacy rows remain available for audit, but they
+     * must be registered again before they can authorize a controlled action.
+     * This prevents a model from authorizing a different action merely by
+     * repeating a chosen string.</p>
+     *
+     * @param record durable approval fact, which is authoritative after store lookup
+     * @param request caller-provided current action context
+     * @return an approved, waiting, or blocked decision for this exact action
+     */
     private AgentToolActionApprovalFactEvaluationView evaluateRecord(AgentToolActionApprovalFactRecord record,
                                                                     AgentToolActionApprovalFactEvaluateRequest request) {
         List<String> issueCodes = new ArrayList<>();
@@ -87,6 +122,26 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
             return blocked(record, "SCOPE_MISMATCH", scopeIssue, evidenceCodes, List.of("APPROVAL_FACT_SCOPE_MISMATCH"));
         }
         evidenceCodes.add("APPROVAL_FACT_SCOPE_VERIFIED");
+
+        String authoritativeActionFingerprint = serverCalculatedActionFingerprint(record);
+        String storedActionFingerprint = text(record.actionFingerprint());
+        if (storedActionFingerprint == null) {
+            return blocked(record, "ACTION_FINGERPRINT_MISSING",
+                    "The approval fact has no persisted server-calculated action fingerprint.",
+                    evidenceCodes, List.of("APPROVAL_FACT_ACTION_FINGERPRINT_MISSING"));
+        }
+        if (!sameFingerprint(authoritativeActionFingerprint, storedActionFingerprint)) {
+            return blocked(record, "ACTION_FINGERPRINT_INTEGRITY_MISMATCH",
+                    "The stored approval fact fingerprint is not the server-calculated action binding.",
+                    evidenceCodes, List.of("APPROVAL_FACT_ACTION_FINGERPRINT_INTEGRITY_MISMATCH"));
+        }
+        String currentActionFingerprint = serverCalculatedActionFingerprint(request);
+        if (!sameFingerprint(authoritativeActionFingerprint, currentActionFingerprint)) {
+            return blocked(record, "ACTION_FINGERPRINT_MISMATCH",
+                    "The server-calculated approval binding does not match the current action.",
+                    evidenceCodes, List.of("APPROVAL_FACT_ACTION_FINGERPRINT_MISMATCH"));
+        }
+        evidenceCodes.add("APPROVAL_FACT_ACTION_FINGERPRINT_SERVER_VERIFIED");
         if (record.expiresAt() != null && record.expiresAt().isBefore(LocalDateTime.now())) {
             return blocked(record, "EXPIRED", "审批事实已过期，不能继续授权受控工具动作。",
                     evidenceCodes, List.of("APPROVAL_FACT_EXPIRED"));
@@ -124,6 +179,50 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
                 evidenceCodes, List.of("APPROVAL_FACT_REJECTED"));
     }
 
+    /**
+     * Calculates the authoritative action fingerprint while a fact is registered.
+     *
+     * <p>The input is a registration request that has already passed
+     * {@link #validateRegisterRequest(AgentToolActionApprovalFactRegisterRequest)}.
+     * The output is a versioned SHA-256 digest of the normalized immutable scope
+     * and action locator fields that permission-admin owns. The request's raw
+     * {@code actionFingerprint} property is deliberately excluded: it can be
+     * supplied by a model, browser, or upstream service and therefore cannot be
+     * accepted as authorization proof. Persisting this server-derived value gives
+     * later evaluation a durable integrity value to verify.</p>
+     *
+     * @param request validated registration payload containing the fact scope and
+     *                controlled action locators
+     * @return server-derived fingerprint for the exact approval fact binding
+     */
+    private String serverCalculatedActionFingerprint(AgentToolActionApprovalFactRegisterRequest request) {
+        return calculateActionFingerprint(
+                request.getApprovalFactId(),
+                request.getTenantId() == null ? null : request.getTenantId().toString(),
+                request.getApplicationId() == null ? null : request.getApplicationId().toString(),
+                request.getProjectId() == null ? null : request.getProjectId().toString(),
+                request.getUserId(),
+                request.getActorId(),
+                request.getAgentId(),
+                request.getSessionId(),
+                request.getRunId(),
+                request.getDelegationId(),
+                request.getCommandId(),
+                request.getToolCode()
+        );
+    }
+
+    /**
+     * Converts a validated registration request into the durable approval fact.
+     *
+     * <p>The caller-supplied {@code actionFingerprint} is deliberately omitted.
+     * The persisted value is calculated only from validated approval-fact and
+     * action-binding fields, so a model-controlled string can neither create
+     * nor alter an authorization binding.</p>
+     *
+     * @param request validated registration payload from the trusted registration route
+     * @return durable record containing the server-calculated action fingerprint
+     */
     private AgentToolActionApprovalFactRecord toRecord(AgentToolActionApprovalFactRegisterRequest request) {
         return new AgentToolActionApprovalFactRecord(
                 request.getApprovalFactId().trim(),
@@ -138,6 +237,7 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
                 text(request.getDelegationId()),
                 text(request.getCommandId()),
                 text(request.getToolCode()),
+                serverCalculatedActionFingerprint(request),
                 text(request.getPolicyVersion()),
                 normalizeStatus(request.getStatus()),
                 request.getExpiresAt(),
@@ -149,15 +249,18 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
     }
 
     /**
-     * 在事实进入 Store 前验证不可替代的审批责任链。
+     * Applies the request validation required before a server fingerprint is created.
      *
-     * <p>来源服务守卫解决“谁能调用登记接口”，本方法解决“受信调用方提交的事实是否仍具备可审计语义”。
-     * 因此 0/负数租户、项目不能被解释为平台公共范围；而 APPROVED 不能只是一个状态字符串，必须留下
-     * 审批人、原因码和证据码。这样即使受信链路发生编程错误，也不会产生一条可被后续 Worker 当作授权的
-     * 无责任主体事实。</p>
+     * <p>The legacy {@code actionFingerprint} member is intentionally neither
+     * validated nor persisted: it is an untrusted caller value and cannot be
+     * used to authorize an action. The validated scope, delegation, command,
+     * and tool fields are the only fingerprint inputs. The method also requires
+     * positive tenant/application/project identifiers and an auditable APPROVED
+     * decision with an approver, reason codes, and evidence codes. This keeps a
+     * trusted caller's programming error from creating an anonymous authorization.</p>
      *
-     * @param request 已经通过 HTTP 基础反序列化的登记请求
-     * @throws PlatformBusinessException 请求缺少范围、工具定位或 APPROVED 审计要素时抛出
+     * @param request registration request received after HTTP deserialization
+     * @throws PlatformBusinessException when the fact lacks a safe, auditable binding
      */
     private void validateRegisterRequest(AgentToolActionApprovalFactRegisterRequest request) {
         if (request == null || blank(request.getApprovalFactId())) {
@@ -297,6 +400,157 @@ public class AgentToolActionApprovalFactServiceImpl implements AgentToolActionAp
         return new AgentToolActionApprovalFactEvaluationView(
                 record.approvalFactId(), false, false, decision, reason, record.status(), record.policyVersion(),
                 record.expiresAt(), evidenceCodes, issueCodes);
+    }
+
+    /**
+     * Calculates the authoritative fingerprint from a durable approval fact.
+     *
+     * <p>This path uses only fact fields that were validated and persisted by
+     * permission-admin. It never reads a fingerprint supplied by an approval
+     * workflow, model, or other caller, because that value cannot establish an
+     * authorization boundary on its own.</p>
+     *
+     * @param record durable approval fact used as the authority for evaluation
+     * @return versioned SHA-256 digest of the fact's immutable action binding
+     */
+    private String serverCalculatedActionFingerprint(AgentToolActionApprovalFactRecord record) {
+        return calculateActionFingerprint(
+                record.approvalFactId(),
+                record.tenantId() == null ? null : record.tenantId().toString(),
+                record.applicationId() == null ? null : record.applicationId().toString(),
+                record.projectId() == null ? null : record.projectId().toString(),
+                record.userId(),
+                record.actorId(),
+                record.agentId(),
+                record.sessionId(),
+                record.runId(),
+                record.delegationId(),
+                record.commandId(),
+                record.toolCode()
+        );
+    }
+
+    /**
+     * Calculates the action-side fingerprint after the request has matched the fact scope.
+     *
+     * <p>The request is untrusted when it enters the controller. Calling this
+     * method only after {@link #scopeIssue(AgentToolActionApprovalFactRecord,
+     * AgentToolActionApprovalFactEvaluateRequest)} returns {@code null} makes
+     * the fields safe to compare with the fact-derived fingerprint.</p>
+     *
+     * @param request current action context that has already passed scope validation
+     * @return versioned SHA-256 digest of the current action binding
+     */
+    private String serverCalculatedActionFingerprint(AgentToolActionApprovalFactEvaluateRequest request) {
+        return calculateActionFingerprint(
+                request.getApprovalFactId(),
+                request.getTenantId() == null ? null : request.getTenantId().toString(),
+                request.getApplicationId() == null ? null : request.getApplicationId().toString(),
+                request.getProjectId() == null ? null : request.getProjectId().toString(),
+                request.getUserId(),
+                request.getActorId(),
+                request.getAgentId(),
+                request.getSessionId(),
+                request.getRunId(),
+                request.getDelegationId(),
+                request.getCommandId(),
+                request.getToolCode()
+        );
+    }
+
+    /**
+     * Produces a deterministic, versioned SHA-256 digest for one action binding.
+     *
+     * <p>Each field is name and length prefixed before hashing. This avoids
+     * ambiguous concatenation and lets future versions add fields without
+     * changing the interpretation of previously persisted facts. Inputs come
+     * only from a validated registration fact or a scope-verified evaluation
+     * request; raw actionFingerprint request values are deliberately absent.</p>
+     *
+     * @param approvalFactId durable fact locator
+     * @param tenantId tenant boundary
+     * @param applicationId application boundary
+     * @param projectId project boundary
+     * @param userId delegated human identity
+     * @param actorId acting human identity
+     * @param agentId executing agent identity
+     * @param sessionId agent session identity
+     * @param runId agent run identity
+     * @param delegationId delegation proof locator
+     * @param commandId controlled command locator
+     * @param toolCode controlled tool identifier
+     * @return SHA-256 digest prefixed with {@code sha256:}
+     */
+    private String calculateActionFingerprint(String approvalFactId,
+                                              String tenantId,
+                                              String applicationId,
+                                              String projectId,
+                                              String userId,
+                                              String actorId,
+                                              String agentId,
+                                              String sessionId,
+                                              String runId,
+                                              String delegationId,
+                                              String commandId,
+                                              String toolCode) {
+        StringBuilder canonical = new StringBuilder(ACTION_FINGERPRINT_VERSION);
+        appendCanonicalActionField(canonical, "approvalFactId", approvalFactId);
+        appendCanonicalActionField(canonical, "tenantId", tenantId);
+        appendCanonicalActionField(canonical, "applicationId", applicationId);
+        appendCanonicalActionField(canonical, "projectId", projectId);
+        appendCanonicalActionField(canonical, "userId", userId);
+        appendCanonicalActionField(canonical, "actorId", actorId);
+        appendCanonicalActionField(canonical, "agentId", agentId);
+        appendCanonicalActionField(canonical, "sessionId", sessionId);
+        appendCanonicalActionField(canonical, "runId", runId);
+        appendCanonicalActionField(canonical, "delegationId", delegationId);
+        appendCanonicalActionField(canonical, "commandId", commandId);
+        appendCanonicalActionField(canonical, "toolCode", toolCode);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+            return ACTION_FINGERPRINT_PREFIX + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is mandatory in the JDK runtime.", exception);
+        }
+    }
+
+    /**
+     * Appends an unambiguous canonical field to the fingerprint preimage.
+     *
+     * <p>The value is normalized with the same low-sensitive text rules used
+     * by the scope comparison. The explicit length distinguishes null values
+     * and prevents field-boundary collisions before the digest is calculated.</p>
+     *
+     * @param canonical mutable action-fingerprint preimage
+     * @param name stable field name controlled by permission-admin
+     * @param value validated or scope-verified field value
+     */
+    private void appendCanonicalActionField(StringBuilder canonical, String name, String value) {
+        String normalizedValue = text(value);
+        canonical.append('\n').append(name).append('=');
+        if (normalizedValue == null) {
+            canonical.append(-1);
+            return;
+        }
+        canonical.append(normalizedValue.length()).append(':').append(normalizedValue);
+    }
+
+    /**
+     * Compares two server-calculated fingerprints without reintroducing caller input.
+     *
+     * <p>The values are ASCII SHA-256 outputs. A constant-time comparison avoids
+     * turning this authorization check into an observable prefix oracle.</p>
+     *
+     * @param expected fingerprint derived from the durable approval fact
+     * @param actual fingerprint derived from the current scope-verified action
+     * @return {@code true} only when both authoritative bindings are identical
+     */
+    private boolean sameFingerprint(String expected, String actual) {
+        return expected != null && actual != null && MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                actual.getBytes(StandardCharsets.UTF_8)
+        );
     }
 
     private boolean safeFactId(String value) {

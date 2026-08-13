@@ -132,6 +132,16 @@ try {
     )
     Write-Pass "Compose config"
 
+    Write-Step "verify writable Nacos client cache contract"
+    Assert-FileContains `
+        -RelativePath "docker-compose.application.yml" `
+        -ExpectedText '-DJM.SNAPSHOT.PATH=/tmp' `
+        -Purpose 'read-only Java containers must place the Nacos discovery cache on the writable /tmp tmpfs'
+    Assert-FileContains `
+        -RelativePath "docker/runtime/java-service.Dockerfile" `
+        -ExpectedText '-DJM.SNAPSHOT.PATH=/tmp' `
+        -Purpose 'standalone Java images must keep the same writable Nacos cache default as the Compose runtime'
+
     Write-Step "verify gateway OIDC issuer and JWKS split contract"
     Assert-FileContains `
         -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewaySecurityConfig.java" `

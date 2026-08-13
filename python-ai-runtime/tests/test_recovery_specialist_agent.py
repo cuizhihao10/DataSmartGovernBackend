@@ -79,6 +79,7 @@ def _request(
         CONTROLLED_RECOVERY_TOOL_CODE,
         "task.recovery.rename",
     ),
+    evidence_references: tuple[str, ...] = ("case://run-recovery-1",),
 ) -> SpecialistTurnRequest:
     """创建带完整双主体审计范围的 RECOVERY_AGENT turn。"""
 
@@ -97,7 +98,7 @@ def _request(
             allowed_tool_names=allowed_tools,
         ),
         context_summary=context or {},
-        evidence_references=("case://run-recovery-1",),
+        evidence_references=evidence_references,
     )
 
 
@@ -276,19 +277,148 @@ class RecoverySpecialistAgentTest(unittest.TestCase):
         self.assertIn("rag:runbook-duplicate-task:chunk-2", result.evidence_references)
         self.assertNotIn("不得进入 Agent 结果的正文", str(result.to_summary()))
 
-    def test_no_case_or_knowledge_evidence_waits_without_calling_model(self) -> None:
-        """只有日志引用而没有事实摘要时，Agent 必须停住而不能凭空编造案例。"""
+    def test_model_can_request_rag_when_no_case_or_knowledge_evidence_exists(self) -> None:
+        """知识检索由模型显式决策；缺少证据时 SEARCH 只产生只读检索建议。"""
 
         diagnostic = _DiagnosticClient(_diagnostic())
-        model = _PlanningModel(_rename_output())
+        model = _PlanningModel(RecoveryPlanningModelOutput(
+            rag_decision="SEARCH",
+            rag_reason="当前错误模式没有可信案例覆盖，需要先检索项目 Runbook。",
+            confidence=0.42,
+            actions=({"actionType": "RETRY_FAILED_OBJECTS"},),
+        ))
 
         result = RecoverySpecialistAgent(diagnostic, model).execute(_request(context={}))
 
-        self.assertEqual(SpecialistTurnStatus.WAITING_FOR_INPUT, result.status)
-        self.assertEqual(("knowledgeSummary",), result.required_input_fields)
-        self.assertEqual([], model.requests)
+        self.assertEqual(SpecialistTurnStatus.COMPLETED, result.status)
+        self.assertEqual(1, len(model.requests))
+        self.assertEqual({}, dict(model.requests[0].knowledge_summary))
+        self.assertEqual("SEARCH", result.structured_output["ragDecision"])
+        self.assertEqual(0.42, result.structured_output["modelConfidence"])
+        self.assertEqual(
+            "SEARCH_RECOVERY_KNOWLEDGE",
+            result.structured_output["repairActions"][0]["actionType"],
+        )
+        self.assertTrue(result.structured_output["readOnly"])
         self.assertFalse(result.structured_output["executed"])
-        self.assertIn("KNOWLEDGE_AGENT", result.structured_output["nextStep"])
+        self.assertTrue(result.structured_output["javaToolPlanPending"])
+
+    def test_model_can_skip_rag_and_propose_low_risk_repair_from_diagnostic_facts(self) -> None:
+        """模型可在高置信、已知错误模式下跳过 RAG，平台仍负责风险分类和执行治理。"""
+
+        model = _PlanningModel(RecoveryPlanningModelOutput(
+            rag_decision="SKIP",
+            rag_reason="错误码和失败对象账本已足以定位可重试分片。",
+            confidence=0.93,
+            actions=({"actionType": "READ_ONLY_DIAGNOSIS", "reason": "核对失败对象范围"},),
+        ))
+
+        result = RecoverySpecialistAgent(_DiagnosticClient(_diagnostic()), model).execute(
+            _request(context={})
+        )
+
+        self.assertEqual(SpecialistTurnStatus.COMPLETED, result.status)
+        self.assertEqual("SKIP", result.structured_output["ragDecision"])
+        self.assertFalse(result.structured_output["knowledgeSummaryAvailable"])
+        self.assertEqual("READ_ONLY_DIAGNOSIS", result.structured_output["repairActions"][0]["actionType"])
+        self.assertTrue(result.structured_output["diagnosticEvidenceGate"]["satisfied"])
+        self.assertIn("STRUCTURED_API", result.structured_output["evidenceAudit"]["sourceTypes"])
+        self.assertIn("EXECUTION_LOG", result.structured_output["evidenceAudit"]["sourceTypes"])
+
+    def test_recovery_fails_closed_before_model_when_diagnostic_evidence_is_insufficient(self) -> None:
+        """Recovery 需要可审计诊断事实，但不能把 RAG 是否调用当成证据门槛。"""
+
+        diagnostic = FailureDiagnosticResult(
+            failure_code="UNKNOWN",
+            failure_reason="",
+            facts={},
+            log_references=(),
+            evidence_references=(),
+            log_summary={},
+        )
+        model = _PlanningModel(RecoveryPlanningModelOutput(
+            rag_decision="SKIP",
+            confidence=0.99,
+            actions=({"actionType": "RETRY_FAILED_OBJECTS"},),
+        ))
+
+        result = RecoverySpecialistAgent(_DiagnosticClient(diagnostic), model).execute(
+            _request(context={}, evidence_references=())
+        )
+
+        self.assertEqual(SpecialistTurnStatus.FAILED, result.status)
+        self.assertEqual("RECOVERY_DIAGNOSTIC_EVIDENCE_INSUFFICIENT", result.error_code)
+        self.assertEqual([], model.requests)
+
+    def test_repeated_failure_changes_strategy_instead_of_reusing_same_repair(self) -> None:
+        """相同错误再次出现时，相同 repair fingerprint 必须被替换成只读扩展检索。"""
+
+        proposed = RecoveryPlanningModelOutput(
+            rag_decision="SKIP",
+            rag_reason="结构化失败对象账本足以重试。",
+            confidence=0.91,
+            actions=({"actionType": "RETRY_FAILED_OBJECTS", "reason": "重试失败对象"},),
+        )
+        first = RecoverySpecialistAgent(_DiagnosticClient(_diagnostic()), _PlanningModel(proposed)).execute(
+            _request(context={})
+        )
+        previous_fingerprint = first.structured_output["actionFingerprint"]
+        repeated_diagnostic = _diagnostic(facts={
+            "failedStage": "TARGET_WRITE",
+            "retryable": True,
+            "repeatedErrorCount": 1,
+            "previousRepairFingerprint": previous_fingerprint,
+        })
+
+        repeated = RecoverySpecialistAgent(
+            _DiagnosticClient(repeated_diagnostic),
+            _PlanningModel(proposed),
+        ).execute(_request(context={}))
+
+        self.assertEqual(SpecialistTurnStatus.COMPLETED, repeated.status)
+        self.assertEqual("SEARCH", repeated.structured_output["retrievalDecision"])
+        self.assertTrue(repeated.structured_output["strategyChanged"])
+        self.assertEqual(
+            "SEARCH_RECOVERY_KNOWLEDGE",
+            repeated.structured_output["repairActions"][0]["actionType"],
+        )
+        self.assertNotEqual(previous_fingerprint, repeated.structured_output["actionFingerprint"])
+
+    def test_trusted_autopilot_context_overlays_loop_facts_without_changing_diagnostic_locator(self) -> None:
+        """Autopilot 的服务端循环事实应参与重复策略判断，但不能进入诊断 HTTP 查询正文。"""
+
+        proposed = RecoveryPlanningModelOutput(
+            rag_decision="SKIP",
+            confidence=0.91,
+            actions=({"actionType": "RETRY_FAILED_OBJECTS", "reason": "重试失败对象"},),
+        )
+        first = RecoverySpecialistAgent(
+            _DiagnosticClient(_diagnostic()),
+            _PlanningModel(proposed),
+        ).execute(_request(context={}))
+        previous_fingerprint = first.structured_output["actionFingerprint"]
+        diagnostic_client = _DiagnosticClient(_diagnostic())
+        model = _PlanningModel(proposed)
+
+        repeated = RecoverySpecialistAgent(diagnostic_client, model).execute(
+            _request(
+                context={
+                    "taskId": "76",
+                    "executionId": "1805",
+                    "trustedAutopilotRecovery": {
+                        "errorFingerprint": "a" * 64,
+                        "repeatedErrorCount": 1,
+                        "previousRepairFingerprint": previous_fingerprint.removeprefix("sha256:"),
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(SpecialistTurnStatus.COMPLETED, repeated.status)
+        self.assertTrue(repeated.structured_output["strategyChanged"])
+        self.assertEqual(1, model.requests[0].diagnostic_facts["repeatedErrorCount"])
+        self.assertEqual(previous_fingerprint, model.requests[0].diagnostic_facts["previousRepairFingerprint"])
+        self.assertNotIn("trustedAutopilotRecovery", diagnostic_client.requests[0].context_summary)
 
     def test_consumes_completed_monitor_dependency_before_recovery_model_call(self) -> None:
         """Pass only deterministic monitor facts from the completed dependency into recovery planning."""

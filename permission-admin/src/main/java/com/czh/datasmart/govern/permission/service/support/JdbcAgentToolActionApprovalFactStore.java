@@ -34,9 +34,9 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
     private static final String ATOMIC_UPSERT_SQL = """
             INSERT INTO agent_tool_action_approval_fact AS current_fact (
                 approval_fact_id, tenant_id, application_id, project_id, user_id, actor_id, agent_id,
-                session_id, run_id, delegation_id, command_id, tool_code, policy_version, status, expires_at,
+                session_id, run_id, delegation_id, command_id, tool_code, action_fingerprint, policy_version, status, expires_at,
                 approved_by_actor_id, reason_codes, evidence_codes, create_time, update_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (approval_fact_id) DO UPDATE SET
                 status = CASE
                     WHEN UPPER(COALESCE(current_fact.status, '')) IN ('APPROVED', 'REJECTED')
@@ -85,6 +85,7 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
               AND current_fact.delegation_id IS NOT DISTINCT FROM EXCLUDED.delegation_id
               AND current_fact.command_id IS NOT DISTINCT FROM EXCLUDED.command_id
               AND current_fact.tool_code IS NOT DISTINCT FROM EXCLUDED.tool_code
+              AND current_fact.action_fingerprint IS NOT DISTINCT FROM EXCLUDED.action_fingerprint
               AND current_fact.policy_version IS NOT DISTINCT FROM EXCLUDED.policy_version
             RETURNING *
             """;
@@ -107,7 +108,8 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
                 this::mapRecord,
                 record.approvalFactId(), record.tenantId(), record.applicationId(), record.projectId(),
                 record.userId(), record.actorId(), record.agentId(), record.sessionId(), record.runId(),
-                record.delegationId(), record.commandId(), record.toolCode(), record.policyVersion(), record.status(),
+                record.delegationId(), record.commandId(), record.toolCode(), record.actionFingerprint(),
+                record.policyVersion(), record.status(),
                 record.expiresAt(), record.approvedByActorId(), json(record.reasonCodes()), json(record.evidenceCodes()),
                 record.createdAt());
         if (records.isEmpty()) {
@@ -135,7 +137,21 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
         return records.stream().findFirst();
     }
 
-    /** 将数据库行映射为审批领域记录，并恢复 JSONB 理由与证据列表。 */
+    /**
+     * Maps one PostgreSQL approval-fact row into the immutable service record.
+     *
+     * <p>The inputs are the selected database row and its cursor index. The
+     * output restores scope fields, the persisted server fingerprint, and the
+     * JSONB audit lists without exposing any action payload. Reading the
+     * fingerprint here is security-critical: evaluation must compare the value
+     * that was actually stored with a fresh server calculation, rather than
+     * accepting a value from the current caller.</p>
+     *
+     * @param resultSet current PostgreSQL row selected by the store query
+     * @param rowNum zero-based row index supplied by Spring JDBC
+     * @return durable approval fact reconstructed from the database row
+     * @throws SQLException when a required database value cannot be read
+     */
     private AgentToolActionApprovalFactRecord mapRecord(ResultSet resultSet, int rowNum) throws SQLException {
         return new AgentToolActionApprovalFactRecord(
                 resultSet.getString("approval_fact_id"), resultSet.getObject("tenant_id", Long.class),
@@ -143,6 +159,7 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
                 resultSet.getString("user_id"), resultSet.getString("actor_id"), resultSet.getString("agent_id"),
                 resultSet.getString("session_id"), resultSet.getString("run_id"), resultSet.getString("delegation_id"),
                 resultSet.getString("command_id"), resultSet.getString("tool_code"),
+                resultSet.getString("action_fingerprint"),
                 resultSet.getString("policy_version"), resultSet.getString("status"),
                 resultSet.getTimestamp("expires_at") == null ? null : resultSet.getTimestamp("expires_at").toLocalDateTime(),
                 resultSet.getString("approved_by_actor_id"), strings(resultSet.getString("reason_codes")),

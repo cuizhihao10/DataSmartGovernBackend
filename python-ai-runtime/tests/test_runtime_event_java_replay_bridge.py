@@ -107,6 +107,90 @@ class RuntimeEventJavaReplayBridgeTest(unittest.TestCase):
         )
         self.assertEqual(7, envelope["events"][0]["attributes"]["_datasmartOriginalSequence"])
 
+    def test_reconnect_applies_only_forward_known_source_cursors(self) -> None:
+        """Reconnect must resume each configured external source without trusting stale or unknown cursors."""
+
+        java_source = FakeJavaReplaySource(sequence=10)
+        manager = RuntimeEventSessionManager(external_replay_sources=(java_source,))
+        subscribed = build_event_control_response(
+            {
+                "type": "subscribe",
+                "subscription": {
+                    "clientId": "browser-a",
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                    "sessionId": "session-bridge",
+                    "runId": "run-bridge",
+                    "includeSnapshot": True,
+                },
+                "accessContext": {
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                },
+            },
+            manager,
+        )
+        subscription_id = subscribed["subscription"]["subscriptionId"]
+
+        build_event_control_response(
+            {
+                "type": "reconnect",
+                "subscriptionId": subscription_id,
+                "afterSequence": 1,
+                "sourceCursors": {java_source.source_name: True, "unknown-source": 99},
+            },
+            manager,
+        )
+
+        self.assertEqual({}, manager.snapshot(subscription_id).plan.request.source_cursors)
+        self.assertEqual({}, java_source.requests[-1].source_cursors)
+        self.assertEqual([], java_source.acks)
+
+        build_event_control_response(
+            {
+                "type": "reconnect",
+                "subscriptionId": subscription_id,
+                "afterSequence": 1,
+                "sourceCursors": {java_source.source_name: 9},
+            },
+            manager,
+        )
+
+        self.assertEqual(9, java_source.requests[-1].source_cursors[java_source.source_name])
+        self.assertEqual(
+            {java_source.source_name: 9},
+            manager.snapshot(subscription_id).plan.request.source_cursors,
+        )
+
+        build_event_control_response(
+            {
+                "type": "reconnect",
+                "subscriptionId": subscription_id,
+                "afterSequence": 2,
+                "sourceCursors": {java_source.source_name: 8},
+            },
+            manager,
+        )
+        build_event_control_response(
+            {
+                "type": "reconnect",
+                "subscriptionId": subscription_id,
+                "afterSequence": 3,
+                "sourceCursors": {java_source.source_name: 0, "unknown-source": 99},
+            },
+            manager,
+        )
+
+        self.assertEqual(9, java_source.requests[-1].source_cursors[java_source.source_name])
+        self.assertEqual(
+            {java_source.source_name: 9},
+            manager.snapshot(subscription_id).plan.request.source_cursors,
+        )
+
     def test_external_replay_failure_does_not_reject_subscription(self) -> None:
         manager = RuntimeEventSessionManager(external_replay_sources=(FailingReplaySource(),))
 

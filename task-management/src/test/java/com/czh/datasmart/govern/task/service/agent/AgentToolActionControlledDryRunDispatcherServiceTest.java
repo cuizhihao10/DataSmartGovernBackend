@@ -82,7 +82,24 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         verify(taskService).deferTask(eq(9101L), any(String.class), eq(120), any(TaskExecutionCallbackContext.class));
         verify(taskService, never()).failTask(any(), any(), any());
         verify(metricsService).recordDispatchOutcome("DEFERRED_WAITING_PAYLOAD_BODY");
-        verify(approvalClient).evaluate(any(AgentToolActionControlledApprovalEvaluationRequest.class));
+        ArgumentCaptor<AgentToolActionControlledApprovalEvaluationRequest> approvalCaptor =
+                ArgumentCaptor.forClass(AgentToolActionControlledApprovalEvaluationRequest.class);
+        verify(approvalClient).evaluate(approvalCaptor.capture());
+        AgentToolActionControlledApprovalEvaluationRequest approvalRequest = approvalCaptor.getValue();
+        assertEquals("approval:human-001", approvalRequest.approvalFactId());
+        assertEquals(10L, approvalRequest.tenantId());
+        assertEquals(7L, approvalRequest.applicationId());
+        assertEquals(20L, approvalRequest.projectId());
+        assertEquals("user-30", approvalRequest.userId());
+        assertEquals("30", approvalRequest.actorId());
+        assertEquals("agent-recovery-001", approvalRequest.agentId());
+        assertEquals("session-proposal", approvalRequest.sessionId());
+        assertEquals("run-proposal", approvalRequest.runId());
+        assertEquals("delegation:run-proposal:001", approvalRequest.delegationId());
+        assertEquals("taoc-consume-001", approvalRequest.commandId());
+        assertEquals("datasource.metadata.read", approvalRequest.toolCode());
+        assertEquals("sha256:recovery-action-fingerprint", approvalRequest.actionFingerprint());
+        assertEquals("tool-readiness-policy.v1", approvalRequest.requestedPolicyVersion());
         verify(receiptClient).publishDryRunReceipt(
                 any(AgentToolActionControlledTaskPayload.class),
                 eq(9201L),
@@ -181,6 +198,94 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
     }
 
     @Test
+    void shouldFailClosedWhenTaskRowScopeDiffersFromPersistedCommandSnapshot() {
+        TaskService taskService = mock(TaskService.class);
+        AgentAsyncToolWorkerProperties properties = properties();
+        AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
+        PermissionAdminAgentToolActionApprovalClient approvalClient = approvedApprovalClient();
+        AgentToolActionControlledDryRunDispatcherService service =
+                service(taskService, properties, metricsService, receiptClient, approvalClient);
+        Task task = controlledTaskWithValidEvidence();
+        task.setTenantId(11L);
+        when(taskService.claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class)))
+                .thenReturn(new TaskExecutionClaimResult(true, "claimed", task, run(9206L)));
+
+        AgentToolActionControlledDryRunResult result = service.dispatchDryRunOnce(actorContext());
+
+        assertEquals("FAILED_PRECHECK", result.outcome());
+        assertFalse(result.preCheckPassed());
+        assertFalse(result.sideEffectExecuted());
+        verify(taskService).failTask(eq(9101L), any(String.class), any(TaskExecutionCallbackContext.class));
+        verify(taskService, never()).deferTask(any(), any(), any(), any());
+        verify(approvalClient, never()).evaluate(any(AgentToolActionControlledApprovalEvaluationRequest.class));
+        verify(metricsService).recordDispatchOutcome("FAILED_PRECHECK");
+    }
+
+    @Test
+    void shouldFailClosedWhenApprovedFactDoesNotMatchRequestedFactId() {
+        TaskService taskService = mock(TaskService.class);
+        AgentAsyncToolWorkerProperties properties = properties();
+        properties.setControlledActionApprovalCheckFailOpenOnError(true);
+        AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
+        PermissionAdminAgentToolActionApprovalClient approvalClient = approvalClient(new AgentToolActionControlledApprovalEvaluationResult(
+                "approval:another-action",
+                true,
+                false,
+                "APPROVED",
+                "unexpected approval fact",
+                "APPROVED",
+                "tool-readiness-policy.v1",
+                List.of("APPROVAL_FACT_FOUND", "APPROVAL_FACT_SCOPE_VERIFIED", "APPROVAL_FACT_STATUS_APPROVED"),
+                List.of()
+        ));
+        AgentToolActionControlledDryRunDispatcherService service =
+                service(taskService, properties, metricsService, receiptClient, approvalClient);
+        when(taskService.claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class)))
+                .thenReturn(new TaskExecutionClaimResult(true, "claimed", controlledTaskWithValidEvidence(), run(9207L)));
+
+        AgentToolActionControlledDryRunResult result = service.dispatchDryRunOnce(actorContext());
+
+        assertEquals("FAILED_PRECHECK", result.outcome());
+        assertFalse(result.preCheckPassed());
+        assertFalse(result.sideEffectExecuted());
+        verify(taskService).failTask(eq(9101L), any(String.class), any(TaskExecutionCallbackContext.class));
+        verify(taskService, never()).deferTask(any(), any(), any(), any());
+        verify(metricsService).recordDispatchOutcome("FAILED_PRECHECK");
+    }
+
+    @Test
+    void shouldNotUnlockWhenApprovalEvaluationIsUnavailableEvenWithFailOpenConfigured() {
+        TaskService taskService = mock(TaskService.class);
+        AgentAsyncToolWorkerProperties properties = properties();
+        properties.setDryRunOnly(false);
+        properties.setControlledActionSubmitEnabled(true);
+        properties.setControlledActionApprovalCheckFailOpenOnError(true);
+        AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
+        PermissionAdminAgentToolActionApprovalClient approvalClient =
+                mock(PermissionAdminAgentToolActionApprovalClient.class);
+        when(approvalClient.evaluate(any(AgentToolActionControlledApprovalEvaluationRequest.class)))
+                .thenThrow(new IllegalStateException("permission-admin unavailable"));
+        AgentToolActionControlledQualityRemediationExecutionService executionService =
+                mock(AgentToolActionControlledQualityRemediationExecutionService.class);
+        AgentToolActionControlledDryRunDispatcherService service =
+                service(taskService, properties, metricsService, receiptClient, approvalClient, executionService);
+        when(taskService.claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class)))
+                .thenReturn(new TaskExecutionClaimResult(true, "claimed", controlledQualityTaskWithBodyAvailable(), run(9208L)));
+
+        AgentToolActionControlledDryRunResult result = service.dispatchDryRunOnce(actorContext());
+
+        assertEquals("DEFERRED_WAITING_APPROVAL_FACT", result.outcome());
+        assertFalse(result.preCheckPassed());
+        assertFalse(result.sideEffectExecuted());
+        verify(taskService).deferTask(eq(9101L), any(String.class), eq(120), any(TaskExecutionCallbackContext.class));
+        verify(executionService, never()).execute(any(), any(), any(), any(), any());
+        verify(metricsService).recordDispatchOutcome("DEFERRED_WAITING_APPROVAL_FACT");
+    }
+
+    @Test
     void shouldDeferWhenApprovalFactIsPending() {
         TaskService taskService = mock(TaskService.class);
         AgentAsyncToolWorkerProperties properties = properties();
@@ -226,6 +331,7 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
     void shouldFailWhenApprovalFactIsRejected() {
         TaskService taskService = mock(TaskService.class);
         AgentAsyncToolWorkerProperties properties = properties();
+        properties.setControlledActionApprovalCheckFailOpenOnError(true);
         AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
         AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
         PermissionAdminAgentToolActionApprovalClient approvalClient = approvalClient(new AgentToolActionControlledApprovalEvaluationResult(
@@ -435,7 +541,14 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         params.put("targetService", "agent-runtime");
         params.put("targetEndpoint", null);
         params.put("workspaceId", null);
+        params.put("tenantId", 10L);
+        params.put("applicationId", 7L);
+        params.put("projectId", 20L);
+        params.put("userId", "user-30");
         params.put("actorId", "30");
+        params.put("agentId", "agent-recovery-001");
+        params.put("delegationId", "delegation:run-proposal:001");
+        params.put("actionFingerprint", "sha256:recovery-action-fingerprint");
         params.put("payloadReference", "agent-payload:run-proposal/" + payloadKey);
         params.put("payloadReferenceType", "AGENT_PAYLOAD");
         params.put("workerDispatchEnabled", false);

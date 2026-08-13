@@ -235,7 +235,7 @@ class SpecialistAgentSchedulingTest(unittest.TestCase):
         # the planner must not be restarted just because the failed task belongs to that domain.
         self.assertNotIn(AgentSessionRole.DATA_SYNC_AGENT, roster)
         self.assertIn(AgentSessionRole.RECOVERY_AGENT, roster)
-        self.assertIn(AgentSessionRole.KNOWLEDGE_AGENT, roster)
+        self.assertNotIn(AgentSessionRole.KNOWLEDGE_AGENT, roster)
         self.assertNotIn(AgentSessionRole.PRECHECK_AGENT, roster)
         self.assertNotIn("DUPLICATE_TASK_NAME", str(scheduling.to_summary()))
 

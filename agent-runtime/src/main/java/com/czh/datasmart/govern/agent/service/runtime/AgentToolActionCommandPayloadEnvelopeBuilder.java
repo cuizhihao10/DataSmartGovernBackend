@@ -101,6 +101,8 @@ public class AgentToolActionCommandPayloadEnvelopeBuilder {
         payload.put("toolCode", proposal.toolName());
         payload.put("targetService", TARGET_SERVICE);
         payload.put("targetEndpoint", null);
+        // applicationId 是当前产品正式业务层级；workspaceId 仅保留为空的旧协议占位，不能再承载业务归属。
+        payload.put("applicationId", accessContext == null ? null : accessContext.applicationId());
         payload.put("workspaceId", null);
         payload.put("dispatchChannel", DISPATCH_CHANNEL);
         payload.put("source", COMMAND_SOURCE);

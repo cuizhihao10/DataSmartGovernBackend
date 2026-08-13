@@ -42,6 +42,8 @@ class RagApiTest(unittest.TestCase):
                 "generateAnswer": False,
                 "traceId": "trace-rag",
                 "sessionId": "session-rag",
+                "retrievalMode": "lexical",
+                "sourceTypes": "exact_search",
             }
         )
 
@@ -50,6 +52,18 @@ class RagApiTest(unittest.TestCase):
         self.assertEqual("workspace-a", query.workspace_key)
         self.assertEqual(3, query.top_k)
         self.assertFalse(query.generate_answer)
+        self.assertEqual("lexical", query.retrieval_mode)
+        self.assertEqual(("exact_search",), query.source_types)
+
+    def test_payload_builder_accepts_multiple_source_types(self) -> None:
+        query = rag_query_from_payload(
+            {
+                "question": "find a matching recovery case",
+                "sourceTypes": ["wiki", "git_history"],
+            }
+        )
+
+        self.assertEqual(("wiki", "git_history"), query.source_types)
 
     def test_route_returns_rag_answer_and_low_sensitive_diagnostics(self) -> None:
         """路由应返回引用证据，诊断不应返回完整文档正文。"""

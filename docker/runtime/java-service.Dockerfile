@@ -108,7 +108,9 @@ COPY --from=builder --chown=datasmart:datasmart /workspace/app.jar ./app.jar
 
 ENV SERVER_PORT=${SERVER_PORT} \
     TZ=Asia/Shanghai \
-    JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
+    # Nacos Client 2.3.x 通过 `JM.SNAPSHOT.PATH` 定位 Naming 缓存根目录，并自动追加 `/nacos/naming`。
+    # `/tmp` 由编排层提供可写 tmpfs，适合非 root + 只读根文件系统下的可重建服务发现缓存。
+    JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai -DJM.SNAPSHOT.PATH=/tmp"
 
 EXPOSE ${SERVER_PORT}
 

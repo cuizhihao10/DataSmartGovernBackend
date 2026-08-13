@@ -64,6 +64,7 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
         assertEquals(1, response.items().size());
         AgentAsyncTaskCommandOutboxRecord record = fixture.store.list("run-outbox-001", null, 10).getFirst();
         assertTrue(record.payloadJson().contains("\"schemaVersion\":\"datasmart.agent.async-task-command.v1\""));
+        assertTrue(record.payloadJson().contains("\"applicationId\":40"));
         assertTrue(record.payloadJson().contains("\"payloadReference\":\"agent-tool-audit://session-outbox-001/run-outbox-001/atea-outbox-001/plan-arguments\""));
         assertTrue(record.payloadJson().contains("\"credentialRef\""));
         assertFalse(record.payloadJson().contains("secret://mysql-prod"));
@@ -274,6 +275,7 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
                 "tenant:10:project:20",
                 LocalDateTime.now()
         );
+        session.bindApplicationId(40L);
         session.addRun(new AgentRunRecord(
                 "run-outbox-001",
                 "session-outbox-001",

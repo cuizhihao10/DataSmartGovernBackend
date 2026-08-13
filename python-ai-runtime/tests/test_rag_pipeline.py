@@ -11,6 +11,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -59,6 +60,24 @@ class RagPipelineTest(unittest.TestCase):
         self.assertTrue(summary["retrievalSummary"]["hasVectorSignal"])
         self.assertIn("数据质量", str(summary["citations"]))
         self.assertNotIn("tenant-b-private", str(summary))
+
+        retrieval_summary = summary["retrievalSummary"]
+        self.assertTrue(retrieval_summary["queryDigest"].startswith("sha256:"))
+        self.assertTrue(retrieval_summary["evidenceDigest"].startswith("sha256:"))
+        self.assertEqual(len(summary["citations"]), retrieval_summary["evidenceCount"])
+        self.assertEqual(("document",), retrieval_summary["evidenceSourceTypes"])
+        self.assertEqual(
+            {"tenantId": "tenant-a", "projectId": "project-a", "workspaceKey": "workspace-a"},
+            retrieval_summary["scope"],
+        )
+        self.assertEqual(len(summary["citations"]), len(retrieval_summary["evidenceRecords"]))
+        self.assertNotIn("question", retrieval_summary["querySummary"])
+        for evidence in retrieval_summary["evidenceRecords"]:
+            self.assertTrue(evidence["evidenceId"].startswith("rag-evidence:"))
+            self.assertEqual(retrieval_summary["queryDigest"], evidence["queryDigest"])
+            self.assertIn(evidence["sourceType"], {"document", "rule", "metadata", "runbook", "memory_export", "wiki", "git_history"})
+            self.assertTrue(evidence["sourceUri"])
+            datetime.fromisoformat(evidence["retrievedAt"].replace("Z", "+00:00"))
 
     def test_scope_filter_blocks_other_tenant_documents_before_ranking(self) -> None:
         """其他租户文档即使命中关键词，也不能进入候选和引用。"""

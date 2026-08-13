@@ -9,8 +9,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -18,6 +22,15 @@ import java.util.Set;
 @Component
 @RequiredArgsConstructor
 public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
+
+    /** Digest-bound reason shared by the ordinary preview and user-confirmed apply path. */
+    private static final String USER_QUARANTINE_REASON = "USER_CONFIRMED_AGENT_DIRTY_RECORD_QUARANTINE";
+    /**
+     * Digest-bound reason understood by the dedicated data-sync Autopilot apply endpoint.
+     * Keep this cross-service constant aligned with SyncDirtyRecordQuarantineSupport.
+     */
+    private static final String AUTOPILOT_QUARANTINE_REASON =
+            "AUTOPILOT_PREAUTHORIZED_DIRTY_RECORD_QUARANTINE";
 
     public static final String DIAGNOSE = "sync.execution.diagnose";
     public static final String RAG_LOOKUP = "sync.execution.rag.lookup";
@@ -102,6 +115,7 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
      * while the RAG service still enforces the current tenant/project scope.
      */
     private AgentToolExecutionOutcome lookupRecoveryEvidence(AgentToolExecutionContext context) {
+        RetrievalRequest retrieval = retrievalRequest(context.audit().getPlanArguments());
         Object value = referenceResolver.resolve(
                         context,
                         context.audit().getPlanArguments().get("diagnosisRef"),
@@ -120,6 +134,10 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
         request.put("question", question);
         request.put("topK", 5);
         request.put("generateAnswer", true);
+        request.put("retrievalMode", retrieval.retrievalMode());
+        if (!retrieval.sourceTypes().isEmpty()) {
+            request.put("sourceTypes", retrieval.sourceTypes());
+        }
         Map<String, Object> response = postRaw(context, AI_RUNTIME, "/agent/rag/query", request);
         if (response == null) {
             return AgentToolExecutionOutcome.failed("SYNC_RECOVERY_RAG_EMPTY", "同步恢复案例检索返回空响应");
@@ -129,7 +147,126 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
         output.put("citations", response.getOrDefault("citations", List.of()));
         output.put("retrievalSummary", response.getOrDefault("retrievalSummary", Map.of()));
         output.put("modelSummary", response.getOrDefault("modelSummary", Map.of()));
+        output.put("evidenceAudit", verifyEvidenceAudit(response, context));
         return AgentToolExecutionOutcome.succeeded("已检索项目文档、历史恢复案例和 Runbook。", output);
+    }
+
+    /**
+     * Translate the model's bounded retrieval choice into the storage-level query contract.
+     * Scope and question remain server-owned values from the diagnosis reference and current
+     * agent session; a model cannot widen either boundary through tool arguments.
+     */
+    private RetrievalRequest retrievalRequest(Map<String, Object> arguments) {
+        String strategy = safeText(arguments.get("retrievalStrategy"), "RAG")
+                .toUpperCase(Locale.ROOT);
+        return switch (strategy) {
+            case "EXACT_SEARCH" -> new RetrievalRequest("lexical", List.of());
+            case "RAG", "AUTO" -> new RetrievalRequest("hybrid", List.of());
+            case "WIKI" -> new RetrievalRequest("hybrid", List.of("wiki"));
+            case "GIT_HISTORY" -> new RetrievalRequest("hybrid", List.of("git_history"));
+            case "STRUCTURED_DIAGNOSTIC" -> throw new PlatformBusinessException(
+                    PlatformErrorCode.BAD_REQUEST,
+                    "STRUCTURED_DIAGNOSTIC 必须调用结构化诊断工具，不能伪装成 RAG 检索");
+            default -> throw new PlatformBusinessException(
+                    PlatformErrorCode.BAD_REQUEST, "不支持的 Recovery 检索策略: " + strategy);
+        };
+    }
+
+    /**
+     * Validate low-sensitive durable retrieval facts. Full document bodies and model answers are
+     * intentionally excluded; the digest binds the evidence set without creating a second store.
+     */
+    private Map<String, Object> verifyEvidenceAudit(Map<String, Object> response,
+                                                    AgentToolExecutionContext context) {
+        Object summaryValue = response.get("retrievalSummary");
+        if (!(summaryValue instanceof Map<?, ?> rawSummary)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "RAG 响应缺少 retrievalSummary 证据摘要");
+        }
+        Map<String, Object> summary = copyMap(rawSummary);
+        String evidenceDigest = requiredText(summary.get("evidenceDigest"),
+                "RAG 证据摘要缺少 evidenceDigest");
+        if (!evidenceDigest.matches("sha256:[0-9a-fA-F]{64}")) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "RAG 证据摘要 evidenceDigest 格式无效");
+        }
+        int evidenceCount = integerValue(summary.get("evidenceCount"), -1);
+        if (evidenceCount <= 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "RAG 证据摘要 evidenceCount 必须大于零");
+        }
+        Object sourceTypes = firstNonNull(summary.get("evidenceSourceTypes"),
+                firstNonNull(summary.get("sourceTypes"), summary.get("sourceTypeCounts")));
+        if (!hasNonEmptyValue(sourceTypes)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "RAG 证据摘要缺少 evidenceSourceTypes");
+        }
+        String retrievedAt = requiredText(summary.get("retrievedAt"), "RAG 证据摘要缺少 retrievedAt");
+        try {
+            Instant.parse(retrievedAt);
+        } catch (DateTimeParseException exception) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "RAG 证据摘要 retrievedAt 不是有效 ISO-8601 时间");
+        }
+        Object scopeValue = firstNonNull(summary.get("scope"), summary.get("evidenceScope"));
+        verifyScope(scopeValue, context);
+
+        Object recordsValue = summary.get("evidenceRecords");
+        if (recordsValue != null) {
+            if (!(recordsValue instanceof Collection<?> records) || records.size() != evidenceCount) {
+                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "RAG 证据摘要 evidenceRecords 与 evidenceCount 不一致");
+            }
+        }
+        Map<String, Object> audit = new LinkedHashMap<>();
+        audit.put("evidenceDigest", evidenceDigest);
+        audit.put("evidenceCount", evidenceCount);
+        audit.put("evidenceSourceTypes", sourceTypes);
+        audit.put("retrievedAt", retrievedAt);
+        audit.put("scope", scopeValue);
+        return audit;
+    }
+
+    private void verifyScope(Object scopeValue, AgentToolExecutionContext context) {
+        if (!(scopeValue instanceof Map<?, ?> rawScope)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "RAG 证据摘要缺少结构化 scope");
+        }
+        Map<String, Object> scope = copyMap(rawScope);
+        String tenantId = requiredText(firstNonNull(scope.get("tenantId"), scope.get("tenant_id")),
+                "RAG 证据 scope 缺少 tenantId");
+        String projectId = requiredText(firstNonNull(scope.get("projectId"), scope.get("project_id")),
+                "RAG 证据 scope 缺少 projectId");
+        if (!tenantId.equals(String.valueOf(context.session().getTenantId()))
+                || !projectId.equals(String.valueOf(context.session().getProjectId()))) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "RAG 证据 scope 与当前 Agent 会话不一致");
+        }
+        Object workspaceValue = firstNonNull(scope.get("workspaceKey"), scope.get("workspace_key"));
+        if (workspaceValue != null
+                && !String.valueOf(workspaceValue).equals(context.session().getWorkspaceKey())) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "RAG 证据 workspace scope 与当前 Agent 会话不一致");
+        }
+    }
+
+    private boolean hasNonEmptyValue(Object value) {
+        if (value == null) {
+            return false;
+        }
+        if (value instanceof CharSequence text) {
+            return !text.toString().isBlank();
+        }
+        if (value instanceof Collection<?> collection) {
+            return !collection.isEmpty();
+        }
+        if (value instanceof Map<?, ?> map) {
+            return !map.isEmpty();
+        }
+        return true;
+    }
+
+    private record RetrievalRequest(String retrievalMode, List<String> sourceTypes) {
     }
 
     private AgentToolExecutionOutcome retryFailedObjects(AgentToolExecutionContext context) {
@@ -171,11 +308,26 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
                 ? booleanValue(args.get("quarantineAllRetryableInExecution"), false)
                 : true;
         request.put("quarantineAllRetryableInExecution", previewAllRetryable);
-        request.put("reason", "AGENT_DIRTY_RECORD_QUARANTINE_PREVIEW");
+        request.put("reason", quarantinePreviewReason(context));
         Map<String, Object> data = postData(context, DATA_SYNC,
                 "/sync-tasks/{taskId}/errors/quarantine/preview", request,
                 "脏数据隔离预览", taskId);
         return AgentToolExecutionOutcome.succeeded("已生成精确坏行隔离预览，尚未改变执行策略。", data);
+    }
+
+    /**
+     * Selects the server-owned reason that becomes part of the quarantine confirmation digest.
+     *
+     * <p>A system recovery preview is created only by the Java-ingested Run whose trusted variables contain
+     * {@code interactionOrigin=SYSTEM_RECOVERY}. Model arguments are deliberately ignored. All ordinary Agent
+     * previews use the user-confirmed reason, so their later apply request recomputes the same digest while still
+     * requiring approval and {@code confirmed=true}.</p>
+     */
+    private String quarantinePreviewReason(AgentToolExecutionContext context) {
+        Object origin = context.variables() == null ? null : context.variables().get("interactionOrigin");
+        return "SYSTEM_RECOVERY".equalsIgnoreCase(String.valueOf(origin))
+                ? AUTOPILOT_QUARANTINE_REASON
+                : USER_QUARANTINE_REASON;
     }
 
     private AgentToolExecutionOutcome applyQuarantine(AgentToolExecutionContext context) {
@@ -187,7 +339,7 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
         request.put("executionId", requiredLong(preview.get("executionId"), "隔离预览缺少 executionId"));
         request.put("errorSampleIds", preview.get("selectedSampleIds"));
         request.put("quarantineAllRetryableInExecution", false);
-        request.put("reason", "USER_CONFIRMED_AGENT_DIRTY_RECORD_QUARANTINE");
+        request.put("reason", USER_QUARANTINE_REASON);
         request.put("confirmationDigest", requiredText(preview.get("confirmationDigest"), "隔离预览缺少确认摘要"));
         request.put("confirmed", true);
         Map<String, Object> data = postData(context, DATA_SYNC,
@@ -390,6 +542,10 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
 
     private Object valueOr(Object preferred, Object fallback) {
         return preferred == null ? fallback : preferred;
+    }
+
+    private Object firstNonNull(Object first, Object second) {
+        return first != null ? first : second;
     }
 
     private Long optionalLong(Object value) {

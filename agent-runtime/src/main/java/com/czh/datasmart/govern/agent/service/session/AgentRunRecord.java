@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.agent.service.session;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -115,7 +116,7 @@ public class AgentRunRecord {
         this.dryRun = dryRun;
         this.requireHumanApproval = requireHumanApproval;
         this.nextActions = nextActions;
-        this.variables = variables;
+        this.variables = variables == null ? new LinkedHashMap<>() : new LinkedHashMap<>(variables);
         this.createTime = createTime;
         this.updateTime = updateTime == null ? createTime : updateTime;
         this.finishTime = finishTime;
@@ -155,7 +156,58 @@ public class AgentRunRecord {
     }
 
     public Map<String, Object> getVariables() {
-        return variables;
+        return Map.copyOf(variables);
+    }
+
+    /**
+     * Persists a server-owned Run fact without allowing a later request or
+     * model turn to replace it.
+     */
+    public void putVariableIfAbsent(String key, Object value) {
+        if (key == null || key.isBlank() || value == null) {
+            throw new IllegalArgumentException("Run variable key and value are required");
+        }
+        if (variables.containsKey(key)) {
+            throw new IllegalStateException("Run variable is immutable once assigned: " + key);
+        }
+        variables.put(key, value);
+        updateTime = LocalDateTime.now();
+    }
+
+    /**
+     * 以一个服务器控制的变量作为守卫，原子写入一组不可覆盖的 Run 事实。
+     *
+     * <p>确认执行属于会产生真实副作用的一次性边界。调用方会把确认 claim 作为守卫，同时写入 claim 本身和
+     * 可选的 Autopilot 授权；同一个 Run 后续再看到守卫变量时必须停止，而不能覆盖旧授权并重新执行工具。
+     * 方法在领域对象上同步，保证 memory profile 中两个线程不会同时通过“尚未写入”的判断；生产 JDBC
+     * 实现还会使用一条带 JSONB 条件的 UPDATE，在多实例之间提供同样的原子语义。</p>
+     *
+     * <p>输入 Map 的每个键都必须尚未存在。只要守卫已存在或任一待写键冲突，方法就返回 {@code false}，
+     * 且不会写入部分字段。成功时会整体复制输入并推进更新时间。该方法不执行工具、不改变 Run 状态，
+     * 也不解释变量内容的权限含义；这些职责仍属于调用它的确认服务。</p>
+     *
+     * @param guardVariable 用于判断本次一次性写入是否已经发生的服务器变量名
+     * @param values 要一起写入的不可变低敏事实，必须包含 {@code guardVariable}
+     * @return 首次完整写入返回 true；守卫或其他键已存在时返回 false
+     * @throws IllegalArgumentException 当守卫、Map 或其中的键值为空时
+     */
+    public synchronized boolean putVariablesIfGuardAbsent(String guardVariable, Map<String, Object> values) {
+        if (guardVariable == null || guardVariable.isBlank() || values == null || values.isEmpty()
+                || !values.containsKey(guardVariable)) {
+            throw new IllegalArgumentException("Guard variable and guarded Run variables are required");
+        }
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            if (entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null) {
+                throw new IllegalArgumentException("Guarded Run variable keys and values are required");
+            }
+        }
+        if (variables.containsKey(guardVariable)
+                || values.keySet().stream().anyMatch(variables::containsKey)) {
+            return false;
+        }
+        variables.putAll(new LinkedHashMap<>(values));
+        updateTime = LocalDateTime.now();
+        return true;
     }
 
     public LocalDateTime getCreateTime() {
@@ -250,5 +302,76 @@ public class AgentRunRecord {
                 "查看失败工具节点的具体错误和建议，修复数据源、映射或预检查问题。",
                 "修复后重新生成 Agent 计划；失败 Run 不会自动重复写入业务系统。"
         );
+    }
+
+    /**
+     * Applies a terminal lifecycle snapshot while leaving immutable Run variables untouched.
+     *
+     * <p>The memory store uses this method to mirror the JDBC narrow-update contract. The incoming snapshot may be
+     * a different Java object when a test or local component reloaded the session between steps. Only lifecycle
+     * fields are copied: confirmation claims, AUTOPILOT authorization and receipts remain in the current Run's
+     * variable map and cannot be replaced by a stale aggregate.</p>
+     *
+     * <p>A different terminal state is rejected. This models the production SQL guard that prevents a late tool
+     * success from replacing CANCELLED, REJECTED or FAILED. Reapplying the same terminal state is idempotent and
+     * keeps the later update timestamp so local concurrent calls cannot move history time backwards.</p>
+     *
+     * @param snapshot terminal lifecycle produced by the governed execution path
+     * @return {@code true} when this Run accepted or already represented the same terminal lifecycle
+     */
+    public synchronized boolean applyTerminalLifecycleSnapshot(AgentRunRecord snapshot) {
+        if (snapshot == null
+                || !runId.equals(snapshot.getRunId())
+                || !sessionId.equals(snapshot.getSessionId())
+                || snapshot.getState() == null
+                || !snapshot.getState().isTerminal()) {
+            return false;
+        }
+        if (state.isTerminal() && state != snapshot.getState()) {
+            return false;
+        }
+        this.state = snapshot.getState();
+        this.nextActions = snapshot.getNextActions() == null ? List.of() : List.copyOf(snapshot.getNextActions());
+        this.message = snapshot.getMessage();
+        this.finishTime = snapshot.getFinishTime();
+        if (this.updateTime == null || (snapshot.getUpdateTime() != null
+                && this.updateTime.isBefore(snapshot.getUpdateTime()))) {
+            this.updateTime = snapshot.getUpdateTime();
+        }
+        return true;
+    }
+
+    /**
+     * Applies the lifecycle result of one tool approval decision to the locally stored Run.
+     *
+     * <p>The current state must still be {@code WAITING_HUMAN}, unless this is an idempotent repeat of the same
+     * target state. Accepted targets are {@code WAITING_HUMAN}, {@code PLANNING}, and {@code REJECTED}; other states
+     * belong to model/tool execution and cannot be introduced through an approval callback. Variables are never
+     * copied, so confirmation authorization facts remain immutable.</p>
+     *
+     * @param snapshot Run after the state coordinator reconciled current tool audits
+     * @return {@code true} when the guarded approval lifecycle was applied or already present
+     */
+    public synchronized boolean applyToolDecisionLifecycleSnapshot(AgentRunRecord snapshot) {
+        if (snapshot == null
+                || !runId.equals(snapshot.getRunId())
+                || !sessionId.equals(snapshot.getSessionId())
+                || snapshot.getState() == null
+                || !List.of(AgentRunState.WAITING_HUMAN, AgentRunState.PLANNING, AgentRunState.REJECTED)
+                .contains(snapshot.getState())) {
+            return false;
+        }
+        if (state != AgentRunState.WAITING_HUMAN && state != snapshot.getState()) {
+            return false;
+        }
+        this.state = snapshot.getState();
+        this.nextActions = snapshot.getNextActions() == null ? List.of() : List.copyOf(snapshot.getNextActions());
+        this.message = snapshot.getMessage();
+        this.finishTime = snapshot.getFinishTime();
+        if (this.updateTime == null || (snapshot.getUpdateTime() != null
+                && this.updateTime.isBefore(snapshot.getUpdateTime()))) {
+            this.updateTime = snapshot.getUpdateTime();
+        }
+        return true;
     }
 }

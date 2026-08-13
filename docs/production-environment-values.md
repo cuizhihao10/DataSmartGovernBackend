@@ -95,8 +95,17 @@ TLS 相关证书、私钥和 CA bundle 不应写入本仓库。Kubernetes 场景
 | 真实工具提交 | 关闭 | 已确认 permission-admin 策略、工具 schema、审批流程、危险路径、命令安全、审计和回滚。 |
 | DataSync run-once | 关闭 | 已确认数据源授权、目标写入范围、回执投影、失败补偿和数据恢复方式。 |
 | DataQuality 写入执行器 | 关闭 | 已确认清洗策略、影响范围、审批记录、报告导出和回滚方案。 |
+| Autopilot 无人值守恢复执行器 | 单模块默认关闭，完整 Compose 可显式开启 | 已具备独立失败触发、durable outbox、Kafka consumer、Python 规划、Java/data-sync 双策略、幂等 receipt、受限 `RETRY_EXECUTION` 和 preview/selector/receipt 约束的 `APPLY_QUARANTINE`；生产开启前仍必须通过隔离故障注入 E2E、告警、死信、容量、密钥轮换和回滚门禁。 |
 
 只读 smoke 和本地闭环不应打开这些开关。生产启用时建议先在预发环境按单租户、单任务、低并发灰度验证，再逐步提升并发和范围。
+
+### 7.1 Autopilot 不是“打开一个开关”
+
+当前代码会在首次确认 Agent Run 时固化可选 `autopilotAuthorization`，并可在 data-sync 对恢复候选得出 `AUTO_APPROVED`、`WAITING_APPROVAL`、`ATTENTION_REQUIRED` 或 `REJECTED` 决策。失败 execution 会先进入 data-sync durable trigger outbox，再经 Kafka 唤醒 Agent Runtime；Python 负责结构化诊断和模型自主 `SEARCH`/`SKIP` 检索决策，Java 与 data-sync 重新验证授权、证据和任务本地策略。当前执行分支只自动处理低风险幂等 `RETRY_EXECUTION`，以及具有真实 preview、精确 selector 和 durable receipt 的 `APPLY_QUARANTINE`。该授权有 tenant/application/project、用户/Agent/delegation、有效期、循环和总时长边界，自动风险上限固定为 `LOW`。
+
+`DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_ENABLED` 和 `DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED` 只控制链路是否运行，不能创建授权或扩大动作范围。topic/group、内部服务令牌、PostgreSQL store、Kafka、Python Runtime 和 worker 都必须同时就绪；任何一项缺失都应 fail closed 或进入可观测重试/死信，而不是退化成无审批通用工具执行。
+
+即使启用执行链路，也只能在首次授权盒和当前 Java/data-sync 更严执行边界内无人值守处理 `RETRY_EXECUTION`，以及带真实 preview/selector/receipt 的 `APPLY_QUARANTINE`。`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS` 等虽在低风险资格白名单内，但尚无当前执行器时必须停在 `ATTENTION_REQUIRED`；`CHANGE_SCHEMA`、`CHANGE_CREDENTIAL`、`DELETE_DATA`、`OVERWRITE_TARGET`、`EXPAND_DATA_SCOPE` 必须保留人工审批。预算/期限耗尽、重复错误、证据或置信度不足时必须停在 `ATTENTION_REQUIRED`，而不是靠扩大重试次数继续运行。
 
 ## 8. Kubernetes/Helm values 建议结构
 

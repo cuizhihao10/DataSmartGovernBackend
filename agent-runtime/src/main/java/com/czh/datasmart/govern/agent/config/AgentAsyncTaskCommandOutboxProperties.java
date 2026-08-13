@@ -9,6 +9,9 @@ package com.czh.datasmart.govern.agent.config;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Agent ASYNC_TASK 命令 outbox 配置。
  *
@@ -127,6 +130,19 @@ public class AgentAsyncTaskCommandOutboxProperties {
      * 可以先通过手动 dispatch 接口验证，再在集成环境打开调度。</p>
      */
     private boolean dispatcherEnabled = false;
+
+    /**
+     * 后台 dispatcher 允许自动领取的工具码白名单。
+     *
+     * <p>空列表保持历史兼容，表示 dispatcher 可以领取所有工具命令。生产环境在只准备好部分 worker 时，
+     * 应显式填写已经完成权限、鉴权、网络和回执闭环的工具码。例如当前仓库精确检索灰度只填写
+     * {@code workspace.text.search}，这样即使数据库里还保存着其他历史 PENDING/FAILED 命令，后台轮询也不会
+     * 越过灰度边界替用户执行它们。</p>
+     *
+     * <p>该白名单只缩小派发范围，不能扩大模型可见工具、用户授权盒、租户/项目范围或 Java pre-check 权限。
+     * 一条命令必须同时通过工具注册、首次授权、运行时治理和本白名单，才可能被自动投递。</p>
+     */
+    private List<String> dispatcherAllowedToolCodes = new ArrayList<>();
 
     /**
      * dispatcher 初始延迟，单位毫秒。

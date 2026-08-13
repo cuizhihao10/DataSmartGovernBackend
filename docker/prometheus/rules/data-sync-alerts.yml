@@ -76,6 +76,54 @@ groups:
           summary: "data-sync 自动恢复产生人工介入任务"
           description: "最近 15 分钟有 execution 因过期恢复超过最大退避次数而进入人工介入。请在运营台排查连接器稳定性、目标端限流、worker 宕机或任务配置错误。"
 
+  # 下列规则对应新的 Autopilot durable case，而不是上面的 worker lease recovery。
+  # 两组指标名称刻意分开，避免值班人员把执行器租约恢复误判成 AI 恢复决策。
+  - name: datasmart-data-sync-autopilot-recovery
+    rules:
+      - alert: DataSyncAutopilotTriggerRejectedIncreasing
+        expr: increase(datasmart_data_sync_autopilot_recovery_trigger_total{outcome="REJECTED"}[15m]) > 2
+        for: 2m
+        labels:
+          severity: warning
+          module: data-sync
+          category: autopilot-recovery
+        annotations:
+          summary: "data-sync Autopilot 触发连续被拒绝"
+          description: "最近 15 分钟多个失败 execution 未通过首次授权、范围、时限或循环预算校验。请检查任务持久化的 autopilotPolicy、UTC 到期时间、失败对象事实和 recovery case，不要通过放宽策略消除告警。"
+
+      - alert: DataSyncAutopilotTerminalFailureDetected
+        expr: increase(datasmart_data_sync_autopilot_recovery_terminal_total{outcome="FAILED"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          module: data-sync
+          category: autopilot-recovery
+        annotations:
+          summary: "data-sync Autopilot 重试后仍失败"
+          description: "最近 15 分钟有 RECOVERY_STARTED case 被 worker 再次失败收敛。系统会在预算内重新规划，预算耗尽后必须进入 ATTENTION_REQUIRED；请结合 receipt、错误指纹和修复指纹判断是否为重复策略。"
+
+      - alert: DataSyncAutopilotSidecarFailuresIncreasing
+        expr: increase(datasmart_data_sync_autopilot_recovery_sidecar_failure_total[15m]) > 2
+        for: 2m
+        labels:
+          severity: warning
+          module: data-sync
+          category: autopilot-recovery
+        annotations:
+          summary: "data-sync Autopilot sidecar transactions are failing"
+          description: "More than two trigger/finalization sidecar transactions failed in 15 minutes. V23 should persist compact compensation facts; inspect the recovery case, sidecar compensation journal, database availability, and the originating service transaction before changing policy budgets."
+
+      - alert: DataSyncAutopilotSidecarCompensationDeadLetterDetected
+        expr: increase(datasmart_data_sync_autopilot_recovery_sidecar_compensation_dead_letter_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          module: data-sync
+          category: autopilot-recovery
+        annotations:
+          summary: "data-sync Autopilot sidecar compensation reached dead letter"
+          description: "A bounded V23 sidecar replay exhausted its retry budget or a final claim was stranded after a crash. Investigate the low-sensitive compensation row, its operation, task/execution ownership, and the dependent case/outbox state; do not blindly replay or increase the retry budget."
+
   - name: datasmart-data-sync-cleanup
     rules:
       - alert: DataSyncIdempotencyCleanupSilent

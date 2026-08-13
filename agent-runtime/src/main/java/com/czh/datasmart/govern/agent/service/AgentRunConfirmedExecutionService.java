@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentAutopilotSnapshotView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentPostConfirmContinuationRequest;
@@ -17,6 +18,8 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultVie
 import com.czh.datasmart.govern.agent.service.answer.AgentExecutionAssistantAnswer;
 import com.czh.datasmart.govern.agent.service.answer.AgentExecutionResultAnswerGenerator;
 import com.czh.datasmart.govern.agent.service.answer.AgentToolExecutionFailureSupport;
+import com.czh.datasmart.govern.agent.service.autopilot.AgentAutopilotAuthorizationService;
+import com.czh.datasmart.govern.agent.service.autopilot.AgentAutopilotAuthorizationSnapshot;
 import com.czh.datasmart.govern.agent.service.continuation.AgentPostConfirmContinuationClient;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentConversationMessageRecord;
@@ -25,13 +28,21 @@ import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.specialist.SpecialistTurnFactService;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -48,6 +59,13 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AgentRunConfirmedExecutionService {
 
+    private static final String AUTOPILOT_AUTHORIZATION_VARIABLE = "autopilotAuthorization";
+    private static final String CONFIRMATION_CLAIM_VARIABLE = "confirmedExecutionClaim";
+    private static final String CONFIRMATION_RECEIPT_VARIABLE = "confirmedExecutionReceipt";
+    private static final String CONFIRMATION_CLAIM_SCHEMA = "datasmart.agent-confirmation-claim.v1";
+    private static final String CONFIRMATION_RECEIPT_SCHEMA = "datasmart.agent-confirmation-receipt.v1";
+    private static final String SERVER_CONFIRMATION_CLAIM_KEY_PREFIX = "server-confirmation-boundary:";
+    private static final TypeReference<Map<String, Object>> OBJECT_MAP = new TypeReference<>() { };
     private static final String SYNC_TASK_PUBLISH = "sync.task.publish";
     private static final String SYNC_TASK_RUN = "sync.task.run";
     private static final Set<String> PUBLISH_COMPLETES_GOAL_MODES = Set.of(
@@ -77,7 +95,36 @@ public class AgentRunConfirmedExecutionService {
      * continuation 都会被拒绝；普通的等待补充信息或等待用户确认流程不受影响。</p>
      */
     private final Optional<SpecialistTurnFactService> specialistTurnFactService;
+    private final AgentAutopilotAuthorizationService autopilotAuthorizationService;
+    private final ObjectMapper objectMapper;
 
+    /**
+     * 在用户首次确认后执行当前 Run，并对网络重试提供持久、无副作用的响应回放。
+     *
+     * <p>方法先重新验证发起人、租户/应用/项目和委派身份，然后把稳定幂等键的摘要、关键请求摘要以及可选
+     * Autopilot 授权原子写到根 Run。该 claim 必须在审批或工具调用之前持久化，因此同一 Run 即使被多个
+     * Agent Runtime 实例同时消费，也只有一个请求能够越过副作用边界。工具执行完成后，Java 把终态事实交给
+     * Python 做后确认编排，再校验 continuation、持久 Run 和 PRECHECK/MONITOR 证据，最后增量保存会话消息和
+     * 低敏响应 receipt。</p>
+     *
+     * <p>浏览器若丢失首次 HTTP 响应，可以使用完全相同的幂等键和关键请求字段重试。终态 Run 会直接从
+     * receipt 还原原响应，不再审批工具、执行工具、创建授权或调用 Python；相同键但策略预算、作用域或确认
+     * 说明发生变化时失败关闭。未提供幂等键的旧普通确认仍保留一次性行为，但 Autopilot 必须携带稳定键，
+     * 因为无人值守授权不能依赖进程内锁来防止重复创建。</p>
+     *
+     * @param sessionId 用户当前 Agent 会话 ID
+     * @param runId 等待确认的根 Run ID
+     * @param request 显式确认、幂等键及可选 Autopilot 授权上限
+     * @param tenantId Gateway 认证后的租户范围
+     * @param applicationId Gateway 认证后的应用范围
+     * @param projectId Gateway 认证后的项目范围
+     * @param actorId 当前用户 ID
+     * @param actorRole 当前用户平台角色
+     * @param actorType 当前主体类型
+     * @param authorizedProjectRoles 当前用户可用的项目角色事实
+     * @param traceId 本次传输链路 ID；重试时允许变化，不参与幂等摘要
+     * @return 首次执行结果或同一确认请求的持久回放结果
+     */
     public AgentRunConfirmedExecutionResponse confirmAndExecute(
             String sessionId,
             String runId,
@@ -95,27 +142,59 @@ public class AgentRunConfirmedExecutionService {
                     "必须显式确认后才能执行 Agent 计划");
         }
         AgentSessionRecord session = requireInitiatorSession(sessionId, tenantId, projectId, actorId);
+        String requestFingerprint = confirmationRequestFingerprint(
+                request, tenantId, applicationId, projectId, actorId, actorRole, actorType, authorizedProjectRoles);
         ConfirmedBatch batch;
         synchronized (session) {
             requireDelegatedIdentity(actorRole, authorizedProjectRoles, projectId);
-            session.refreshDelegatedIdentity(actorRole, actorType, authorizedProjectRoles);
             AgentRunRecord run = requireRun(session, runId);
-            /*
-             * A confirmation request is a one-way side-effect boundary.  Once
-             * the Run is terminal, re-reading its audits and calling Python
-             * again would duplicate tool execution, continuation Runs, and
-             * specialist facts.  The stable request key is useful for tracing
-             * retries, while this durable Run state is the authoritative
-             * idempotency fence across memory and JDBC stores.
-             */
             if (run.getState().isTerminal()) {
-                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
-                        "Agent Run 已经完成确认执行，不能重复消费同一执行边界；请读取现有运行结果");
+                return replayConfirmedExecutionOrThrow(run, request, requestFingerprint);
+            }
+            bindApplicationScope(session, applicationId);
+            if (!sessionStore.bindApplicationIdIfAbsent(sessionId, applicationId)) {
+                throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                        "Agent session application scope could not be established durably");
             }
             List<AgentToolExecutionAuditView> audits = auditService.listByRun(sessionId, runId);
             if (audits.isEmpty()) {
                 throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
                         "当前 Agent Run 没有可执行工具计划");
+            }
+
+            Map<String, Object> confirmationVariables = prepareConfirmationVariables(
+                    session, run, request, requestFingerprint);
+            if (!confirmationVariables.isEmpty()) {
+                boolean claimed = request.autopilotPolicy() == null
+                        ? sessionStore.putRunVariablesIfAbsent(
+                                sessionId, runId, CONFIRMATION_CLAIM_VARIABLE, confirmationVariables)
+                        : sessionStore.putRunVariablesIfAbsentAndSessionVariableAbsent(
+                                sessionId,
+                                runId,
+                                CONFIRMATION_CLAIM_VARIABLE,
+                                AUTOPILOT_AUTHORIZATION_VARIABLE,
+                                confirmationVariables);
+                if (!claimed) {
+                    AgentSessionRecord durableSession = sessionStore.findById(sessionId)
+                            .orElseThrow(() -> new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                                    "Agent 会话在确认竞争检查时已不存在，sessionId=" + sessionId));
+                    AgentRunRecord durableRun = requireRun(durableSession, runId);
+                    if (request.autopilotPolicy() != null
+                            && sessionHasAutopilotAuthorizationOutsideRun(durableSession, runId)) {
+                        throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                                "Autopilot authorization was already established by another Run and cannot be replaced");
+                    }
+                    return replayConfirmedExecutionOrThrow(durableRun, request, requestFingerprint);
+                }
+                mergeClaimedVariablesIntoLocalRun(run, confirmationVariables);
+                // claim/authorization and application scope are already durable through narrow conditional writes.
+                // Do not save the whole aggregate here: another instance may have appended a continuation Run.
+            }
+            session.refreshDelegatedIdentity(actorRole, actorType, authorizedProjectRoles);
+            if (!sessionStore.refreshDelegatedIdentity(
+                    sessionId, actorRole, actorType, authorizedProjectRoles)) {
+                throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                        "Agent session disappeared before delegated identity could be refreshed");
             }
 
             AgentToolExecutionDecisionRequest decision = new AgentToolExecutionDecisionRequest(
@@ -184,9 +263,13 @@ public class AgentRunConfirmedExecutionService {
                     run.getNextActions(),
                     assistantAnswer
             );
-            // 工具状态推进和 Run 终态属于同一会话聚合。先持久化这一阶段，即使后续 Python 二轮回答失败，
-            // 用户仍能在历史会话中看到真实工具结果，而不会退回到“尚未执行”的旧快照。
-            sessionStore.save(session);
+            // Only this source Run changed here. A whole-session save could delete a sibling Run or message that
+            // another Runtime instance appended after this request loaded its snapshot, so terminal convergence is
+            // persisted through the narrow lifecycle contract before Python receives the batch facts.
+            if (!sessionStore.updateRunLifecycle(sessionId, run)) {
+                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "Agent Run terminal lifecycle conflicted with a newer durable terminal state, runId=" + runId);
+            }
         }
 
         // Never call Python while holding the session monitor. Python immediately
@@ -213,7 +296,8 @@ public class AgentRunConfirmedExecutionService {
             throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
                     "Agent 会话在记录确认结果前已不存在，系统未返回可能失效的后续执行入口，sessionId=" + sessionId);
         }
-        return new AgentRunConfirmedExecutionResponse(
+        AgentRunRecord confirmedRun = requireRun(session, runId);
+        AgentRunConfirmedExecutionResponse response = new AgentRunConfirmedExecutionResponse(
                 sessionId,
                 runId,
                 batch.runState(),
@@ -226,8 +310,11 @@ public class AgentRunConfirmedExecutionService {
                 assistantReply,
                 batch.assistantAnswer().mode(),
                 batch.assistantAnswer().modelProviderStatus(),
-                continuation
+                continuation,
+                autopilotSnapshot(confirmedRun)
         );
+        persistConfirmationReceipt(sessionId, runId, confirmedRun, request, requestFingerprint, response);
+        return response;
     }
 
     /**
@@ -516,6 +603,311 @@ public class AgentRunConfirmedExecutionService {
                 .findFirst()
                 .orElseThrow(() -> new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
                         "Agent Run 不存在，runId=" + runId));
+    }
+
+    /**
+     * 构造一次确认 claim，并在同一原子写入中附带可选 Autopilot 授权。
+     *
+     * <p>每次确认都必须先写 claim。客户端提供幂等键时使用该键的摘要；旧调用没有键时，服务根据
+     * sessionId/runId 生成只在服务内部使用的稳定边界键。后者只解决多实例并发穿透，不开启响应回放：旧调用
+     * 在响应丢失后仍会失败关闭，避免服务器猜测客户端是否接受了首次结果。claim 只保存键摘要、请求摘要、
+     * 状态和时间，不保存用户 prompt、确认说明正文或角色表。</p>
+     *
+     * <p>Autopilot 只能在整个会话第一次建立。授权服务会把用户上限收紧到平台白名单，本方法再把授权 Map 与
+     * claim 一起交给仓储原子写入，避免出现 claim 已占用但授权未落库的半状态。返回值尚未修改 Run；调用方
+     * 必须在仓储写入成功后再合并到当前聚合并保存 application scope。</p>
+     *
+     * @param session 已验证归属和委派的会话
+     * @param run 当前等待确认的根 Run
+     * @param request 用户确认请求
+     * @param requestFingerprint 由可信范围和关键请求字段计算的摘要
+     * @return 要以 claim 为守卫原子写入的不可变变量
+     */
+    private Map<String, Object> prepareConfirmationVariables(AgentSessionRecord session,
+                                                             AgentRunRecord run,
+                                                             AgentRunConfirmedExecutionRequest request,
+                                                             String requestFingerprint) {
+        String clientIdempotencyKey = normalizedIdempotencyKey(request.idempotencyKey());
+        if (request.autopilotPolicy() != null && clientIdempotencyKey == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "启用 Autopilot 的首次确认必须提供稳定幂等键");
+        }
+        String claimKey = clientIdempotencyKey == null
+                ? SERVER_CONFIRMATION_CLAIM_KEY_PREFIX + session.getSessionId() + ":" + run.getRunId()
+                : clientIdempotencyKey;
+        Map<String, Object> claim = new LinkedHashMap<>();
+        claim.put("schemaVersion", CONFIRMATION_CLAIM_SCHEMA);
+        claim.put("idempotencyKeyDigest", sha256(claimKey));
+        claim.put("clientReplayEnabled", clientIdempotencyKey != null);
+        claim.put("requestFingerprint", requestFingerprint);
+        claim.put("state", "IN_PROGRESS");
+        claim.put("claimedAt", LocalDateTime.now().toString());
+
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put(CONFIRMATION_CLAIM_VARIABLE, Map.copyOf(claim));
+        if (request.autopilotPolicy() != null) {
+            AgentAutopilotAuthorizationSnapshot authorization = autopilotAuthorizationService.authorize(
+                    session, run.getRunId(), request.autopilotPolicy());
+            variables.put(AUTOPILOT_AUTHORIZATION_VARIABLE, authorization.toMap());
+        }
+        return Map.copyOf(variables);
+    }
+
+    /**
+     * 把仓储已接受的 claim/授权同步到当前内存聚合，供后续工具上下文和整聚合保存使用。
+     *
+     * <p>memory store 与当前服务通常持有同一个 Run 对象，因此变量可能已经由仓储方法写入；JDBC store 则只
+     * 更新数据库，当前对象仍需补齐。该方法先检查已有键，只补写缺失事实，绝不覆盖仓储已经确认的值。</p>
+     *
+     * @param run 当前请求持有的 Run 聚合
+     * @param claimedVariables 已由增量仓储成功写入的变量
+     */
+    private void mergeClaimedVariablesIntoLocalRun(AgentRunRecord run, Map<String, Object> claimedVariables) {
+        claimedVariables.forEach((key, value) -> {
+            if (!run.getVariables().containsKey(key)) {
+                run.putVariableIfAbsent(key, value);
+            }
+        });
+    }
+
+    /**
+     * Determines whether a competing Run, rather than this request's Run, owns the first AUTOPILOT grant.
+     *
+     * <p>The store performs the authoritative atomic check before this helper is reached. This method only
+     * interprets the reloaded durable state after a failed claim so the service can distinguish a safe replay of
+     * the same Run from a forbidden attempt to replace another Run's authorization. It intentionally returns no
+     * authorization content and it runs before any approval or tool execution side effect.</p>
+     *
+     * @param durableSession session reloaded after the session-level claim lost
+     * @param requestedRunId Run from the current confirmation request
+     * @return {@code true} when another Run already owns {@code autopilotAuthorization}
+     */
+    private boolean sessionHasAutopilotAuthorizationOutsideRun(AgentSessionRecord durableSession,
+                                                               String requestedRunId) {
+        return durableSession.getRuns().stream()
+                .filter(run -> !requestedRunId.equals(run.getRunId()))
+                .map(AgentRunRecord::getVariables)
+                .anyMatch(variables -> variables.containsKey(AUTOPILOT_AUTHORIZATION_VARIABLE));
+    }
+
+    /**
+     * 从终态 Run 的持久 receipt 回放确认响应，或对不匹配/不完整的重试失败关闭。
+     *
+     * <p>只有幂等键摘要和关键请求摘要同时匹配才允许反序列化响应。这样相同字符串键不能被另一个主体、范围、
+     * 授权预算或确认说明复用。receipt 不存在通常表示旧版一次性确认，或服务在副作用完成后、receipt 落库前
+     * 中断；两者都不能安全地重新执行，所以返回业务状态冲突而不是猜测结果。</p>
+     *
+     * @param run 当前持久 Run
+     * @param request 本次重试请求
+     * @param requestFingerprint 本次请求关键事实摘要
+     * @return 与首次成功请求相同的低敏响应
+     */
+    private AgentRunConfirmedExecutionResponse replayConfirmedExecutionOrThrow(
+            AgentRunRecord run,
+            AgentRunConfirmedExecutionRequest request,
+            String requestFingerprint) {
+        Object rawReceipt = run.getVariables().get(CONFIRMATION_RECEIPT_VARIABLE);
+        String idempotencyKey = normalizedIdempotencyKey(request.idempotencyKey());
+        if (!(rawReceipt instanceof Map<?, ?> rawMap) || idempotencyKey == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "Agent Run 已经进入确认边界但没有可匹配的完整 receipt；系统不会重复执行工具");
+        }
+        Map<String, Object> receipt = stringObjectMap(rawMap);
+        if (!CONFIRMATION_RECEIPT_SCHEMA.equals(receipt.get("schemaVersion"))
+                || !sha256(idempotencyKey).equals(receipt.get("idempotencyKeyDigest"))
+                || !requestFingerprint.equals(receipt.get("requestFingerprint"))) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "确认幂等键已被不同的主体、范围或策略事实使用，不能回放或扩大原确认");
+        }
+        try {
+            AgentRunConfirmedExecutionResponse replay = objectMapper.convertValue(
+                    receipt.get("response"), AgentRunConfirmedExecutionResponse.class);
+            if (replay == null || !run.getSessionId().equals(replay.sessionId())
+                    || !run.getRunId().equals(replay.runId())) {
+                throw new IllegalArgumentException("Confirmation receipt locator mismatch");
+            }
+            return replay;
+        } catch (IllegalArgumentException exception) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "确认 receipt 已损坏，系统不会据此重复执行工具");
+        }
+    }
+
+    /**
+     * 在所有副作用和用户消息已经持久化后，增量写入可供 HTTP 重试回放的低敏 receipt。
+     *
+     * <p>receipt 保存响应的结构化 JSON 形状，以及不可逆的幂等键摘要和请求摘要；它不保存原始幂等键，也不会
+     * 新增任何授权。写入只更新根 Run 变量，不使用旧会话快照，因此不会删除 Python continuation 已创建的
+     * 后续 Run。若并发请求已经写入 receipt，本方法只接受能够回放出完全相同响应的结果。</p>
+     *
+     * @param sessionId 根会话 ID
+     * @param runId 根 Run ID
+     * @param run 当前根 Run 聚合
+     * @param request 首次确认请求
+     * @param requestFingerprint 关键事实摘要
+     * @param response 已完成治理和 continuation 校验的公开响应
+     */
+    private void persistConfirmationReceipt(String sessionId,
+                                            String runId,
+                                            AgentRunRecord run,
+                                            AgentRunConfirmedExecutionRequest request,
+                                            String requestFingerprint,
+                                            AgentRunConfirmedExecutionResponse response) {
+        String idempotencyKey = normalizedIdempotencyKey(request.idempotencyKey());
+        if (idempotencyKey == null) {
+            return;
+        }
+        Map<String, Object> receipt = new LinkedHashMap<>();
+        receipt.put("schemaVersion", CONFIRMATION_RECEIPT_SCHEMA);
+        receipt.put("idempotencyKeyDigest", sha256(idempotencyKey));
+        receipt.put("requestFingerprint", requestFingerprint);
+        receipt.put("response", objectMapper.convertValue(response, OBJECT_MAP));
+        Map<String, Object> variables = Map.of(CONFIRMATION_RECEIPT_VARIABLE, Map.copyOf(receipt));
+        boolean persisted = sessionStore.putRunVariablesIfAbsent(
+                sessionId, runId, CONFIRMATION_RECEIPT_VARIABLE, variables);
+        if (persisted) {
+            if (!run.getVariables().containsKey(CONFIRMATION_RECEIPT_VARIABLE)) {
+                run.putVariableIfAbsent(CONFIRMATION_RECEIPT_VARIABLE, receipt);
+            }
+            return;
+        }
+        AgentRunRecord durableRun = sessionStore.findById(sessionId)
+                .map(durableSession -> requireRun(durableSession, runId))
+                .orElseThrow(() -> new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                        "Agent 会话在确认 receipt 落库时已不存在，sessionId=" + sessionId));
+        AgentRunConfirmedExecutionResponse replay = replayConfirmedExecutionOrThrow(
+                durableRun, request, requestFingerprint);
+        if (!response.equals(replay)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "并发确认 receipt 与当前响应不一致，系统拒绝返回不确定结果");
+        }
+    }
+
+    /**
+     * 从根 Run 的持久授权生成前端可展示的低敏快照。
+     *
+     * <p>缺少授权时返回 null，表示当前确认没有开启 Autopilot。授权存在但形状损坏时让异常向上传播，避免 UI
+     * 把损坏授权展示成有效；转换过程不返回策略摘要、用户/租户范围或其他执行凭证。</p>
+     *
+     * @param run 已完成确认的根 Run
+     * @return 浏览器安全的授权视图，或 null
+     */
+    private AgentAutopilotSnapshotView autopilotSnapshot(AgentRunRecord run) {
+        Object authorization = run.getVariables().get(AUTOPILOT_AUTHORIZATION_VARIABLE);
+        if (!(authorization instanceof Map<?, ?> rawMap)) {
+            return null;
+        }
+        return AgentAutopilotSnapshotView.fromDurableAuthorization(stringObjectMap(rawMap));
+    }
+
+    /**
+     * 对确认请求的授权关键事实生成稳定 SHA-256 摘要。
+     *
+     * <p>摘要包含可信主体范围、角色、确认说明和 Autopilot 上限，但故意排除 traceId，因为同一 HTTP 请求的
+     * 网络重试会获得新 trace。动作列表按代码规范化并排序，过期时间按 UTC instant 表达，使语义相同的顺序或
+     * 时区写法得到同一摘要。摘要用于幂等一致性检测，不是数字签名，也不替代 Gateway 权限校验。</p>
+     */
+    private String confirmationRequestFingerprint(AgentRunConfirmedExecutionRequest request,
+                                                  Long tenantId,
+                                                  Long applicationId,
+                                                  Long projectId,
+                                                  String actorId,
+                                                  String actorRole,
+                                                  String actorType,
+                                                  String authorizedProjectRoles) {
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("confirmed", Boolean.TRUE.equals(request.confirmed()));
+        facts.put("comment", normalizeComment(request.comment()));
+        facts.put("tenantId", tenantId);
+        facts.put("applicationId", applicationId);
+        facts.put("projectId", projectId);
+        facts.put("actorId", normalizedText(actorId));
+        facts.put("actorRole", normalizeCode(actorRole));
+        facts.put("actorType", normalizeCode(actorType));
+        facts.put("authorizedProjectRoles", normalizedCodes(authorizedProjectRoles));
+        if (request.autopilotPolicy() == null) {
+            facts.put("autopilotPolicy", Map.of());
+        } else {
+            Map<String, Object> policy = new LinkedHashMap<>();
+            policy.put("executionMode", normalizeCode(request.autopilotPolicy().executionMode()));
+            policy.put("maxRecoveryCycles", request.autopilotPolicy().maxRecoveryCycles());
+            policy.put("maxTotalDurationMinutes", request.autopilotPolicy().maxTotalDurationMinutes());
+            policy.put("maxAutomaticRiskLevel", normalizeCode(request.autopilotPolicy().maxAutomaticRiskLevel()));
+            policy.put("allowedRecoveryActions", normalizedCodes(request.autopilotPolicy().allowedRecoveryActions()));
+            policy.put("requireApprovalFor", normalizedCodes(request.autopilotPolicy().requireApprovalFor()));
+            policy.put("expiresAt", request.autopilotPolicy().expiresAt() == null
+                    ? null : request.autopilotPolicy().expiresAt().toInstant().toString());
+            facts.put("autopilotPolicy", policy);
+        }
+        try {
+            return "sha256:" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(objectMapper.writeValueAsBytes(facts)));
+        } catch (JsonProcessingException | NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("无法计算 Agent 确认请求摘要", exception);
+        }
+    }
+
+    /** 将原始幂等键规范化为空或去空白文本；原值不会写入持久 receipt。 */
+    private String normalizedIdempotencyKey(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    /** 对短文本去除首尾空白，供主体等摘要字段使用。 */
+    private String normalizedText(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    /**
+     * 规范化并排序一组枚举代码，使幂等摘要不受输入顺序、大小写或重复项影响。
+     */
+    private List<String> normalizedCodes(List<String> values) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream().map(this::normalizeCode).filter(value -> !value.isBlank()).distinct().sorted().toList();
+    }
+
+    /** 把逗号分隔的项目角色事实转为稳定代码列表，用于确认请求摘要。 */
+    private List<String> normalizedCodes(String values) {
+        if (values == null || values.isBlank()) {
+            return List.of();
+        }
+        return normalizedCodes(java.util.Arrays.asList(values.split(",")));
+    }
+
+    /** 把 Jackson 恢复的任意键 Map 收敛为只含字符串键的不可变业务 Map。 */
+    private Map<String, Object> stringObjectMap(Map<?, ?> source) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        source.forEach((key, value) -> {
+            if (key != null) {
+                result.put(key.toString(), value);
+            }
+        });
+        return Map.copyOf(result);
+    }
+
+    /** 为幂等键计算不可逆摘要，避免把调用方原始键写入 Run variables。 */
+    private String sha256(String value) {
+        try {
+            return "sha256:" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("JDK 不支持 SHA-256", exception);
+        }
+    }
+
+    /** Binds the trusted Gateway application scope once and rejects cross-application reuse. */
+    private void bindApplicationScope(AgentSessionRecord session, Long applicationId) {
+        if (applicationId == null || applicationId <= 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Agent confirmation is missing a trusted application scope");
+        }
+        try {
+            session.bindApplicationId(applicationId);
+        } catch (IllegalArgumentException exception) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Agent session cannot be reused across application scopes");
+        }
     }
 
     private void requireDelegatedIdentity(String actorRole, String authorizedProjectRoles, Long projectId) {

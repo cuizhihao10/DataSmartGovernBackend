@@ -192,6 +192,14 @@ class RuleBasedIntentAnalyzer:
             ):
                 self._append_unique(missing_parameters, "taskImportArtifactRef")
 
+        if self._wants_workspace_text_search(request, objective):
+            # 本地精确检索与 RAG 的证据来源不同：它只观察当前受控 workspace 中的文本文件，
+            # 不访问向量库或外部网络。这里只把工具交给模型的候选集合，不直接发起扫描；模型仍
+            # 可以基于当前任务和原生 tool_calls 决定是否真的需要搜索。
+            self._append_unique(domains, GovernanceDomain.GENERAL_GOVERNANCE)
+            self._append_unique(candidate_tools, "workspace.text.search")
+            self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
+
         workspace_file_operation = self._workspace_file_operation(request, objective)
         if workspace_file_operation == "READ":
             self._append_unique(domains, GovernanceDomain.GENERAL_GOVERNANCE)
@@ -556,6 +564,55 @@ class RuleBasedIntentAnalyzer:
             "project_id",
         )
         return any(request.variables.get(field) not in (None, "", [], {}) for field in scope_fields)
+
+    def _wants_workspace_text_search(self, request: AgentRequest, objective: str) -> bool:
+        """识别当前 workspace 的精确文本检索意图，而不把它误路由为 RAG 或联网搜索。
+
+        输入可以是控制面提供的 ``workspaceTextSearch``/``workspaceSearchQuery`` 变量、显式
+        ``fileOperation=TEXT_SEARCH``，或同时包含本地范围和搜索动作的自然语言。输出只是一个
+        布尔候选信号：真正的 ``workspace.text.search`` 是否调用仍由模型在 native tool_calls
+        中自主选择，随后再由 Python 服务执行 root、路径、符号链接和字节预算校验。
+
+        规则故意要求 ``workspace``、代码库或文件内查找语义，避免把“搜索治理知识库”交给本地
+        文件扫描器，也避免把“联网搜索最新资料”从独立的 web-search 工具中抢走。
+        """
+
+        variables = request.variables or {}
+        if any(
+            variables.get(field) not in (None, "", [], {})
+            for field in (
+                "workspaceTextSearch",
+                "workspace_text_search",
+                "workspaceTextQuery",
+                "workspace_text_query",
+                "workspaceSearchQuery",
+                "workspace_search_query",
+            )
+        ):
+            return True
+        operation = str(variables.get("fileOperation") or variables.get("file_operation") or "").upper()
+        if operation in {"SEARCH", "TEXT_SEARCH", "SEARCH_TEXT"}:
+            return True
+        return self._contains_any(
+            objective,
+            (
+                "search workspace",
+                "workspace search",
+                "search codebase",
+                "search repository",
+                "find in files",
+                "grep ",
+                "在 workspace 中搜索",
+                "搜索 workspace",
+                "检索 workspace",
+                "在代码库中搜索",
+                "搜索代码库",
+                "查找代码",
+                "在文件中搜索",
+                "全文检索",
+                "代码检索",
+            ),
+        )
 
     def _workspace_file_operation(self, request: AgentRequest, objective: str) -> str | None:
         """识别 workspace 文件读写意图。

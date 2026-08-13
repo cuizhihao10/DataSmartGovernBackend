@@ -36,6 +36,7 @@ SAFE_ARTIFACT_REFERENCE_PREFIXES = (
     "task-artifact:",
 )
 SAFE_WORKSPACE_REFERENCE_PREFIXES = (
+    "agent-repository:",
     "agent-workspace:",
     "workspace:",
     "sandbox-workspace:",

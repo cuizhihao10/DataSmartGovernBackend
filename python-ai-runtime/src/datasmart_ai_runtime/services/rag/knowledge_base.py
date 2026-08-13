@@ -194,7 +194,7 @@ class RagHybridRetriever:
         fail-closed，而不是因为向量通道返回了一个低质量近邻就继续生成答案。
         """
 
-        if self._embedding_provider is None:
+        if self._embedding_provider is None or str(query.retrieval_mode).lower() == "lexical":
             return ()
         query_embedding = self._embedding_provider.embed_text(query.question[:4000])
         scored: list[RagScoredChunk] = []
@@ -294,7 +294,13 @@ def _chunk_visible(chunk: RagChunk, query: RagQuery) -> bool:
     tenant_visible = chunk.tenant_id in {"*", query.tenant_id}
     project_visible = chunk.project_id in {"*", query.project_id}
     workspace_visible = chunk.workspace_key in {"*", query.workspace_key}
-    return tenant_visible and project_visible and workspace_visible
+    source_types = {
+        str(value).strip().lower()
+        for value in (query.source_types or ())
+        if str(value).strip()
+    }
+    source_visible = not source_types or chunk.source_type.value in source_types
+    return tenant_visible and project_visible and workspace_visible and source_visible
 
 
 def _max_similarity_to_selected(candidate: RagScoredChunk, selected: list[RagScoredChunk]) -> float:

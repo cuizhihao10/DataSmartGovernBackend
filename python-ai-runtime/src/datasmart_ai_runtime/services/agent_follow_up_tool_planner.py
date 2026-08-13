@@ -630,12 +630,6 @@ class AgentFollowUpToolPlanner:
                 if item.tool_name == "sync.execution.status" and item.status.value == "succeeded":
                     latest_status_result = dict(item.result)
                     break
-        recovery_mutations = {
-            "sync.execution.failed-objects.retry",
-            "sync.dirty-record.quarantine.apply",
-            "sync.dirty-record.replay",
-            "datasource.schema.repair.apply",
-        }
         preview_apply_tools = {
             "sync.dirty-record.quarantine.apply",
             "datasource.schema.repair.apply",
@@ -676,14 +670,6 @@ class AgentFollowUpToolPlanner:
             ):
                 reject_code = "MODEL_TOOL_CALL_IMPORT_REPAIR_REQUIRES_EVIDENCE"
                 reject_message = "必须先使用试运行错误码检索产品文档和历史案例，再基于证据提出修复补丁。"
-            elif (
-                candidate.accepted
-                and plan is not None
-                and plan.tool_name in recovery_mutations
-                and "sync.execution.rag.lookup" not in succeeded_tools
-            ):
-                reject_code = "MODEL_TOOL_CALL_RECOVERY_EVIDENCE_REQUIRED"
-                reject_message = "执行恢复动作前必须先用失败诊断检索项目文档、历史案例和 Runbook。"
             elif (
                 candidate.accepted
                 and plan is not None

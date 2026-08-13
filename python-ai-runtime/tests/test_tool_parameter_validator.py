@@ -57,6 +57,33 @@ class ToolParameterValidatorTest(unittest.TestCase):
         self.assertFalse(result.can_execute)
         self.assertEqual(ToolParameterIssueAction.CAN_FILL_FROM_CONTEXT, result.issues[0].action)
 
+    def test_system_injected_parameter_is_platform_obligation_not_user_missing_field(self) -> None:
+        """系统控制事实由 Java 在执行边界注入，不能反过来阻断模型选择工具。"""
+
+        tool = ToolDefinition(
+            name="repository.literal.search",
+            description="在受控代码仓库中执行只读精确检索。",
+            risk_level=ToolRiskLevel.MEDIUM,
+            execution_mode=ToolExecutionMode.ASYNC_TASK,
+            input_schema={
+                "repositoryReference": {
+                    "type": "string",
+                    "required": True,
+                    "resolution": "system_injected",
+                },
+                "query": {
+                    "type": "string",
+                    "required": True,
+                    "resolution": "model_required",
+                },
+            },
+        )
+
+        result = ToolParameterValidator().validate(tool, {"query": "retry policy"})
+
+        self.assertTrue(result.can_execute)
+        self.assertEqual((), result.issues)
+
 
 if __name__ == "__main__":
     unittest.main()

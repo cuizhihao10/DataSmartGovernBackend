@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * Agent 会话聚合的 PostgreSQL 持久化实现。
@@ -79,12 +80,42 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
     @Override
     public void save(AgentSessionRecord session) {
         connectionManager.executeInTransaction(connection -> {
-            upsertSession(connection, session);
-            replaceDelegation(connection, session);
-            replaceToolBindings(connection, session);
-            replaceRuns(connection, session);
-            replaceMessages(connection, session);
+            persistAggregate(connection, session);
             return null;
+        });
+    }
+
+    /**
+     * Serializes a compound existing-session mutation on the durable aggregate.
+     *
+     * <p>The parent lock blocks concurrent child inserts that must acquire a foreign-key key-share lock. Explicit
+     * locks on all existing child rows additionally serialize direct Run JSONB/lifecycle updates and any future
+     * child-local update path. The aggregate is reloaded only after those locks are held, so the callback can never
+     * persist a snapshot that predates a successfully committed sibling Run, message, binding, or delegation fact.</p>
+     *
+     * <p>The callback runs on the transaction thread. If it throws, the connection manager rolls back both the
+     * aggregate replacement and any same-database audit/outbox work that reused the transaction-bound connection.</p>
+     */
+    @Override
+    public <T> Optional<T> mutateAtomically(String sessionId, Function<AgentSessionRecord, T> mutation) {
+        if (!hasText(sessionId) || mutation == null) {
+            return Optional.empty();
+        }
+        String normalizedSessionId = sessionId.trim();
+        return connectionManager.executeInTransaction(connection -> {
+            if (!lockAggregate(connection, normalizedSessionId)) {
+                return Optional.empty();
+            }
+            AgentSessionRecord session = querySession(connection, normalizedSessionId).orElse(null);
+            if (session == null) {
+                return Optional.empty();
+            }
+            T result = mutation.apply(session);
+            if (result == null) {
+                throw new IllegalStateException("Agent session atomic mutation must return a non-null result");
+            }
+            persistAggregate(connection, session);
+            return Optional.of(result);
         });
     }
 
@@ -155,11 +186,400 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
     }
 
     /**
+     * Atomically binds one session to an application using a narrow parent-row update.
+     *
+     * <p>The SQL accepts an unbound row or an idempotent repeat of the same application and rejects a different
+     * existing value. Only {@code agent_session.application_id/update_time} are touched; child Runs, messages,
+     * delegation, and tool bindings remain intact even when another instance added them after this caller loaded
+     * its aggregate snapshot. This method must complete before confirmation enters any side-effect boundary.</p>
+     *
+     * @param sessionId durable session to bind
+     * @param applicationId trusted positive application ID supplied by Gateway
+     * @return {@code true} when the session exists and has the requested application scope
+     */
+    @Override
+    public boolean bindApplicationIdIfAbsent(String sessionId, Long applicationId) {
+        if (!hasText(sessionId) || applicationId == null || applicationId <= 0) {
+            return false;
+        }
+        return connectionManager.executeInTransaction(connection -> {
+            String sql = """
+                    UPDATE agent_session
+                    SET application_id = COALESCE(application_id, ?),
+                        update_time = CASE WHEN update_time < ? THEN ? ELSE update_time END
+                    WHERE session_id = ?
+                      AND (application_id IS NULL OR application_id = ?)
+                    """;
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                LocalDateTime now = LocalDateTime.now();
+                statement.setLong(1, applicationId);
+                setTimestamp(statement, 2, now);
+                setTimestamp(statement, 3, now);
+                statement.setString(4, sessionId.trim());
+                statement.setLong(5, applicationId);
+                return statement.executeUpdate() == 1;
+            }
+        });
+    }
+
+    /**
+     * Refreshes the Gateway-authenticated delegated identity through one narrow parent-row update.
+     *
+     * <p>The three identity values are allowed to become SQL {@code NULL} because legacy authenticated flows may
+     * not carry every optional principal attribute. Security-sensitive confirmation paths validate the required
+     * role facts before invoking this method. The store never derives or elevates a role.</p>
+     */
+    @Override
+    public boolean refreshDelegatedIdentity(String sessionId,
+                                            String actorRole,
+                                            String actorType,
+                                            String authorizedProjectRoles) {
+        if (!hasText(sessionId)) {
+            return false;
+        }
+        return connectionManager.executeInTransaction(connection -> {
+            String sql = """
+                    UPDATE agent_session
+                    SET actor_role = ?,
+                        actor_type = ?,
+                        authorized_project_roles = ?,
+                        update_time = CASE WHEN update_time < ? THEN ? ELSE update_time END
+                    WHERE session_id = ?
+                    """;
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                LocalDateTime now = LocalDateTime.now();
+                statement.setString(1, normalizedNullable(actorRole));
+                statement.setString(2, normalizedNullable(actorType));
+                statement.setString(3, normalizedNullable(authorizedProjectRoles));
+                setTimestamp(statement, 4, now);
+                setTimestamp(statement, 5, now);
+                statement.setString(6, sessionId.trim());
+                return statement.executeUpdate() == 1;
+            }
+        });
+    }
+
+    /**
+     * Writes one terminal Run lifecycle and advances the parent activity time in the same transaction.
+     *
+     * <p>The Run update deliberately omits {@code variables}: confirmation claims, authorization and receipts are
+     * immutable facts maintained by conditional JSONB merges. The terminal-state predicate accepts a non-terminal
+     * row or an idempotent repeat of the same terminal state, while refusing to replace a different terminal result.
+     * No child row is deleted, so a Python continuation Run created in parallel remains durable.</p>
+     */
+    @Override
+    public boolean updateRunLifecycle(String sessionId, AgentRunRecord run) {
+        if (!hasText(sessionId) || run == null || !hasText(run.getRunId())
+                || !sessionId.trim().equals(run.getSessionId())
+                || run.getState() == null || !run.getState().isTerminal()
+                || run.getUpdateTime() == null) {
+            return false;
+        }
+        return connectionManager.executeInTransaction(connection -> {
+            if (!lockSessionForSessionUniqueVariableClaim(connection, sessionId.trim())) {
+                return false;
+            }
+            String updateRunSql = """
+                    UPDATE agent_run
+                    SET state = ?,
+                        next_actions = CAST(? AS jsonb),
+                        message = ?,
+                        update_time = ?,
+                        finish_time = ?
+                    WHERE session_id = ?
+                      AND run_id = ?
+                      AND update_time <= ?
+                      AND (state NOT IN ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED') OR state = ?)
+                    """;
+            try (PreparedStatement statement = connection.prepareStatement(updateRunSql)) {
+                statement.setString(1, run.getState().name());
+                statement.setString(2, json(run.getNextActions()));
+                statement.setString(3, run.getMessage());
+                setTimestamp(statement, 4, run.getUpdateTime());
+                setTimestamp(statement, 5, run.getFinishTime());
+                statement.setString(6, sessionId.trim());
+                statement.setString(7, run.getRunId().trim());
+                setTimestamp(statement, 8, run.getUpdateTime());
+                statement.setString(9, run.getState().name());
+                if (statement.executeUpdate() != 1) {
+                    return false;
+                }
+            }
+
+            advanceSessionUpdateTime(connection, sessionId.trim(), run.getUpdateTime());
+            return true;
+        });
+    }
+
+    /**
+     * Persists one approval-reconciled Run through a WAITING_HUMAN guarded update.
+     *
+     * <p>The SQL accepts a row that is still waiting for human governance or already has the same target state.
+     * It rejects every other current state, including model/tool progress and a different terminal result. Only
+     * lifecycle columns are written; sibling Runs, messages, variables and bindings are untouched.</p>
+     */
+    @Override
+    public boolean updateRunAfterToolDecision(String sessionId, AgentRunRecord run) {
+        if (!hasText(sessionId) || run == null || !hasText(run.getRunId())
+                || !sessionId.trim().equals(run.getSessionId())
+                || run.getState() == null
+                || !List.of(AgentRunState.WAITING_HUMAN, AgentRunState.PLANNING, AgentRunState.REJECTED)
+                .contains(run.getState())
+                || run.getUpdateTime() == null) {
+            return false;
+        }
+        return connectionManager.executeInTransaction(connection -> {
+            if (!lockSessionForSessionUniqueVariableClaim(connection, sessionId.trim())) {
+                return false;
+            }
+            String updateRunSql = """
+                    UPDATE agent_run
+                    SET state = ?,
+                        next_actions = CAST(? AS jsonb),
+                        message = ?,
+                        update_time = ?,
+                        finish_time = ?
+                    WHERE session_id = ?
+                      AND run_id = ?
+                      AND update_time <= ?
+                      AND (state = 'WAITING_HUMAN' OR state = ?)
+                    """;
+            try (PreparedStatement statement = connection.prepareStatement(updateRunSql)) {
+                statement.setString(1, run.getState().name());
+                statement.setString(2, json(run.getNextActions()));
+                statement.setString(3, run.getMessage());
+                setTimestamp(statement, 4, run.getUpdateTime());
+                setTimestamp(statement, 5, run.getFinishTime());
+                statement.setString(6, sessionId.trim());
+                statement.setString(7, run.getRunId().trim());
+                setTimestamp(statement, 8, run.getUpdateTime());
+                statement.setString(9, run.getState().name());
+                if (statement.executeUpdate() != 1) {
+                    return false;
+                }
+            }
+            advanceSessionUpdateTime(connection, sessionId.trim(), run.getUpdateTime());
+            return true;
+        });
+    }
+
+    /**
+     * 使用单条 PostgreSQL 条件 UPDATE 原子声明或完成一个 Run 的一次性事实。
+     *
+     * <p>{@code jsonb_exists(variables, guardVariable)} 在数据库内判断守卫是否已经存在，随后用 JSONB 合并
+     * 运算符一次写入 claim/授权或 receipt。这里不能写 PostgreSQL 的等价 {@code ?} 运算符，因为 JDBC 同样
+     * 使用问号标识参数占位符：驱动会把 SQL 运算符错误计入参数序号，直到真正执行时才以参数数量不匹配失败。
+     * 检查与更新由同一条语句完成，因此多个 Agent Runtime 实例同时收到同一确认时，只有一个实例能更新一行
+     * 并继续真实工具副作用。所有值先由项目统一 {@link ObjectMapper} 序列化，不通过字符串拼接生成 JSON；
+     * 变量名和内容都作为 JDBC 参数绑定。</p>
+     *
+     * <p>WHERE 同时限制 session、run、守卫和所有待写键。额外的键冲突检查可以防止历史半成品授权被新的
+     * claim 静默覆盖。返回 false 时调用方必须重新读取并验证 receipt，不能把它当作成功授权。</p>
+     *
+     * @param sessionId 目标会话 ID
+     * @param runId 目标 Run ID
+     * @param guardVariable 一次性事实的守卫键
+     * @param values 要原子合并的 JSONB 兼容变量
+     * @return 恰好更新一行时返回 true；目标不存在或任一键已存在时返回 false
+     */
+    @Override
+    public boolean putRunVariablesIfAbsent(String sessionId,
+                                           String runId,
+                                           String guardVariable,
+                                           Map<String, Object> values) {
+        if (!validRunVariableWrite(sessionId, runId, guardVariable, values)) {
+            return false;
+        }
+        return connectionManager.executeInTransaction(connection -> {
+            return putRunVariablesIfAbsent(connection, sessionId.trim(), runId.trim(), guardVariable, values);
+        });
+    }
+
+    /**
+     * Atomically claims the first session-wide authorization while writing the target Run's confirmation facts.
+     *
+     * <p>The {@code agent_session} row is the lock domain rather than {@code agent_run}: two requests may use
+     * different Run IDs but still compete for one AUTOPILOT authorization. PostgreSQL holds the parent-row
+     * {@code FOR UPDATE} lock until this transaction commits, so a second Agent Runtime instance waits before it
+     * can inspect any Run. While holding that lock, this method checks every Run for the session-unique key and
+     * then performs the target Run's conditional JSONB write. The parent lock also prevents a concurrent child
+     * Run insert because {@code agent_run.session_id} has a foreign key to the locked parent row.</p>
+     *
+     * <p>No authorization policy is interpreted here and no tool is executed here. A successful result only
+     * records immutable low-sensitive facts. A caller receiving {@code false} must reload the session to decide
+     * between idempotent receipt replay and a fail-closed "authorization already established" response.</p>
+     *
+     * @param sessionId session whose Runs share one first-authorization boundary
+     * @param runId target Run that receives the confirmation and authorization facts
+     * @param guardVariable target Run's immutable confirmation guard
+     * @param sessionUniqueVariable session-wide immutable key, normally {@code autopilotAuthorization}
+     * @param values complete target Run facts; they must include both guard keys
+     * @return {@code true} when this transaction made the first authorization durable, otherwise {@code false}
+     */
+    @Override
+    public boolean putRunVariablesIfAbsentAndSessionVariableAbsent(String sessionId,
+                                                                    String runId,
+                                                                    String guardVariable,
+                                                                    String sessionUniqueVariable,
+                                                                    Map<String, Object> values) {
+        if (!validRunVariableWrite(sessionId, runId, guardVariable, values)
+                || !hasText(sessionUniqueVariable) || !values.containsKey(sessionUniqueVariable)) {
+            return false;
+        }
+        return connectionManager.executeInTransaction(connection -> {
+            String normalizedSessionId = sessionId.trim();
+            if (!lockSessionForSessionUniqueVariableClaim(connection, normalizedSessionId)) {
+                return false;
+            }
+            if (sessionContainsRunVariable(connection, normalizedSessionId, sessionUniqueVariable.trim())) {
+                return false;
+            }
+            return putRunVariablesIfAbsent(connection, normalizedSessionId, runId.trim(), guardVariable, values);
+        });
+    }
+
+    /**
      * 按业务会话编号恢复完整聚合。
      *
      * @param sessionId Agent 会话业务编号；空白值直接视为不存在，避免无意义数据库访问
      * @return 找到时返回包含委托、工具、运行和消息的聚合，否则返回空
      */
+    /**
+     * Validates the common immutable Run-variable write shape before acquiring a database connection.
+     *
+     * <p>Both the ordinary confirmation claim and the session-unique AUTOPILOT claim use the same JSONB merge
+     * primitive. Keeping structural validation in one helper means neither path can accidentally accept a
+     * partial value map, blank key, or null fact and then persist only part of a security boundary.</p>
+     */
+    private boolean validRunVariableWrite(String sessionId,
+                                          String runId,
+                                          String guardVariable,
+                                          Map<String, Object> values) {
+        return hasText(sessionId) && hasText(runId) && hasText(guardVariable)
+                && values != null && !values.isEmpty() && values.containsKey(guardVariable)
+                && values.entrySet().stream()
+                .noneMatch(entry -> !hasText(entry.getKey()) || entry.getValue() == null);
+    }
+
+    /**
+     * Locks the durable session parent row for the entire first-authorization transaction.
+     *
+     * <p>The method intentionally locks the parent even though the authorization itself is stored in a child
+     * Run JSONB column. The security invariant spans all child Runs, and PostgreSQL's row lock is visible to
+     * other Agent Runtime instances using the same database. Returning {@code false} for a missing session also
+     * prevents the caller from creating an orphan authorization or continuing into tool side effects.</p>
+     */
+    private boolean lockSessionForSessionUniqueVariableClaim(Connection connection, String sessionId)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT session_id FROM agent_session WHERE session_id = ? FOR UPDATE")) {
+            statement.setString(1, sessionId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        }
+    }
+
+    /**
+     * Locks the parent and every existing child row in one stable order before a compound aggregate replacement.
+     *
+     * <p>Always acquiring locks in delegation, binding, Run, message order gives competing Runtime instances the
+     * same lock order and limits deadlock risk. Result rows are drained because PostgreSQL acquires row locks while
+     * producing the result set; the selected identifiers themselves never leave the persistence layer.</p>
+     */
+    private boolean lockAggregate(Connection connection, String sessionId) throws SQLException {
+        if (!lockSessionForSessionUniqueVariableClaim(connection, sessionId)) {
+            return false;
+        }
+        lockChildren(connection,
+                "SELECT delegation_id FROM agent_delegation WHERE session_id = ? FOR UPDATE", sessionId);
+        lockChildren(connection,
+                "SELECT binding_id FROM agent_session_tool_binding WHERE session_id = ? ORDER BY binding_id FOR UPDATE",
+                sessionId);
+        lockChildren(connection,
+                "SELECT run_id FROM agent_run WHERE session_id = ? ORDER BY run_id FOR UPDATE", sessionId);
+        lockChildren(connection,
+                "SELECT message_id FROM agent_conversation_message WHERE session_id = ? ORDER BY message_id FOR UPDATE",
+                sessionId);
+        return true;
+    }
+
+    /** Drains one child-row lock query; no child content is exposed to the domain callback. */
+    private void lockChildren(Connection connection, String sql, String sessionId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, sessionId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    // Reading the rows is what makes PostgreSQL acquire every requested FOR UPDATE lock.
+                }
+            }
+        }
+    }
+
+    /**
+     * Checks whether any Run in the locked session already owns a session-unique immutable variable.
+     *
+     * <p>This query runs only after {@link #lockSessionForSessionUniqueVariableClaim(Connection, String)} has
+     * acquired the parent lock. The {@code EXISTS} shape avoids returning authorization content to the service
+     * layer and makes the invariant independent of which historical Run originally established it.</p>
+     */
+    private boolean sessionContainsRunVariable(Connection connection,
+                                               String sessionId,
+                                               String variable) throws SQLException {
+        String sql = """
+                SELECT 1
+                FROM agent_run
+                WHERE session_id = ?
+                  AND jsonb_exists(COALESCE(variables, '{}'::jsonb), ?)
+                LIMIT 1
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, sessionId);
+            statement.setString(2, variable);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        }
+    }
+
+    /**
+     * Writes a complete immutable value map to exactly one Run using its Run-local conflict predicate.
+     *
+     * <p>The caller decides whether a surrounding transaction additionally owns a session row lock. This split
+     * preserves the original ordinary-confirmation SQL while allowing the AUTOPILOT path to compose it with a
+     * cross-Run constraint. Every key in {@code values} participates in the predicate, so the JSONB merge is
+     * all-or-nothing rather than a partial best effort.</p>
+     */
+    private boolean putRunVariablesIfAbsent(Connection connection,
+                                            String sessionId,
+                                            String runId,
+                                            String guardVariable,
+                                            Map<String, Object> values) throws SQLException {
+        StringBuilder collisionPredicate = new StringBuilder();
+        for (int index = 0; index < values.size(); index++) {
+            collisionPredicate.append(" AND NOT jsonb_exists(COALESCE(variables, '{}'::jsonb), ?)");
+        }
+        String sql = """
+                UPDATE agent_run
+                SET variables = COALESCE(variables, '{}'::jsonb) || CAST(? AS jsonb),
+                    update_time = CASE WHEN update_time < ? THEN ? ELSE update_time END
+                WHERE session_id = ? AND run_id = ?
+                """ + collisionPredicate;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            LocalDateTime now = LocalDateTime.now();
+            statement.setString(1, json(values));
+            setTimestamp(statement, 2, now);
+            setTimestamp(statement, 3, now);
+            statement.setString(4, sessionId);
+            statement.setString(5, runId);
+            int parameter = 6;
+            for (String key : values.keySet()) {
+                statement.setString(parameter++, key);
+            }
+            return statement.executeUpdate() == 1;
+        }
+    }
+
     @Override
     public Optional<AgentSessionRecord> findById(String sessionId) {
         if (!hasText(sessionId)) {
@@ -234,7 +654,9 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
                     pinned, archived_at, last_message_at, create_time, update_time
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (session_id) DO UPDATE SET
-                    agent_id=EXCLUDED.agent_id, actor_role=EXCLUDED.actor_role, actor_type=EXCLUDED.actor_type,
+                    agent_id=EXCLUDED.agent_id,
+                    application_id=COALESCE(agent_session.application_id, EXCLUDED.application_id),
+                    actor_role=EXCLUDED.actor_role, actor_type=EXCLUDED.actor_type,
                     authorized_project_roles=EXCLUDED.authorized_project_roles, state=EXCLUDED.state,
                     pinned=EXCLUDED.pinned, archived_at=EXCLUDED.archived_at,
                     last_message_at=EXCLUDED.last_message_at, update_time=EXCLUDED.update_time
@@ -263,6 +685,15 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
             setTimestamp(statement, index, session.getUpdateTime());
             statement.executeUpdate();
         }
+    }
+
+    /** Writes the complete freshly locked aggregate on the caller's transaction-bound connection. */
+    private void persistAggregate(Connection connection, AgentSessionRecord session) throws SQLException {
+        upsertSession(connection, session);
+        replaceDelegation(connection, session);
+        replaceToolBindings(connection, session);
+        replaceRuns(connection, session);
+        replaceMessages(connection, session);
     }
 
     /**
@@ -612,6 +1043,36 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         } else {
             statement.setTimestamp(index, Timestamp.valueOf(value));
         }
+    }
+
+    /**
+     * Advances the parent session activity timestamp after a narrow child Run update.
+     *
+     * <p>The child and parent statements always run in the same transaction. A missing parent is treated as a
+     * consistency error rather than silently leaving an updated orphan child, even though the foreign key should
+     * normally make that situation impossible.</p>
+     */
+    private void advanceSessionUpdateTime(Connection connection,
+                                          String sessionId,
+                                          LocalDateTime updateTime) throws SQLException {
+        String sql = """
+                UPDATE agent_session
+                SET update_time = CASE WHEN update_time < ? THEN ? ELSE update_time END
+                WHERE session_id = ?
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            setTimestamp(statement, 1, updateTime);
+            setTimestamp(statement, 2, updateTime);
+            statement.setString(3, sessionId);
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("Agent session disappeared while persisting Run lifecycle");
+            }
+        }
+    }
+
+    /** Converts blank identity text to SQL NULL without changing non-blank authenticated values. */
+    private String normalizedNullable(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     /** 读取可空 BIGINT；通过 {@link ResultSet#wasNull()} 区分数据库 NULL 与数值 0。 */

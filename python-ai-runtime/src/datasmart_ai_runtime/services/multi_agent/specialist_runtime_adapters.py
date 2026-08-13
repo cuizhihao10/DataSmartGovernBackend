@@ -852,6 +852,7 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
     # 逐项检查平台注册、allowedActions、RBAC、参数来源、预算和审批；在这里给出有限词表
     # 只是避免模型创造诸如 FIX_EVERYTHING / RERUN_TASK 这类无法治理的自由动作名称。
     _CANONICAL_ACTION_TYPES = (
+        "SEARCH_RECOVERY_KNOWLEDGE",
         "RETRY_FAILED_OBJECTS",
         "PREVIEW_QUARANTINE",
         "APPLY_QUARANTINE",
@@ -883,12 +884,21 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
                 "你是 DataSmart RECOVERY_AGENT 的建议模型。只能根据给出的失败事实和外部证据生成待审核"
                 "恢复建议；不得创建审批、调用工具、执行、重试、发布或修改任务。不要输出 SQL、凭据、"
                 "样本行、原始日志或隐藏思维链。只返回 JSON，允许字段为 actions、publicSummary、"
-                "failureReason、nextStep；actions 只是建议，不能表示已执行。每个 action 的 actionType "
+                "failureReason、nextStep、retrievalDecision、retrievalStrategy、ragReason、confidence；actions "
+                "只是建议，不能表示已执行。retrievalDecision 必须为 SEARCH 或 SKIP：根据错误新颖度、"
+                "诊断事实覆盖度、已有引用和置信度自主决定；retrievalStrategy 可选 STRUCTURED_DIAGNOSTIC、"
+                "EXACT_SEARCH、RAG、WIKI 或 GIT_HISTORY。不要因为这是 Recovery 就固定选择 SEARCH，也不要"
+                "把 RAG 当成唯一有效证据。已知错误码、数据库约束或网络错误可依据结构化 API/日志选择 SKIP；"
+                "陌生错误、低置信度或重复失败应选择 SEARCH，并切换检索或修复策略。"
+                "没有知识证据且选择 SEARCH 时，只返回"
+                "SEARCH_RECOVERY_KNOWLEDGE，不得同时建议修复。已有足够事实时可选择 SKIP。每个 action 的 actionType "
                 "必须从 public payload 的 canonicalActionTypes 中选择，不要创造近义词；toolName 可以省略，"
                 "因为系统会按 actionType 在 Bridge 中执行确定性映射。若证据不足以选择动作，应返回空 actions "
                 "并在人话 nextStep 中说明需要补充什么，不得猜测执行动作。若 diagnosticFacts 中的"
                 "recommendedRepairActions 明确包含 PREVIEW_DIRTY_RECORD_QUARANTINE，应优先建议"
-                "PREVIEW_QUARANTINE；这只是只读范围预览，不表示已经隔离或重放数据。"
+                "PREVIEW_QUARANTINE；这只是只读范围预览，不表示已经隔离或重放数据。每一轮最多返回一个"
+                "最小下一动作：先调查、再依据真实工具回执决定修复，不能在同一轮同时建议 preview 与 apply/retry/"
+                "replay，也不能一次并行多个 preview。后续动作不会丢失，而应在下一轮看到新证据后重新决策。"
             ),
             public_payload={
                 "objective": _safe_public_text(request.objective, 4_000),
@@ -899,6 +909,7 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
                 # payload or a second model's text.  RECOVERY uses it only to keep its proposal aligned
                 # with the observed failed execution that the coordinator already gated.
                 "monitoringSummary": _require_low_sensitive_mapping(request.monitoring_summary, "monitoringSummary"),
+                "evidenceAudit": _require_low_sensitive_mapping(request.evidence_audit, "evidenceAudit"),
                 "evidenceReferences": _safe_reference_tuple(request.evidence_references),
                 "allowedToolNames": _safe_string_tuple(request.allowed_tool_names, 240),
                 "maxOutputTokens": request.max_output_tokens,
@@ -915,6 +926,8 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
                 "actions", "repairActions", "repair_actions", "plans", "publicSummary", "public_summary",
                 "summary", "failureReason", "failure_reason", "nextStep", "next_step", "invocationSummary",
                 "requestedToolNames", "requested_tool_names", "requestedActions", "requested_actions",
+                "ragDecision", "rag_decision", "retrievalDecision", "retrieval_decision",
+                "retrievalStrategy", "retrieval_strategy", "ragReason", "rag_reason", "confidence", "modelConfidence",
             ),
         )
         raw_actions = _lookup(payload, "actions", "repairActions", "repair_actions", "plans") or ()
@@ -937,6 +950,15 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
             requested_actions=_safe_string_tuple(
                 _lookup(payload, "requestedActions", "requested_actions"),
                 240,
+            ),
+            rag_decision=_safe_public_text(_lookup(payload, "ragDecision", "rag_decision"), 24) or "AUTO",
+            rag_reason=_safe_public_text(_lookup(payload, "ragReason", "rag_reason"), 600),
+            confidence=_optional_confidence(_lookup(payload, "confidence", "modelConfidence")),
+            retrieval_decision=(
+                _safe_public_text(_lookup(payload, "retrievalDecision", "retrieval_decision"), 24) or None
+            ),
+            retrieval_strategy=(
+                _safe_public_text(_lookup(payload, "retrievalStrategy", "retrieval_strategy"), 48) or "AUTO"
             ),
         )
 
@@ -1051,7 +1073,16 @@ class HttpDatasourceDiscoveryTool:
         self._service_token = _optional_text(service_token)
 
     def discover(self, request: DatasourceDiscoveryRequest) -> DatasourceDiscoveryResult:
-        """按方向、类型、名称和显式 ID检索最多 100 个可用候选。"""
+        """按受治理范围读取候选，并让显式 ID 优先于可能过期的显示名称。
+
+        调用方可能同时携带用户已经确认的 ``datasource_id`` 和页面缓存的 ``name``。数据源重命名后，
+        ID 仍是稳定业务身份，而旧名称仅是低敏提示；若把两者同时发送给分页接口，服务端 keyword 会先
+        把正确 ID 过滤掉。存在显式 ID 时，本方法因此不发送 keyword，而是在服务端完成 tenant/project、
+        SOURCE/TARGET、connector type 和 ACTIVE 状态过滤后，再在本地精确匹配 ID。
+
+        这不是绕过授权：返回记录仍必须通过下游项目范围校验，且 `_can_use_record` 只接受 USE/MANAGE
+        或 owner 关系。没有显式 ID 时才使用名称 keyword 缩小候选，再由 Specialist/模型在授权集合内消歧。
+        """
 
         query: dict[str, str | int] = {
             "current": 1,
@@ -1063,7 +1094,7 @@ class HttpDatasourceDiscoveryTool:
         }
         if request.connector_type:
             query["type"] = request.connector_type
-        if request.name:
+        if request.name and not request.datasource_id:
             query["keyword"] = request.name
         url = f"{self._base_url}/datasources?{urlencode(query)}"
         http_request = Request(url=url, headers=self._headers(request), method="GET")
@@ -1253,6 +1284,22 @@ def _optional_text(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _optional_confidence(value: Any) -> float | None:
+    """解析模型自报置信度；缺失可兼容，非法值不能静默变成高置信。"""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise SpecialistRuntimeAdapterError("RECOVERY confidence 必须是 0 到 1 的数值")
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError) as exc:
+        raise SpecialistRuntimeAdapterError("RECOVERY confidence 必须是 0 到 1 的数值") from exc
+    if not 0.0 <= confidence <= 1.0:
+        raise SpecialistRuntimeAdapterError("RECOVERY confidence 必须位于 0 到 1")
+    return confidence
 
 
 def _safe_scalar(value: Any) -> bool:

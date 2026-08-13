@@ -104,6 +104,82 @@ class AgentToolActionApprovalFactServiceImplTest {
         assertThat(view.issueCodes()).contains("APPROVAL_FACT_SCOPE_MISMATCH");
     }
 
+    /**
+     * Verifies that request-provided fingerprints cannot become an authorization
+     * input: both values may originate from a model or caller and therefore
+     * cannot prove what the approved action actually was.
+     *
+     * <p>The service must instead persist a SHA-256 binding calculated from
+     * the trusted approval fact and independently calculate the same binding
+     * from the action fields after their scope has matched the fact.</p>
+     */
+    @Test
+    void callerSuppliedActionFingerprintMustNotInfluenceApprovalAuthorization() {
+        InMemoryAgentToolActionApprovalFactStore factStore = new InMemoryAgentToolActionApprovalFactStore();
+        AgentToolActionApprovalFactServiceImpl authoritativeService =
+                new AgentToolActionApprovalFactServiceImpl(factStore);
+        String registrationFingerprint = "sha256:model-claimed-action";
+
+        authoritativeService.register(register("APPROVED", LocalDateTime.now().plusMinutes(30),
+                registrationFingerprint));
+
+        AgentToolActionApprovalFactEvaluationView view = authoritativeService.evaluate(
+                evaluate("sha256:caller-tampered-value"));
+        AgentToolActionApprovalFactRecord stored = factStore.findById("approval:human-001").orElseThrow();
+
+        assertThat(view.approved()).isTrue();
+        assertThat(view.evidenceCodes()).contains("APPROVAL_FACT_ACTION_FINGERPRINT_SERVER_VERIFIED");
+        assertThat(stored.actionFingerprint())
+                .matches("sha256:[0-9a-f]{64}")
+                .isNotEqualTo(registrationFingerprint);
+    }
+
+    /**
+     * Verifies that a legacy fact without a persisted server fingerprint cannot
+     * authorize a matching current action.
+     *
+     * <p>The input deliberately uses the legacy record constructor, whose
+     * actionFingerprint value is {@code null}, plus an evaluation request whose
+     * normalized scope fields all match the record. The expected output is a
+     * fail-closed decision rather than an approval. This protects the security
+     * boundary between a row that merely has matching identifiers and a row for
+     * which permission-admin has durably recorded its own authority binding.</p>
+     */
+    @Test
+    void legacyFactWithoutPersistedServerFingerprintMustNotAuthorizeAction() {
+        InMemoryAgentToolActionApprovalFactStore factStore = new InMemoryAgentToolActionApprovalFactStore();
+        factStore.save(new AgentToolActionApprovalFactRecord(
+                "approval:human-001",
+                10L,
+                10010L,
+                20L,
+                "30",
+                "30",
+                "datasmart-govern-agent",
+                "session-proposal",
+                "run-proposal",
+                "delegation-proposal",
+                "taoc-consume-001",
+                "datasource.metadata.read",
+                "tool-readiness-policy.v1",
+                "APPROVED",
+                LocalDateTime.now().plusMinutes(30),
+                "31",
+                List.of("HUMAN_APPROVED"),
+                List.of("FRONTEND_CONFIRMATION_RECORDED"),
+                LocalDateTime.now()
+        ));
+        AgentToolActionApprovalFactServiceImpl authoritativeService =
+                new AgentToolActionApprovalFactServiceImpl(factStore);
+
+        AgentToolActionApprovalFactEvaluationView view = authoritativeService.evaluate(evaluate());
+
+        assertThat(view.approved()).isFalse();
+        assertThat(view.retryable()).isFalse();
+        assertThat(view.decision()).isEqualTo("ACTION_FINGERPRINT_MISSING");
+        assertThat(view.issueCodes()).contains("APPROVAL_FACT_ACTION_FINGERPRINT_MISSING");
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"APPROVED", "REJECTED"})
     void delayedPendingMustNotOverwriteTerminalStatus(String terminalStatus) {
@@ -130,7 +206,40 @@ class AgentToolActionApprovalFactServiceImplTest {
         verify(store, never()).findById(anyString());
     }
 
+    /**
+     * Builds the standard registration fixture without a caller fingerprint.
+     *
+     * <p>The inputs select the fact lifecycle state and expiry; the output is a
+     * complete low-sensitive request whose immutable scope matches
+     * {@link #evaluate()}. Passing {@code null} for the fingerprint is
+     * intentional, because the security boundary under test requires the service
+     * to create its own fingerprint instead of accepting test-client input.</p>
+     *
+     * @param status requested approval state for the fixture
+     * @param expiresAt time at which the fixture should stop being usable
+     * @return registration request ready for the service boundary
+     */
     private AgentToolActionApprovalFactRegisterRequest register(String status, LocalDateTime expiresAt) {
+        return register(status, expiresAt, null);
+    }
+
+    /**
+     * Builds a complete registration fixture with a deliberately caller-owned fingerprint value.
+     *
+     * <p>The inputs control the lifecycle state, expiry, and arbitrary supplied
+     * fingerprint. The output contains only stable test scope identifiers. The
+     * method does not normalize or validate the fingerprint because its purpose
+     * is to prove that permission-admin, rather than this simulated caller,
+     * owns the authorization digest.</p>
+     *
+     * @param status requested approval state for the fixture
+     * @param expiresAt time at which the fixture should stop being usable
+     * @param actionFingerprint untrusted compatibility value supplied by the test caller
+     * @return complete registration request for the service test
+     */
+    private AgentToolActionApprovalFactRegisterRequest register(String status,
+                                                                LocalDateTime expiresAt,
+                                                                String actionFingerprint) {
         AgentToolActionApprovalFactRegisterRequest request = new AgentToolActionApprovalFactRegisterRequest();
         request.setApprovalFactId("approval:human-001");
         request.setTenantId(10L);
@@ -144,6 +253,7 @@ class AgentToolActionApprovalFactServiceImplTest {
         request.setDelegationId("delegation-proposal");
         request.setCommandId("taoc-consume-001");
         request.setToolCode("datasource.metadata.read");
+        request.setActionFingerprint(actionFingerprint);
         request.setPolicyVersion("tool-readiness-policy.v1");
         request.setStatus(status);
         request.setExpiresAt(expiresAt);
@@ -153,7 +263,33 @@ class AgentToolActionApprovalFactServiceImplTest {
         return request;
     }
 
+    /**
+     * Builds the standard matching evaluation fixture without a caller fingerprint.
+     *
+     * <p>The output has the same normalized scope and action locator fields as
+     * {@link #register(String, LocalDateTime)}, so any rejection in a test is
+     * caused by the security condition being exercised rather than an accidental
+     * scope mismatch. A {@code null} compatibility fingerprint also demonstrates
+     * that evaluation must use the persisted server digest.</p>
+     *
+     * @return matching current-action context for evaluation tests
+     */
     private AgentToolActionApprovalFactEvaluateRequest evaluate() {
+        return evaluate(null);
+    }
+
+    /**
+     * Builds a matching evaluation fixture with an arbitrary caller fingerprint.
+     *
+     * <p>The input is deliberately not trusted or normalized by this helper. The
+     * output preserves it only to model the HTTP contract, while the service must
+     * derive and compare its own digest after validating every scope field. This
+     * keeps the test focused on the authorization boundary rather than DTO setup.</p>
+     *
+     * @param actionFingerprint untrusted compatibility value supplied at evaluation time
+     * @return current-action request whose stable scope matches the registered fact
+     */
+    private AgentToolActionApprovalFactEvaluateRequest evaluate(String actionFingerprint) {
         AgentToolActionApprovalFactEvaluateRequest request = new AgentToolActionApprovalFactEvaluateRequest();
         request.setApprovalFactId("approval:human-001");
         request.setTenantId(10L);
@@ -167,6 +303,7 @@ class AgentToolActionApprovalFactServiceImplTest {
         request.setDelegationId("delegation-proposal");
         request.setCommandId("taoc-consume-001");
         request.setToolCode("datasource.metadata.read");
+        request.setActionFingerprint(actionFingerprint);
         request.setRequestedPolicyVersion("tool-readiness-policy.v1");
         return request;
     }

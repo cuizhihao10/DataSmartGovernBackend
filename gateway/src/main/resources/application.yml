@@ -161,6 +161,11 @@ spring:
           predicates:
             - Path=/api/agent/**
           filters:
+            # GatewayContractFilter 已在全局层清理外部伪造 Header；这里仍显式删除一次，
+            # 再由可信部署环境注入 Agent Runtime 入口所需 secret，避免路由维护时把该安全契约隐藏在全局过滤器里。
+            # secret 为空时 Agent Runtime 的启用态 Filter 会 fail-closed，不能退化为匿名控制面。
+            - RemoveRequestHeader=X-DataSmart-Internal-Service-Token
+            - SetRequestHeader=X-DataSmart-Internal-Service-Token, ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:}
             # agent-runtime 内部使用 /agent-runtime/** 表达“AI 控制面”领域路径。
             # 外部统一使用 /api/agent/**，便于前端和未来智能网关把 Agent 能力视为平台级入口。
             - RewritePath=/api/agent/(?<segment>.*), /agent-runtime/$\{segment}
@@ -872,6 +877,16 @@ datasmart:
           resource-type: SYNC_EXECUTION
           default-action: VIEW
           description: data-sync 执行策略快照查询入口，用于解释某次 execution 实际采用的分片、channel、批大小、超时、重试和脏数据阈值。
+          method-actions:
+            GET: VIEW
+
+        # Autopilot 恢复状态是面向任务详情页和真实 E2E 的低敏只读证据。
+        # 必须排在下方 execution callback 通配规则之前，否则 GET 会被解释成机器回调资源，
+        # 既无法让用户观察无人值守恢复，也可能错误复用 CALLBACK 权限语义。
+        - path-pattern: /api/sync/sync-tasks/*/executions/*/autopilot-recovery
+          resource-type: SYNC_EXECUTION
+          default-action: VIEW
+          description: 查看某次同步执行的 Autopilot 有界恢复状态、轮次、动作、隔离回执和终态结果；不返回日志、样本、SQL、凭据、prompt 或模型正文。
           method-actions:
             GET: VIEW
 

@@ -23,6 +23,7 @@ import re
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -109,6 +110,7 @@ class FailureDiagnosticResult:
     evidence_references: tuple[str, ...] = ()
     log_summary: Mapping[str, Any] = field(default_factory=dict)
     public_summary: str = ""
+    evidence_records: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         """把客户端返回的映射和引用转换成稳定的不可变快照。"""
@@ -117,6 +119,11 @@ class FailureDiagnosticResult:
         object.__setattr__(self, "log_summary", MappingProxyType(dict(self.log_summary)))
         object.__setattr__(self, "log_references", _unique_text(self.log_references))
         object.__setattr__(self, "evidence_references", _unique_text(self.evidence_references))
+        object.__setattr__(
+            self,
+            "evidence_records",
+            tuple(_sanitize_mapping(item) for item in self.evidence_records if isinstance(item, Mapping)),
+        )
 
     @property
     def failure_facts(self) -> Mapping[str, Any]:
@@ -159,6 +166,7 @@ class RecoveryPlanningModelInput:
     # This summary comes only from a completed MONITOR_AGENT dependency.  It is optional for
     # standalone unit/domain calls, but recovery waves that scheduled MONITOR_AGENT must consume it.
     monitoring_summary: Mapping[str, Any] = field(default_factory=dict)
+    evidence_audit: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """冻结模型输入，避免 Provider 适配器在规划过程中篡改事实快照。"""
@@ -169,6 +177,7 @@ class RecoveryPlanningModelInput:
         object.__setattr__(self, "case_evidence", MappingProxyType(dict(self.case_evidence)))
         object.__setattr__(self, "knowledge_summary", MappingProxyType(dict(self.knowledge_summary)))
         object.__setattr__(self, "monitoring_summary", MappingProxyType(dict(self.monitoring_summary)))
+        object.__setattr__(self, "evidence_audit", MappingProxyType(dict(self.evidence_audit)))
         object.__setattr__(self, "evidence_references", _unique_text(self.evidence_references))
         object.__setattr__(self, "allowed_tool_names", _unique_text(self.allowed_tool_names))
         object.__setattr__(self, "failure_code", _bounded_text(self.failure_code, 160).strip() or None)
@@ -197,6 +206,11 @@ class RecoveryPlanningModelOutput:
     invocation_summary: Mapping[str, Any] = field(default_factory=dict)
     requested_tool_names: tuple[str, ...] = ()
     requested_actions: tuple[str, ...] = ()
+    rag_decision: str = "AUTO"
+    rag_reason: str = ""
+    confidence: float | None = None
+    retrieval_decision: str | None = None
+    retrieval_strategy: str = "AUTO"
 
     def __post_init__(self) -> None:
         """冻结模型返回的建议和调用统计，不保留可变的 Provider 对象。"""
@@ -205,6 +219,21 @@ class RecoveryPlanningModelOutput:
         object.__setattr__(self, "invocation_summary", MappingProxyType(dict(self.invocation_summary)))
         object.__setattr__(self, "requested_tool_names", _unique_text(self.requested_tool_names))
         object.__setattr__(self, "requested_actions", _unique_text(self.requested_actions))
+        decision = _bounded_text(self.retrieval_decision or self.rag_decision, 24).strip().upper() or "AUTO"
+        if decision not in {"AUTO", "SEARCH", "SKIP"}:
+            raise ValueError("retrieval_decision must be AUTO, SEARCH or SKIP")
+        object.__setattr__(self, "rag_decision", decision)
+        object.__setattr__(self, "retrieval_decision", decision)
+        strategy = _bounded_text(self.retrieval_strategy, 48).strip().upper() or "AUTO"
+        if strategy not in {"AUTO", "STRUCTURED_DIAGNOSTIC", "RAG", "EXACT_SEARCH", "WIKI", "GIT_HISTORY"}:
+            strategy = "AUTO"
+        object.__setattr__(self, "retrieval_strategy", strategy)
+        object.__setattr__(self, "rag_reason", _sanitize_text(self.rag_reason))
+        if self.confidence is not None:
+            confidence = float(self.confidence)
+            if not 0.0 <= confidence <= 1.0:
+                raise ValueError("confidence must be between 0 and 1")
+            object.__setattr__(self, "confidence", confidence)
 
     @property
     def repair_actions(self) -> tuple[Any, ...]:
@@ -264,9 +293,9 @@ class _RecoveryModelOverreach(ValueError):
 class RecoverySpecialistAgent:
     """真实 RECOVERY_AGENT 的受控实现。
 
-    类职责是“诊断事实 + 外部证据 -> 可审核恢复建议”。它不负责 RAG 检索，因为知识检索属于
-    KNOWLEDGE_AGENT；它也不负责审批持久化或动作执行，因为这些属于主 Agent bridge 和
-    Gateway/Java 控制面。这样 Recovery 不能因为收到一个看似批准的字段就获得数据库或任务权限。
+    类职责是“诊断事实 + 可选外部证据 -> 可审核恢复建议”。是否需要 RAG 由模型显式输出
+    ``ragDecision``；当模型选择 SEARCH 时，本 Agent 只生成 KNOWLEDGE_AGENT 的只读检索建议，
+    不把任何修复动作混入同一批。审批持久化和动作执行仍属于主 Agent bridge 与 Java 控制面。
 
     重要的业务状态语义如下：
 
@@ -408,8 +437,10 @@ class RecoverySpecialistAgent:
         "CHECK",
         "DIAGNOSE",
         "INSPECT",
+        "KNOWLEDGE",
         "LOG",
         "READ",
+        "SEARCH",
         "TRACE",
         "VERIFY",
     )
@@ -534,6 +565,7 @@ class RecoverySpecialistAgent:
         try:
             diagnostic_raw = self._run_diagnostic(self._build_diagnostic_request(request))
             diagnostic = self._coerce_diagnostic_result(diagnostic_raw)
+            diagnostic = self._apply_trusted_autopilot_facts(diagnostic, request.context_summary)
         except Exception:
             # 诊断客户端异常可能带 endpoint、日志正文或认证信息，不能把异常字符串交给上层。
             return self._failed_result(
@@ -576,10 +608,32 @@ class RecoverySpecialistAgent:
             request=request,
             diagnostic=diagnostic,
         )
+        evidence_audit = self._build_evidence_audit(
+            request=request,
+            diagnostic=diagnostic,
+            case_evidence=case_evidence,
+            knowledge_summary=knowledge_summary,
+            monitoring_summary=monitoring_summary,
+        )
+        diagnostic_evidence_gate = self._diagnostic_evidence_gate(diagnostic, evidence_audit)
+        if not diagnostic_evidence_gate["satisfied"]:
+            return self._failed_result(
+                request=request,
+                event_sink=event_sink,
+                started_at=started_at,
+                error_code="RECOVERY_DIAGNOSTIC_EVIDENCE_INSUFFICIENT",
+                public_summary="恢复缺少可审计的结构化失败事实或受控日志证据，已停止模型决策。",
+                next_step="请先完成同步执行诊断，再由模型自主选择精确检索或知识检索。",
+                diagnostic=diagnostic,
+                evidence_references=evidence_references,
+                tool_activities=(diagnostic_activity,),
+                structured_output={
+                    "diagnosticEvidenceGate": diagnostic_evidence_gate,
+                    "evidenceAudit": evidence_audit,
+                },
+            )
         monitoring_dependency_required = self._monitoring_dependency_required(request.context_summary)
         required_inputs: list[str] = []
-        if not self._has_grounded_knowledge(knowledge_summary):
-            required_inputs.append("knowledgeSummary")
         if monitoring_dependency_required and not monitoring_summary:
             required_inputs.append("monitoringSummary")
         if required_inputs:
@@ -588,15 +642,15 @@ class RecoverySpecialistAgent:
                 request,
                 action="RECOVERY_EVIDENCE_REQUIRED",
                 status="WAITING_FOR_INPUT",
-                public_summary="缺少恢复所需的可信知识或运行监控摘要，未让模型猜测故障场景。",
+                public_summary="缺少恢复所需的可信运行监控摘要，未让模型猜测运行状态。",
                 attributes={"requiredEvidence": tuple(required_inputs)},
             )
             return self._waiting_result(
                 request=request,
                 event_sink=event_sink,
                 started_at=started_at,
-                public_summary="当前缺少经过验证的恢复证据，无法安全生成恢复方案。",
-                next_step="请先由 KNOWLEDGE_AGENT 完成知识检索；若本轮已调度任务监控，也请等待监控摘要返回后再生成恢复建议。",
+                public_summary="当前缺少已调度的运行监控摘要，无法安全生成恢复方案。",
+                next_step="请等待 MONITOR_AGENT 返回同一 task/execution 的确定性状态后再生成恢复建议。",
                 required_input_fields=tuple(required_inputs),
                 diagnostic=diagnostic,
                 evidence_references=evidence_references,
@@ -625,6 +679,7 @@ class RecoverySpecialistAgent:
                 max_output_tokens=request.budget.max_output_tokens,
                 failure_code=diagnostic.failure_code,
                 failure_reason=_sanitize_text(diagnostic.failure_reason),
+                evidence_audit=evidence_audit,
             )
         except (TypeError, ValueError):
             return self._failed_result(
@@ -692,9 +747,30 @@ class RecoverySpecialistAgent:
             },
         )
 
+        grounded_knowledge = self._has_grounded_knowledge(knowledge_summary)
+        rag_decision = model_output.retrieval_decision or model_output.rag_decision
+        retrieval_strategy = model_output.retrieval_strategy
+        if rag_decision == "AUTO":
+            # 兼容旧 Provider：已有可信知识证据时不重复查，否则先进入只读检索。
+            # 明确返回 SEARCH/SKIP 的新 Provider 始终保留自主选择。
+            rag_decision = "SKIP" if grounded_knowledge else "SEARCH"
+        raw_actions: tuple[Any, ...] = model_output.actions
+        if rag_decision == "SEARCH":
+            # 检索与修复分成两个 durable turn。即使模型同批返回了写动作，这里也只保留只读检索，
+            # 防止“决定搜索”和“假设搜索结果已支持修复”在同一步发生。已有知识证据时再次
+            # SEARCH 代表模型要扩大来源，而不是被规则层静默改成 SKIP。
+            raw_actions = ({
+                "actionId": f"recovery-rag-{request.turn_id}",
+                "actionType": "SEARCH_RECOVERY_KNOWLEDGE",
+                "arguments": {
+                    "retrievalStrategy": retrieval_strategy if retrieval_strategy != "AUTO" else "RAG",
+                },
+                "reason": model_output.rag_reason or "恢复模型判断当前诊断仍需扩大受控证据来源。",
+            },)
+
         try:
             actions = self._normalize_actions(
-                raw_actions=model_output.actions,
+                raw_actions=raw_actions,
                 diagnostic=diagnostic,
                 evidence_references=evidence_references,
             )
@@ -725,6 +801,29 @@ class RecoverySpecialistAgent:
                 model_invocation_summary=model_summary,
             )
 
+        strategy_changed = False
+        previous_repair_fingerprint = _lookup(
+            diagnostic.facts,
+            "previousRepairFingerprint",
+            "previous_repair_fingerprint",
+            "lastRepairFingerprint",
+            "last_repair_fingerprint",
+        )
+        repeated_error_count = _positive_int(
+            _lookup(diagnostic.facts, "repeatedErrorCount", "repeated_error_count")
+        )
+        if repeated_error_count > 0 and previous_repair_fingerprint:
+            current_fingerprint = compute_action_fingerprint(actions)
+            if str(previous_repair_fingerprint).strip() == current_fingerprint:
+                strategy_changed = True
+                rag_decision = "SEARCH"
+                retrieval_strategy = "RAG"
+                actions = self._alternate_strategy_action(
+                    request=request,
+                    evidence_references=evidence_references,
+                    previous_repair_fingerprint=current_fingerprint,
+                    repeated_error_count=repeated_error_count,
+                )
         action_fingerprint = compute_action_fingerprint(actions)
         public_actions = tuple(self._public_action(action) for action in actions)
         high_risk_actions = tuple(
@@ -741,6 +840,14 @@ class RecoverySpecialistAgent:
             "caseEvidenceAvailable": bool(case_evidence),
             "knowledgeSummaryAvailable": bool(knowledge_summary),
             "monitoringSummaryAvailable": bool(monitoring_summary),
+            "ragDecision": rag_decision,
+            "retrievalDecision": rag_decision,
+            "retrievalStrategy": retrieval_strategy,
+            "strategyChanged": strategy_changed,
+            "diagnosticEvidenceGate": diagnostic_evidence_gate,
+            "evidenceAudit": evidence_audit,
+            "ragReason": _bounded_text(model_output.rag_reason, 600),
+            "modelConfidence": model_output.confidence,
             "executed": False,
             "readOnly": not high_risk_actions,
             "payloadPolicy": "LOW_SENSITIVE_RECOVERY_RESULT_ONLY",
@@ -764,6 +871,11 @@ class RecoverySpecialistAgent:
                     "nextStep": next_step,
                 }
             )
+            if rag_decision == "SEARCH" and not grounded_knowledge:
+                base_output.update({
+                    "javaToolPlanPending": True,
+                    "nextStep": "先执行受治理的只读 RAG 检索；取得项目内引用后进入下一轮恢复决策。",
+                })
             result = self._completed_result(
                 request=request,
                 event_sink=event_sink,
@@ -876,6 +988,69 @@ class RecoverySpecialistAgent:
             if str(key) in allowed_names
         }
 
+    def _apply_trusted_autopilot_facts(
+        self,
+        diagnostic: FailureDiagnosticResult,
+        context: Mapping[str, Any],
+    ) -> FailureDiagnosticResult:
+        """把 Java 已验证的循环事实叠加到结构化诊断结果中。
+
+        普通 Recovery turn 不携带 ``trustedAutopilotRecovery``，因此保持原诊断不变。Autopilot
+        内部入口只允许叠加当前错误指纹、重复次数和上一轮修复指纹三个固定字段；这些值用于判断
+        同一错误是否重复采用了同一方案。方法不会读取 objective、模型输出、RAG 文档或任意顶层字段，
+        从而防止不可信文本伪造循环次数并强迫 Agent 改变策略。
+
+        ``FailureDiagnosticResult`` 是冻结 dataclass，所以这里创建一份新快照而不是修改原对象；原始
+        日志引用、证据引用、公开摘要和 evidence records 都原样保留。
+        """
+
+        trusted = _lookup(context, "trustedAutopilotRecovery", "trusted_autopilot_recovery")
+        if not isinstance(trusted, Mapping):
+            return diagnostic
+
+        repeated_error_count = _lookup(trusted, "repeatedErrorCount", "repeated_error_count")
+        if isinstance(repeated_error_count, bool):
+            raise ValueError("trusted repeatedErrorCount 不能是布尔值")
+        try:
+            normalized_repeated_count = int(repeated_error_count or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("trusted repeatedErrorCount 必须是整数") from exc
+        if not 0 <= normalized_repeated_count <= 100:
+            raise ValueError("trusted repeatedErrorCount 超出安全范围")
+
+        error_fingerprint = _bounded_text(
+            _lookup(trusted, "errorFingerprint", "error_fingerprint"),
+            80,
+        ).strip()
+        previous_repair_fingerprint = _bounded_text(
+            _lookup(trusted, "previousRepairFingerprint", "previous_repair_fingerprint"),
+            80,
+        ).strip()
+        sha256_pattern = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
+        if not sha256_pattern.fullmatch(error_fingerprint):
+            raise ValueError("trusted errorFingerprint 必须是 SHA-256")
+        if previous_repair_fingerprint and not sha256_pattern.fullmatch(previous_repair_fingerprint):
+            raise ValueError("trusted previousRepairFingerprint 必须是 SHA-256")
+
+        facts = dict(diagnostic.facts)
+        facts["errorFingerprint"] = error_fingerprint.removeprefix("sha256:").lower()
+        facts["repeatedErrorCount"] = normalized_repeated_count
+        if previous_repair_fingerprint:
+            # Recovery 的动作指纹函数历史上返回 ``sha256:`` 前缀。统一成该格式后，重复策略比较
+            # 不会因 Java/data-sync 使用纯 64 位十六进制而产生假阴性。
+            previous_hex = previous_repair_fingerprint.removeprefix("sha256:").lower()
+            facts["previousRepairFingerprint"] = f"sha256:{previous_hex}"
+        return FailureDiagnosticResult(
+            failure_code=diagnostic.failure_code,
+            failure_reason=diagnostic.failure_reason,
+            facts=facts,
+            log_references=diagnostic.log_references,
+            evidence_references=diagnostic.evidence_references,
+            log_summary=diagnostic.log_summary,
+            public_summary=diagnostic.public_summary,
+            evidence_records=diagnostic.evidence_records,
+        )
+
     def _evidence_context(
         self,
         *,
@@ -947,6 +1122,138 @@ class RecoverySpecialistAgent:
             _sanitize_mapping(knowledge_summary),
             monitoring_summary,
             _unique_text(references),
+        )
+
+    def _build_evidence_audit(
+        self,
+        *,
+        request: SpecialistTurnRequest,
+        diagnostic: FailureDiagnosticResult,
+        case_evidence: Mapping[str, Any],
+        knowledge_summary: Mapping[str, Any],
+        monitoring_summary: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Build low-sensitive source/time/query/evidence metadata for this turn."""
+
+        retrieved_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        query_material = "|".join((
+            request.scope.tenant_id,
+            str(request.scope.project_id or ""),
+            request.session_id,
+            request.run_id,
+            FAILURE_DIAGNOSTIC_TOOL_CODE,
+        ))
+        query_digest = "sha256:" + hashlib.sha256(query_material.encode("utf-8")).hexdigest()
+        query_summary = {
+            "kind": "RECOVERY_DIAGNOSTIC",
+            "scope": "TASK_EXECUTION",
+            "fieldCount": len(diagnostic.facts),
+            "referenceCount": len(diagnostic.log_references) + len(diagnostic.evidence_references),
+        }
+        records: list[dict[str, Any]] = []
+
+        def add(source_type: str, source_ref: Any, *, evidence_id: Any = None, source_time: Any = None) -> None:
+            reference = _bounded_text(source_ref, 220).strip()
+            if not reference:
+                return
+            normalized_type = _bounded_text(source_type, 48).strip().upper() or "STRUCTURED_API"
+            stable_id = _bounded_text(evidence_id, 220).strip() or (
+                "diagnostic-evidence:"
+                + hashlib.sha256(f"{normalized_type}|{reference}|{query_digest}".encode("utf-8")).hexdigest()
+            )
+            records.append({
+                "evidenceId": stable_id,
+                "sourceType": normalized_type,
+                "sourceRef": reference,
+                "retrievedAt": _bounded_text(source_time, 64).strip() or retrieved_at,
+                "queryDigest": query_digest,
+                "querySummary": query_summary,
+            })
+
+        for record in diagnostic.evidence_records:
+            add(
+                _lookup(record, "sourceType", "source_type") or "STRUCTURED_API",
+                _lookup(record, "sourceRef", "source_ref", "reference", "sourceUri", "source_uri"),
+                evidence_id=_lookup(record, "evidenceId", "evidence_id"),
+                source_time=_lookup(record, "retrievedAt", "retrieved_at"),
+            )
+        for reference in diagnostic.log_references:
+            add("EXECUTION_LOG", reference)
+        for reference in diagnostic.evidence_references:
+            add("STRUCTURED_API", reference)
+        task_id = _lookup(diagnostic.facts, "taskId", "task_id")
+        execution_id = _lookup(diagnostic.facts, "executionId", "execution_id")
+        if task_id is not None and execution_id is not None:
+            add("STRUCTURED_API", f"sync-execution:{task_id}:{execution_id}")
+        for reference in self._references_from_value(case_evidence):
+            add("CASE_HISTORY", reference)
+        for reference in self._rag_references_from_value(knowledge_summary):
+            add("RAG", reference)
+        if monitoring_summary:
+            add("MONITORING_API", "sync-monitoring:summary")
+
+        deduplicated: dict[str, dict[str, Any]] = {}
+        for record in records:
+            deduplicated.setdefault(str(record["evidenceId"]), record)
+        final_records = tuple(deduplicated.values())
+        digest_material = json.dumps(final_records, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return {
+            "queryDigest": query_digest,
+            "querySummary": query_summary,
+            "retrievedAt": retrieved_at,
+            "evidenceCount": len(final_records),
+            "sourceTypes": tuple(sorted({str(item["sourceType"]) for item in final_records})),
+            "evidenceRecords": final_records,
+            "evidenceDigest": "sha256:" + hashlib.sha256(digest_material.encode("utf-8")).hexdigest(),
+            "payloadPolicy": "LOW_SENSITIVE_RECOVERY_EVIDENCE_AUDIT_NO_RAW_LOG_OR_DOCUMENT_BODY",
+        }
+
+    @staticmethod
+    def _diagnostic_evidence_gate(
+        diagnostic: FailureDiagnosticResult,
+        audit: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Require authoritative diagnostics without requiring a RAG call."""
+
+        code = _bounded_text(diagnostic.failure_code, 160).strip().upper()
+        failure_signal = (bool(code) and code != "UNKNOWN") or bool(diagnostic.facts)
+        source_types = {str(value) for value in (audit.get("sourceTypes") or ())}
+        authoritative_source = bool(source_types & {"EXECUTION_LOG", "STRUCTURED_API", "MONITORING_API"})
+        evidence_count = int(audit.get("evidenceCount") or 0)
+        return {
+            "satisfied": failure_signal and authoritative_source and evidence_count > 0,
+            "failureSignal": failure_signal,
+            "authoritativeSource": authoritative_source,
+            "evidenceCount": evidence_count,
+            "required": ("failureSignal", "authoritativeSource", "evidenceCount"),
+            "ragRequired": False,
+        }
+
+    def _alternate_strategy_action(
+        self,
+        *,
+        request: SpecialistTurnRequest,
+        evidence_references: tuple[str, ...],
+        previous_repair_fingerprint: str,
+        repeated_error_count: int,
+    ) -> tuple[RecoveryAction, ...]:
+        """Replace a repeated repair with a read-only evidence expansion."""
+
+        return (
+            RecoveryAction(
+                action_type="SEARCH_RECOVERY_KNOWLEDGE",
+                tool_name="sync.execution.rag.lookup",
+                arguments={
+                    "retrievalStrategy": "RAG",
+                    "reasonCode": "REPEATED_ERROR_REQUIRES_DIFFERENT_STRATEGY",
+                    "previousRepairFingerprint": previous_repair_fingerprint,
+                    "repeatedErrorCount": repeated_error_count,
+                },
+                reason="同一错误再次出现且修复指纹重复，必须先扩大受控知识证据并更换方案。",
+                action_id=f"recovery-rag-repeat-{request.turn_id}",
+                evidence_references=evidence_references,
+                classification=RecoveryActionClass.READ_ONLY_DIAGNOSTIC,
+            ),
         )
 
     def _has_grounded_knowledge(self, value: Mapping[str, Any]) -> bool:
@@ -1472,6 +1779,11 @@ class RecoverySpecialistAgent:
             if isinstance(_lookup(value, "logSummary", "log_summary"), Mapping)
             else {},
             public_summary=str(_lookup(value, "publicSummary", "public_summary") or ""),
+            evidence_records=tuple(
+                item
+                for item in (_lookup(value, "evidenceRecords", "evidence_records") or ())
+                if isinstance(item, Mapping)
+            ),
         )
 
     def _coerce_model_output(self, value: Any) -> RecoveryPlanningModelOutput:
@@ -1497,6 +1809,17 @@ class RecoverySpecialistAgent:
             ),
             requested_actions=_unique_text(
                 _lookup(value, "requestedActions", "requested_actions") or ()
+            ),
+            rag_decision=str(_lookup(value, "ragDecision", "rag_decision") or "AUTO"),
+            rag_reason=str(_lookup(value, "ragReason", "rag_reason") or ""),
+            confidence=_lookup(value, "confidence", "modelConfidence", "model_confidence"),
+            retrieval_decision=(
+                str(_lookup(value, "retrievalDecision", "retrieval_decision"))
+                if _lookup(value, "retrievalDecision", "retrieval_decision") is not None
+                else None
+            ),
+            retrieval_strategy=str(
+                _lookup(value, "retrievalStrategy", "retrieval_strategy") or "AUTO"
             ),
         )
 
@@ -1802,6 +2125,15 @@ def _positive_decimal_reference(value: Any) -> str | None:
         return text if int(text) > 0 else None
     except ValueError:
         return None
+
+
+def _positive_int(value: Any) -> int:
+    """Return a non-negative control-plane counter without raising."""
+
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _normalized_key(value: Any) -> str:

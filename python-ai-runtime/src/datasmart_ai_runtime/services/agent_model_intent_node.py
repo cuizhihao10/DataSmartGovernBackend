@@ -300,9 +300,23 @@ class AgentModelIntentNode:
         防止模型为了满足 `required` 伪造 SQL、审批或业务配置。第二轮工具反馈由独立编排器继续受循环预算控制。
         """
 
-        if available_tools and intent_analysis.candidate_tools and not intent_analysis.missing_parameters:
-            return "required"
         available_names = {tool.name for tool in available_tools}
+        candidate_names = set(intent_analysis.candidate_tools)
+        autonomous_retrieval_tools = {
+            "knowledge.rag.query",
+            "workspace.text.search",
+        }
+        # 规则意图分析在这里仅决定“是否开放检索能力”。当本轮候选全部是只读检索工具时必须使用
+        # ``auto``，让模型可以根据已有结构化事实自主返回 SEARCH 或 SKIP。使用 ``required`` 会把
+        # “模型有权检索”错误地提升成“模型必须检索”，与 Codex 类 Agent 的工具选择方式不一致。
+        retrieval_only = bool(candidate_names) and candidate_names.issubset(autonomous_retrieval_tools)
+        if (
+            available_tools
+            and candidate_names
+            and not intent_analysis.missing_parameters
+            and not retrieval_only
+        ):
+            return "required"
         auto_resolvable_sync_parameters = {
             "sourceDatasourceId",
             "targetDatasourceId",

@@ -234,6 +234,24 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertIn(IntentRiskTag.READ_ONLY, analysis.risk_tags)
         self.assertIn("workspaceFilePath", analysis.missing_parameters)
 
+    def test_workspace_text_search_intent_is_a_read_only_model_candidate_not_rag(self) -> None:
+        """代码库内精确查找应暴露本地搜索候选，不应被泛化为向量知识库查询。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="Please search workspace codebase for WorkspaceTextSearchService and show matching files.",
+        )
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, DefaultContextBuilder().build(request))
+
+        self.assertIn(GovernanceDomain.GENERAL_GOVERNANCE, analysis.governance_domains)
+        self.assertIn("workspace.text.search", analysis.candidate_tools)
+        self.assertIn(IntentRiskTag.READ_ONLY, analysis.risk_tags)
+        self.assertNotIn("knowledge.rag.query", analysis.candidate_tools)
+        self.assertNotIn("workspace.file.read", analysis.candidate_tools)
+
     def test_workspace_file_write_intent_requires_approval_and_content_reference(self) -> None:
         """写 workspace 文件是状态变更，缺少内容引用时不能直接执行。"""
 

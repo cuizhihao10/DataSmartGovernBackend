@@ -246,24 +246,12 @@ class ToolPlanner:
         plans.extend(web_search_plans)
         planned_tool_names.update(plan.tool_name for plan in web_search_plans)
 
-        wants_knowledge_rag = (
-            "knowledge.rag.query" in candidate_tools
-            or bool(request.variables.get("useRag") or request.variables.get("use_rag"))
-            or bool(request.variables.get("knowledgeQuery") or request.variables.get("ragQuestion"))
-        )
-        if wants_knowledge_rag and "knowledge.rag.query" in self._tools:
-            tool = self._tools["knowledge.rag.query"]
-            plans.append(
-                self._build_plan(
-                    tool=tool,
-                    reason=(
-                        "结构化意图显示本轮需要平台内部治理知识证据。RAG 查询计划只携带低敏 queryRef、"
-                        "scopePolicy 和 evidencePolicy，真实问题正文、检索结果和模型回答由 RAG 执行器内部处理。"
-                    ),
-                    arguments=self._knowledge_rag_arguments(request),
-                )
-            )
-            planned_tool_names.add("knowledge.rag.query")
+        # RAG 与 repository text search 一样属于“模型可自主选择的检索能力”。结构化意图只负责把
+        # ``knowledge.rag.query`` 放进 model-visible tools，不能在模型返回前直接生成 ToolPlan；否则
+        # 模型即使认为当前结构化事实已经足够并选择 SKIP，规则计划仍会在合并阶段把检索补回来。
+        # 当模型确实返回 native tool call 时，``apply_model_selected_baseline`` 会再注入 queryRef、
+        # scopePolicy 和 evidencePolicy，继续保证模型不能伪造租户范围或放宽证据门槛。
+        wants_knowledge_rag = "knowledge.rag.query" in candidate_tools
 
         quality_keywords = ("quality", "rule", "校验", "质量", "规则", "异常", "清洗")
         quality_rule_action_requested = self._contains_any(
@@ -1015,6 +1003,32 @@ class ToolPlanner:
                 continue
             merged[name] = value
         return merged
+
+    def apply_model_selected_baseline(
+        self,
+        request: AgentRequest,
+        plan: ToolPlan,
+    ) -> ToolPlan:
+        """为模型已经选择的工具补入平台派生参数并重新校验。
+
+        这个方法和规则式 ``plan()`` 的职责不同：它绝不替模型新增工具，只处理模型已经通过可见性、
+        风险和预算治理的 ToolPlan。当前需要这一步的主要工具是 ``knowledge.rag.query``，因为其
+        queryRef、租户/项目 scope 和 evidencePolicy 都故意从模型 schema 中隐藏。模型只负责决定
+        SEARCH/SKIP；平台负责构造不可被模型篡改的低敏执行合同。
+
+        其他工具原样返回，避免一个通用“补参数”入口悄悄改变已有工具语义。后续新增自主检索工具时，
+        应在这里逐项声明可信基线，而不是允许模型提供 system_injected/derived 字段。
+        """
+
+        if plan.tool_name != "knowledge.rag.query":
+            return plan
+        baseline_arguments = self._knowledge_rag_arguments(request)
+        merged_arguments = self.merge_model_arguments_with_baseline(
+            plan.tool_name,
+            baseline_arguments,
+            plan.arguments,
+        )
+        return self.revalidate_plan(plan, merged_arguments)
 
     def revalidate_plan(self, plan: ToolPlan, arguments: dict[str, object]) -> ToolPlan:
         """更新工具参数后按平台注册契约重新校验计划。"""

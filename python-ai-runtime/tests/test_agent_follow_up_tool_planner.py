@@ -8,7 +8,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.config import default_model_routes, default_tool_registry
-from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ModelToolCall, ToolPlan
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ModelToolCall,
+    ToolExecutionMode,
+    ToolPlan,
+)
 from datasmart_ai_runtime.services.agent_control_plane_feedback import (
     AgentControlPlaneFeedbackItem,
     AgentControlPlaneFeedbackSnapshot,
@@ -275,7 +281,7 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
         ))
         self.assertEqual(1, result.state_guard_rejected_count)
 
-    def test_recovery_mutation_is_blocked_until_rag_evidence_succeeds(self) -> None:
+    def test_recovery_mutation_can_skip_rag_but_remains_approval_bound(self) -> None:
         parent = self._plan(ToolPlan(
             tool_name="sync.execution.diagnose",
             reason="diagnosis",
@@ -307,8 +313,12 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             ),
         )
 
-        self.assertEqual((), result.accepted_tool_plans)
-        self.assertEqual(1, result.state_guard_rejected_count)
+        self.assertEqual(1, len(result.accepted_tool_plans))
+        accepted = result.accepted_tool_plans[0]
+        self.assertEqual("sync.execution.failed-objects.retry", accepted.tool_name)
+        self.assertTrue(accepted.requires_human_approval)
+        self.assertEqual(ToolExecutionMode.APPROVAL_REQUIRED, accepted.execution_mode)
+        self.assertEqual(0, result.state_guard_rejected_count)
 
     def test_schema_apply_requires_prior_preview_and_keeps_server_reference(self) -> None:
         inherited = {

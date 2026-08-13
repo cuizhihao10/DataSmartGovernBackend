@@ -152,6 +152,13 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         assertTrue(paramsCaptor.getValue().contains("\"payloadReferenceType\":\"AGENT_PAYLOAD\""));
         assertTrue(paramsCaptor.getValue().contains("\"workerDispatchEnabled\":false"));
         assertTrue(paramsCaptor.getValue().contains("\"confirmationId\":\"approval:human-001\""));
+        assertTrue(paramsCaptor.getValue().contains("\"tenantId\":10"));
+        assertTrue(paramsCaptor.getValue().contains("\"applicationId\":7"));
+        assertTrue(paramsCaptor.getValue().contains("\"projectId\":20"));
+        assertTrue(paramsCaptor.getValue().contains("\"userId\":\"user-1001\""));
+        assertTrue(paramsCaptor.getValue().contains("\"agentId\":\"agent-recovery-001\""));
+        assertTrue(paramsCaptor.getValue().contains("\"delegationId\":\"delegation:run-proposal:001\""));
+        assertTrue(paramsCaptor.getValue().contains("\"actionFingerprint\":\"sha256:recovery-action-fingerprint\""));
         assertFalse(paramsCaptor.getValue().contains("targetEndpoint\":\"/internal"));
     }
 
@@ -249,6 +256,17 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         verifyNoInteractions(taskService);
     }
 
+    @Test
+    void controlledToolActionCommandWithoutCompleteApprovalScopeShouldBeRejectedBeforeInboxInsert() {
+        AgentAsyncTaskCommandRequest request = validControlledToolActionRequest();
+        request.setActionFingerprint(null);
+
+        assertThrows(IllegalArgumentException.class, () -> service.consume(request));
+
+        verifyNoInteractions(inboxMapper);
+        verifyNoInteractions(taskService);
+    }
+
     private AgentAsyncTaskCommandRequest validRequest() {
         AgentAsyncTaskCommandRequest request = new AgentAsyncTaskCommandRequest();
         request.setSchemaVersion(AgentAsyncTaskCommandConsumerService.SUPPORTED_SCHEMA_VERSION);
@@ -293,7 +311,12 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         request.setTenantId(10L);
         request.setProjectId(20L);
         request.setWorkspaceId(null);
+        request.setApplicationId(7L);
+        request.setUserId("user-1001");
         request.setActorId("1001");
+        request.setAgentId("agent-recovery-001");
+        request.setDelegationId("delegation:run-proposal:001");
+        request.setActionFingerprint("sha256:recovery-action-fingerprint");
         request.setTraceId("trace-tool-action-consume");
         request.setPayloadReference("agent-payload:run-proposal/datasource-metadata-read");
         request.setArgumentNames(List.of());

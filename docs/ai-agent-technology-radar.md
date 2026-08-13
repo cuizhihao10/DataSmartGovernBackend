@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-08-12 文档勘误：本轮检索与 Autopilot 的实际边界
+
+- RAG、结构化控制面查询、诊断日志摘要和 allowlist 的 repository 文本搜索是可治理、可审计的检索能力；是否调用由已获得候选工具的模型自行决定。普通规划不得用规则式 `useRag` 回填覆盖模型的跳过选择，Recovery 则将模型的 `SEARCH`/`SKIP` 以 V25 低敏投影持久化。
+- 本轮不启用 Elasticsearch、外部 Web Search 或任意 URL 抓取作为同步恢复依赖。历史章节中关于 `web.search.query` 的内容仅记录先前的 draft-only 工具契约和产品雷达，不应解读为本轮实际联网检索能力或生产闭环。
+- repository workspace 是受控 worker 的文件系统搜索根，受 allowlist、路径、符号链接、敏感文件和结果预算保护；它不是产品的 Workspace 业务层级，也不会改变 tenant/application/project 权限范围。
+- 首次授权盒内的低风险 Autopilot 仅允许当前执行器支持的 `RETRY_EXECUTION` 和 receipt-bound `APPLY_QUARANTINE`；高风险或越界建议停在审批/人工关注。恢复写动作后的 PRECHECK/MONITOR durable 复核仍待主线和真实 E2E 验证，不能由早期只读 Recovery 记录替代。
+
 ## 2026-07-04 落地补充：RAG should be a schedulable KNOWLEDGE_AGENT capability, not an isolated API
 
 - 本轮趋势校准：

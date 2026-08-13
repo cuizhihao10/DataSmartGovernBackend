@@ -54,6 +54,16 @@ public class AgentToolActionApprovalFactEvaluateRequest {
     /** 当前工具编码。 */
     private String toolCode;
 
+    /**
+     * Compatibility-only input retained while older upstream clients migrate.
+     *
+     * <p>The evaluation service ignores this caller-provided value and
+     * recalculates the fingerprint from the scope-verified action fields and
+     * the durable approval fact, preventing a model from supplying its own
+     * authorization proof.</p>
+     */
+    private String actionFingerprint;
+
     /** task-management 当前携带的策略版本快照。 */
     private String requestedPolicyVersion;
 }

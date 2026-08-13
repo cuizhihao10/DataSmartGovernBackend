@@ -178,8 +178,9 @@ class AgentSessionSchedulerTest(unittest.TestCase):
         """治理知识 RAG 场景应激活 KNOWLEDGE_AGENT，并进入 turn runner 能力合同。
 
         这个用例保护的是“RAG 不只是独立 HTTP API”：当用户请求平台内部知识问答时，智能网关应调度
-        `KNOWLEDGE_AGENT`，执行前计划应出现对应工具名，turn runner 应暴露 `knowledge.rag.query`
-        能力合同，后续 Java 控制面才能按同一合同创建 proposal、checkpoint 和 worker receipt。
+        `KNOWLEDGE_AGENT`，turn runner 应暴露 `knowledge.rag.query` 能力合同。规则层只能开放候选工具，
+        不能在模型尚未选择 SEARCH 时把 RAG 伪装成已安排的 ToolPlan；模型选择后才进入 Java proposal、
+        checkpoint 和 worker receipt。
         """
 
         raw_question = "质量规则为什么需要元数据证据"
@@ -204,7 +205,7 @@ class AgentSessionSchedulerTest(unittest.TestCase):
         serialized = str(scheduling) + str(turn_runner) + str(response["plan"]["tool_plans"])
 
         self.assertIn("KNOWLEDGE_AGENT", roles)
-        self.assertIn("knowledge.rag.query", scheduling["policyAxes"]["plannedToolNames"])
+        self.assertNotIn("knowledge.rag.query", scheduling["policyAxes"]["plannedToolNames"])
         self.assertIn("knowledge.rag.answer", scheduling["policyAxes"]["selectedSkillCodes"])
         self.assertTrue(turn_runner["capabilities"]["knowledgeRagPlanning"])
         self.assertEqual(1, turn_runner["knowledgeAgentCapabilityCount"])

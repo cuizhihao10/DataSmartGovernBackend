@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any
 from uuid import uuid4
@@ -208,11 +208,15 @@ class AgentOrchestrator:
             intent_analysis=intent_analysis,
             context_blocks=context_blocks,
         )
-        merged_tool_plans = self._merge_tool_plans(model_intent_result.model_tool_plans, rule_tool_plans)
+        model_tool_plans = tuple(
+            self._tool_planner.apply_model_selected_baseline(request, plan)
+            for plan in model_intent_result.model_tool_plans
+        )
+        merged_tool_plans = self._merge_tool_plans(model_tool_plans, rule_tool_plans)
         tool_plans = self._dag_annotator.annotate(
             self._attach_control_plane_call_ids(request_id, merged_tool_plans)
         )
-        model_tool_names = tuple(plan.tool_name for plan in model_intent_result.model_tool_plans)
+        model_tool_names = tuple(plan.tool_name for plan in model_tool_plans)
         rule_tool_names = tuple(plan.tool_name for plan in rule_tool_plans)
         final_tool_names = tuple(plan.tool_name for plan in tool_plans)
         tool_selection_source = self._tool_selection_source(model_tool_names, rule_tool_names)
@@ -226,6 +230,11 @@ class AgentOrchestrator:
                 "ruleGeneratedToolNames": rule_tool_names,
                 "finalToolCount": len(final_tool_names),
                 "finalToolNames": final_tool_names,
+                **self._retrieval_decision_summary(
+                    visible_tool_names=model_intent_result.visible_tool_names,
+                    model_tool_names=model_tool_names,
+                    invocation_summary=model_intent_result.invocation_summary,
+                ),
             },
         }
         event_recorder.record(
@@ -353,6 +362,39 @@ class AgentOrchestrator:
         if rule_tool_names:
             return "SYSTEM_RULE_FALLBACK"
         return "NO_TOOL_SELECTED"
+
+    @staticmethod
+    def _retrieval_decision_summary(
+        *,
+        visible_tool_names: tuple[str, ...],
+        model_tool_names: tuple[str, ...],
+        invocation_summary: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """记录模型是否自主选择检索，而不暴露 query、命中文本或模型思维链。
+
+        ``visible_tool_names`` 表示规则/Skill 已准入的能力，``model_tool_names`` 才是模型实际提出的
+        native tool calls。两者分开记录可以让审计明确区分“工具已开放”和“模型选择 SEARCH”。模型路由
+        不可用或 Provider 失败时返回 ``UNAVAILABLE``，不能把技术降级伪装成模型主动 SKIP。
+        """
+
+        retrieval_tools = {"knowledge.rag.query", "workspace.text.search"}
+        available = tuple(name for name in visible_tool_names if name in retrieval_tools)
+        selected = tuple(name for name in model_tool_names if name in retrieval_tools)
+        if selected:
+            decision = "SEARCH"
+        elif not available:
+            decision = "NOT_APPLICABLE"
+        elif bool(invocation_summary.get("providerSucceeded")) or bool(
+            invocation_summary.get("responseAvailable")
+        ):
+            decision = "SKIP"
+        else:
+            decision = "UNAVAILABLE"
+        return {
+            "retrievalDecision": decision,
+            "retrievalAvailableToolNames": available,
+            "retrievalSelectedToolNames": selected,
+        }
 
     def _select_skills(self, request: AgentRequest, intent_analysis: IntentAnalysis) -> AgentSkillPlan:
         """选择本次请求适用的 Skill。

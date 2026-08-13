@@ -27,6 +27,14 @@ python scripts\data-sync-mysql-to-postgresql.py --mode plan
 
 `agent_memory_*` 也不属于本批迁移对象。它们属于 Agent Runtime / AI Memory，后续应迁入 PostgreSQL `ai_memory` schema，并与 pgvector、用户画像、长期记忆和 LangGraph durable state 一起验收。
 
+## 2026-08-12 勘误：Autopilot V20-V25 是 PostgreSQL 控制面 schema，不是历史数据导入批次
+
+当前源码包含六个连续的 Autopilot PostgreSQL 增量：V20 保存 recovery case、receipt 与任务授权快照；V21 保存 Kafka trigger outbox、退避、认领和死信状态；V22 保存消费者结果摘要及 case 关联；V23 保存触发/成功收敛 sidecar 事务失败后的有界本地补偿日志；V24 保存 digest-bound quarantine 的幂等 durable receipt；V25 将模型自主的 `SEARCH`/`SKIP`、检索策略、证据计数和 evidence-ID SHA-256 digest 投影到 trigger outbox。六个版本只保存 tenant/project/task/execution 定位、状态、次数、截止时间、低敏原因码、SHA-256 摘要和必要的 selector/计数事实，不保存 prompt、SQL、凭据、日志正文、模型输出、RAG 正文/citation 正文或业务记录正文。
+
+V20-V25 不加入本批 MySQL 导出、JSONL 或 `COPY` 对账对象：当前没有对应的历史 MySQL 事实需要搬迁，现有 10 张 `data_sync_*` 表的存量迁移范围不变。部署时必须按 V20 -> V21 -> V22 -> V23 -> V24 -> V25 由目标 PostgreSQL Flyway 执行并保留版本、校验和与结果证据，不应手工建表或把这些表混入历史导入脚本。
+
+这些 schema 是受治理自动恢复的持久化基础；实际源码还包含受控 Kafka 触发、Python `SEARCH`/`SKIP` 规划、Java 证据/策略复核、失败对象重试、preview 绑定 quarantine、worker 和最终 receipt。普通同步规划只把 RAG 暴露为模型可选工具，不能由规则在模型跳过后补写检索 ToolPlan；Autopilot V25 仅记录已经通过 Java 合同校验的低敏检索投影。部署验收仍必须证明六个迁移已应用，并分别覆盖重复投递、sidecar 补偿、死信、自动低风险 retry/quarantine、高风险审批停点，以及恢复写动作后的 PRECHECK/MONITOR durable 复核；最后一项当前仍待主线接线和真实 E2E 验证。不能用表存在或单条 `AUTO_APPROVED` 代替运行证据。
+
 ## 迁移脚本能力
 
 `scripts/data-sync-mysql-to-postgresql.py` 支持五种模式：

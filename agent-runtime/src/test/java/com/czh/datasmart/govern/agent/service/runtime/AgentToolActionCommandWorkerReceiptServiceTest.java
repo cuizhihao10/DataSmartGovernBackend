@@ -283,6 +283,74 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         assertEquals(false, indexRecords.getFirst().sideEffectExecuted());
     }
 
+    /**
+     * 验证 workspace 检索工具码不会被普通自由文本脱敏规则误判。
+     *
+     * <p>工具码是受控目录标识，不是路径或用户正文。这个回归测试同时检查 timeline 和 receipt index，
+     * 因为任意一处把工具码写成 REDACTED 都会导致恢复流程无法按 commandId + toolCode 找回原始回执。</p>
+     */
+    @Test
+    void workspaceTextSearchToolCodeShouldRemainStableInTimelineAndReceiptIndex() {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore =
+                new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionWorkerReceiptIndexStore indexStore =
+                new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
+        AgentToolActionCommandWorkerReceiptService service =
+                new AgentToolActionCommandWorkerReceiptService(
+                        projectionStore,
+                        new AgentToolActionWorkerReceiptIndexService(indexStore),
+                        leaseService()
+                );
+
+        service.receive(
+                "session-text-search-001",
+                "run-text-search-001",
+                "trace-text-search-001",
+                workspaceTextSearchCompletedRequest("workspace.text.search")
+        );
+
+        AgentRuntimeEventProjectionRecord record =
+                projectionStore.listByRunId("run-text-search-001").getFirst();
+        assertEquals("workspace.text.search", record.attributes().get("toolCode"));
+
+        List<AgentToolActionWorkerReceiptIndexRecord> indexRecords = indexStore.queryByCommandId(
+                new AgentToolActionWorkerReceiptIndexQuery(
+                        "cmd-text-search-001",
+                        "workspace.text.search",
+                        "10",
+                        "20",
+                        "30",
+                        "run-text-search-001",
+                        "session-text-search-001",
+                        List.of("20"),
+                        10
+                )
+        );
+        assertEquals(1, indexRecords.size());
+        assertEquals("workspace.text.search", indexRecords.getFirst().toolCode());
+    }
+
+    /**
+     * 非枚举式工具码必须被拒绝，不能借工具码字段绕过自由文本和密钥保护边界。
+     */
+    @Test
+    void invalidToolCodeShouldBeRejectedInsteadOfEnteringTimeline() {
+        AgentToolActionCommandWorkerReceiptService service =
+                new AgentToolActionCommandWorkerReceiptService(
+                        new InMemoryAgentRuntimeEventProjectionStore(10, 100)
+                );
+
+        assertThrows(
+                PlatformBusinessException.class,
+                () -> service.receive(
+                        "session-text-search-001",
+                        "run-text-search-001",
+                        "trace-text-search-001",
+                        workspaceTextSearchCompletedRequest("workspace.text.search bearer secret")
+                )
+        );
+    }
+
     @Test
     void sensitiveMessageShouldBeRejectedBeforeEnteringTimeline() {
         AgentCommandWorkerLeaseService leaseService = leaseService();
@@ -412,6 +480,52 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 null,
                 List.of("通过 artifact grant 读取答案正文。"),
                 "rag-worker:run-rag-001:cmd-rag-001"
+        );
+    }
+
+    /**
+     * 构造只读 workspace 文本检索完成回执。
+     *
+     * <p>该工具不产生文件、数据库或网络副作用，因此不需要 worker lease，且三个副作用标志都必须为 false。
+     * 测试只改变 toolCode，便于分别验证合法目录编码和恶意自由文本。</p>
+     *
+     * @param toolCode 待验证的工具编码
+     * @return 可直接交给回执服务的只读 worker 请求
+     */
+    private AgentToolActionCommandWorkerReceiptRequest workspaceTextSearchCompletedRequest(String toolCode) {
+        return new AgentToolActionCommandWorkerReceiptRequest(
+                "cmd-text-search-001",
+                null,
+                null,
+                "python-text-search-worker",
+                10L,
+                20L,
+                30L,
+                "SUCCEEDED",
+                "WORKSPACE_TEXT_SEARCH_COMPLETED",
+                true,
+                false,
+                false,
+                false,
+                null,
+                null,
+                null,
+                "ALLOW_READ_ONLY_TEXT_SEARCH",
+                "text-search-policy.v1",
+                List.of(),
+                0,
+                4096,
+                null,
+                null,
+                false,
+                "AGENT_WORKSPACE_TEXT_SEARCH_COMPLETED",
+                "text-search:sha256:abcdef123456",
+                toolCode,
+                "python-ai-runtime-text-search",
+                "READ_ONLY_TEXT_SEARCH_SUMMARY",
+                "Read-only text search completed.",
+                List.of("Use the matched relative reference only when more context is required."),
+                "text-search:run-text-search-001:cmd-text-search-001:abcdef123456"
         );
     }
 

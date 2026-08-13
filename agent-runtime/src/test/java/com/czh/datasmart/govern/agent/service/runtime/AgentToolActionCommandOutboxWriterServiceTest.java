@@ -70,6 +70,7 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         assertTrue(record.payloadJson().contains("\"auditId\":\"" + record.auditId() + "\""));
         assertTrue(record.payloadJson().contains("\"toolCode\":\"datasource.metadata.read\""));
         assertTrue(record.payloadJson().contains("\"targetService\":\"agent-runtime\""));
+        assertTrue(record.payloadJson().contains("\"applicationId\":40"));
         assertTrue(record.payloadJson().contains("\"source\":\"TOOL_ACTION_COMMAND_PROPOSAL\""));
         assertTrue(record.payloadJson().contains("\"payloadReferenceVerificationStatus\":\"VERIFIED\""));
         assertTrue(record.payloadJson().contains("AGENT_PAYLOAD_RECORD_FOUND"));
@@ -456,6 +457,7 @@ class AgentToolActionCommandOutboxWriterServiceTest {
     private AgentRuntimeEventQueryAccessContext projectOwnerContext() {
         return new AgentRuntimeEventQueryAccessContext(
                 10L,
+                40L,
                 1001L,
                 "PROJECT_OWNER",
                 "trace-tool-action-outbox-writer-test",

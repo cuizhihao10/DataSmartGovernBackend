@@ -283,6 +283,61 @@ class DataSyncSpecialistAgentTest(unittest.TestCase):
         self.assertIsNone(source_request.schema_pattern)
         self.assertEqual("public", target_request.schema_pattern)
 
+    def test_mysql_source_rejects_postgresql_schema_but_accepts_schema_less_object(self) -> None:
+        """跨数据库映射不能把 PostgreSQL schema 误用成 MySQL 对象命名空间。
+
+        MySQL JDBC 元数据把当前 database 暴露为 catalog，表对象本身通常没有 ``schemaName``；
+        PostgreSQL 则使用真实 schema。若页面或 E2E 把目标端 schema 复制到源端，Agent 必须返回
+        ``WAITING_FOR_INPUT``，不能仅凭表名猜中后继续创建任务。用户删除错误的源 schema 后，
+        同一份真实元数据应当通过校验，并只在两端实际存在的字段交集上生成默认映射。
+        """
+
+        source_metadata = _metadata(None, "datasmart_e2e_platform_orders")
+        target_metadata = _metadata("datasmart_e2e", "orders_platform_clean")
+        configuration = _full_configuration()
+        configuration["objectMappings"] = [
+            {
+                "sourceSchemaName": "datasmart_e2e",
+                "sourceObjectName": "datasmart_e2e_platform_orders",
+                "targetSchemaName": "datasmart_e2e",
+                "targetObjectName": "orders_platform_clean",
+            }
+        ]
+
+        invalid_result = DataSyncSpecialistAgent(
+            _PlanningModel(SyncPlanningModelOutput(configuration=configuration))
+        ).execute(
+            _request(
+                context={
+                    "sourceMetadata": source_metadata,
+                    "targetMetadata": target_metadata,
+                }
+            )
+        )
+
+        self.assertEqual(SpecialistTurnStatus.WAITING_FOR_INPUT, invalid_result.status)
+        self.assertIn("sourceTableMetadata", invalid_result.required_input_fields)
+        self.assertIn(
+            "SOURCE_TABLE_METADATA_REQUIRED",
+            invalid_result.structured_output["validationIssueCodes"],
+        )
+
+        configuration["objectMappings"][0]["sourceSchemaName"] = ""
+        valid_result = DataSyncSpecialistAgent(
+            _PlanningModel(SyncPlanningModelOutput(configuration=configuration))
+        ).execute(
+            _request(
+                context={
+                    "sourceMetadata": source_metadata,
+                    "targetMetadata": target_metadata,
+                }
+            )
+        )
+
+        self.assertEqual(SpecialistTurnStatus.COMPLETED, valid_result.status)
+        self.assertIsNone(valid_result.structured_output["objectMappings"][0]["sourceSchemaName"])
+        self.assertTrue(valid_result.structured_output["objectMappings"][0]["fieldMappings"])
+
     def test_realtime_without_write_strategy_defaults_to_merge_semantics(self) -> None:
         configuration = _full_configuration()
         configuration["syncMode"] = "REAL_TIME"
@@ -683,6 +738,12 @@ class DataSyncSpecialistAgentTest(unittest.TestCase):
 
         self.assertEqual(SpecialistTurnStatus.FAILED, result.status)
         self.assertEqual("DATA_SYNC_SPECIALIST_SIDE_EFFECT_REJECTED", result.error_code)
+        self.assertEqual(
+            ("taskid", "publish"),
+            result.structured_output["activeConfigurationControlFields"],
+        )
+        self.assertEqual(2, result.structured_output["quarantinedConfigurationFieldCount"])
+        self.assertNotIn("9001", str(result.structured_output))
         self.assertFalse(result.structured_output["persisted"])
         self.assertFalse(result.structured_output["published"])
         self.assertFalse(result.structured_output["executed"])
@@ -725,6 +786,62 @@ class DataSyncSpecialistAgentTest(unittest.TestCase):
         self.assertFalse(result.structured_output["persisted"])
         self.assertFalse(result.structured_output["published"])
         self.assertFalse(result.structured_output["executed"])
+
+    def test_quarantines_inactive_execution_summary_without_blocking_valid_draft(self) -> None:
+        """模型把“尚未执行”包装成 execution 摘要时，不应阻断合法同步草案。
+
+        通用 Provider 有时会把 system instruction 的边界说明结构化为对象，而不是返回单个
+        ``executed: false``。该摘要不具备任何业务能力，最终配置白名单也不会复制它；本测试
+        确保这种兼容处理不会放宽真正的执行权限。
+        """
+
+        configuration = _full_configuration()
+        configuration["execution"] = {
+            "status": "NOT_STARTED",
+            "taskId": None,
+            "executionId": None,
+            "executed": False,
+            "summary": "planning only",
+        }
+        model = _PlanningModel(SyncPlanningModelOutput(configuration=configuration))
+
+        result = DataSyncSpecialistAgent(model).execute(
+            _request(
+                context={
+                    "sourceMetadata": _metadata(None, "customer"),
+                    "targetMetadata": _metadata("public", "customer"),
+                }
+            )
+        )
+
+        self.assertEqual(SpecialistTurnStatus.COMPLETED, result.status)
+        self.assertIsNone(result.error_code)
+        self.assertEqual(1, result.structured_output["quarantinedConfigurationFieldCount"])
+        self.assertIn(
+            "MODEL_INACTIVE_SIDE_EFFECT_FIELDS_QUARANTINED",
+            result.structured_output["modelGovernanceIssueCodes"],
+        )
+        self.assertNotIn("execution", result.structured_output)
+        self.assertFalse(result.structured_output["executed"])
+
+    def test_rejects_active_execution_summary_even_when_nested(self) -> None:
+        """execution 摘要包含运行状态或真实 ID 时，仍必须保持 fail-closed。"""
+
+        configuration = _full_configuration()
+        configuration["metadata"] = {
+            "execution": {
+                "status": "RUNNING",
+                "executionId": "9001",
+            }
+        }
+        model = _PlanningModel(SyncPlanningModelOutput(configuration=configuration))
+
+        result = DataSyncSpecialistAgent(model).execute(_request())
+
+        self.assertEqual(SpecialistTurnStatus.FAILED, result.status)
+        self.assertEqual("DATA_SYNC_SPECIALIST_SIDE_EFFECT_REJECTED", result.error_code)
+        self.assertEqual(("execution",), result.structured_output["activeConfigurationControlFields"])
+        self.assertNotIn("9001", str(result.structured_output))
 
     def test_discovers_both_metadata_sides_from_datasource_dependency_and_emits_activities(self) -> None:
         """无预加载元数据时，DATA_SYNC_AGENT 必须先读取双方真实结构再做同名映射。"""

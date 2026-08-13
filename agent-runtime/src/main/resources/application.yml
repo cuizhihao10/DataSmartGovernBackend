@@ -76,6 +76,13 @@ datasmart:
       # 这里只允许触发 LOW + 只读 + 幂等工具的受控自动执行，不授予审批、任意写入或跨会话权限。
       allowed-automated-execution-source-services:
         - python-ai-runtime
+    control-plane-ingress:
+      # 单模块源码测试默认关闭，避免让学习期 Controller/Service 测试依赖部署 secret。Compose 和生产必须显式打开。
+      # 打开但未注入 token 时，Filter 会对 /agent-runtime/** 与兼容 /api/agent/** 路径 fail-closed。
+      enabled: ${DATASMART_AGENT_RUNTIME_CONTROL_PLANE_INGRESS_ENABLED:false}
+      # Gateway 会先移除浏览器传入的同名 Header，再注入该部署级 secret。它证明请求经过可信入口，
+      # 不替代 tenant/project/actor 的对象级授权，也不应写入日志、审计或响应。
+      shared-token: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:}
     service-authorization:
       # Agent 工具服务间授权预检开关。
       # 默认关闭是为了保证本地学习环境不强依赖 permission-admin；关闭时 DAG preview 会返回 NOT_EVALUATED，
@@ -279,6 +286,20 @@ datasmart:
         max-events-per-run: 1000
         # 当前 JVM 内所有 runtime event 投影的总上限，用于防止重放或事件风暴打满内存。
         max-total-events: 10000
+    autopilot-recovery:
+      kafka:
+        # 默认关闭，避免本地缺少 Kafka/Python/data-sync 时监听器反复重连。生产开启前必须同时确认：
+        # 1. data-sync durable trigger outbox 已启用；2. 两端 topic 一致；3. 内部服务令牌已配置；
+        # 4. Agent session store 与 LangGraph checkpointer 使用 PostgreSQL 持久实现。
+        enabled: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED:false}
+        topic: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_TOPIC:datasmart.agent.autopilot-recovery-trigger.v1}
+        group-id: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_GROUP_ID:datasmart-agent-autopilot-recovery}
+        # 仅供 Autopilot trigger listener 的 @RetryableTopic 使用；attempts 包含首次消费。
+        # 失败消息依次进入带 delay 的 retry topic，耗尽后进入原 topic 加 -autopilot-recovery-dlt 后缀的 DLT，
+        # 不会改变 runtime-events 或其他 Kafka listener 的错误处理策略。
+        retry-attempts: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_RETRY_ATTEMPTS:3}
+        retry-delay-ms: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_RETRY_DELAY_MS:1000}
+        retry-max-delay-ms: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_RETRY_MAX_DELAY_MS:5000}
       skill-visibility-index:
         # Skill 可见性快照专用索引。
         # 通用 runtime event projection 负责所有事件的热窗口和 replay；专用索引只保存
@@ -413,6 +434,9 @@ datasmart:
         # 默认不启用后台 dispatcher，避免本地没有 task-management 或 Kafka 时误投递。
         # 联调时可先调用 /async-task-commands/outbox/dispatch-once 手动投递一轮。
         dispatcher-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED:false}
+        # 可选工具码白名单。空值保持历史全量语义；完整 Compose 只开放已经完成鉴权、只读挂载和回执闭环的
+        # workspace.text.search，避免启动后台轮询时误派发数据库中的其他历史命令。
+        dispatcher-allowed-tool-codes: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ALLOWED_TOOL_CODES:}
         dispatcher-initial-delay-ms: 10000
         dispatcher-fixed-delay-ms: 5000
         dispatcher-batch-size: 20
@@ -440,6 +464,18 @@ datasmart:
         dispatcher-http-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_HTTP_ENABLED:false}
         task-management-consume-url: ${DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL:http://localhost:8081/internal/agent-async-task-commands/consume}
         dispatcher-http-timeout-ms: 3000
+    workspace-text-search-worker:
+      # 受控代码仓库精确检索 Worker。单模块开发默认关闭，完整 Compose 才显式打开。
+      enabled: ${DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_ENABLED:false}
+      base-url: ${DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_BASE_URL:http://localhost:8090}
+      run-path: ${DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_RUN_PATH:/internal/agent/workspace-text/command-worker/run}
+      connect-timeout-ms: ${DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_CONNECT_TIMEOUT_MS:1500}
+      read-timeout-ms: ${DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_READ_TIMEOUT_MS:15000}
+      # 真实路径只能来自部署配置，模型只能提供 literal query 和相对范围。当前自治恢复主路径默认检索 Backend；
+      # Python 同时只读挂载 Frontend，后续可通过独立受控 repository registry 扩展多仓库路由，禁止回退到进程目录。
+      repository-root: ${DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_REPOSITORY_ROOT:}
+      # 专用服务令牌必须由 Secret Manager/Compose/Kubernetes 同时注入 Java 与 Python，空值时 fail-closed。
+      service-account-token: ${DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_SERVICE_TOKEN:}
     mcp-durable-worker:
       # Java agent-runtime -> Python Runtime MCP Durable Worker 的内部调用开关。
       # 默认关闭，避免只启动 Java 控制面时因为 Python Runtime 未启动而失败；完整 Compose/E2E 环境会通过环境变量显式打开。
@@ -1931,6 +1967,69 @@ datasmart:
             description: 由系统生成的证据数量、匹配强度、无证据失败关闭和引用约束。
             sensitive: false
             resolution: DERIVED
+      # 该工具码中的 workspace 仅沿用 Agent 文件工具族的历史命名，表示受控代码仓库挂载，
+      # 不是产品中的业务 Workspace 层级。业务范围仍由 tenantId + applicationId + projectId 约束。
+      "[workspace.text.search]":
+        enabled: true
+        tool-code: workspace.text.search
+        tool-type: KNOWLEDGE_RETRIEVAL
+        display-name: 受控代码仓库精确检索
+        description: 在服务端只读挂载的代码仓库中执行有预算的 literal 文本检索；模型只能选择查询词和相对范围，真实仓库根目录与引用由 Java 执行边界注入。
+        target-service: python-ai-runtime
+        target-endpoint: /internal/agent/workspace-text/command-worker/run
+        read-only: true
+        risk-level: MEDIUM
+        execution-mode: ASYNC_TASK
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: NONE
+        cache-policy: SESSION_ONLY
+        timeout-ms: 15000
+        max-retries: 2
+        allowed-actions:
+          - SEARCH_TEXT_LITERAL
+        input-schema:
+          - name: repositoryReference
+            type: string
+            required: true
+            description: Java 根据持久化会话范围与服务端只读挂载生成的低敏仓库引用；模型、浏览器和 Python 请求参数都不能指定真实根目录。
+            sensitive: false
+            resolution: SYSTEM_INJECTED
+          - name: query
+            type: string
+            required: true
+            description: 单行 literal 查询词；执行器限制长度、拒绝换行与 NUL，不执行 regex、shell 或网络访问。
+            # query 只作为短生命周期执行参数存在，正式 outbox 和回执仅保存引用/摘要；若将其标成需人工确认的
+            # sensitive 参数，会破坏授权盒内无人值守只读诊断，因此这里按低敏受控检索字段处理。
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: relativePathPrefix
+            type: string
+            required: false
+            description: 可选的仓库相对目录或文件范围；执行器拒绝绝对路径、父目录跳转、隐藏凭据路径和符号链接。
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: caseSensitive
+            type: boolean
+            required: false
+            description: 是否区分大小写；为空时采用执行器的受控默认值。
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: searchMode
+            type: string
+            required: false
+            description: 检索模式；当前只接受 LITERAL，禁止模型切换到 regex 或 shell。
+            example: LITERAL
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: maxResults
+            type: integer
+            required: false
+            description: 模型希望返回的最大命中数；Python 仍会按服务端硬预算向下收口。
+            sensitive: false
+            resolution: USER_REQUIRED
       "[task.create.draft]":
         enabled: true
         tool-code: task.create.draft

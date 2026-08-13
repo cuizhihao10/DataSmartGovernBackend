@@ -238,6 +238,12 @@ public class SyncTaskDefinition {
     private String retryPolicy;
 
     /**
+     * Low-sensitive authorization snapshot for unattended recovery. It is
+     * created only at initial Agent confirmation and is never model-editable.
+     */
+    private String autopilotPolicy;
+
+    /**
      * 超时策略 JSON。
      * 例如单批读取超时、整体执行超时、目标写入超时。
      */

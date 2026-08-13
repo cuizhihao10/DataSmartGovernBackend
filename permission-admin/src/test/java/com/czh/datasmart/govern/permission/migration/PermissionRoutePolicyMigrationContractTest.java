@@ -167,6 +167,51 @@ class PermissionRoutePolicyMigrationContractTest {
                 .doesNotContain("'/api/agent/langgraph/checkpoints/fork'");
     }
 
+    /**
+     * 历史工具码 {@code workspace.text.search} 的业务语义是仓库文本检索，必须登记为独立权限码。
+     *
+     * <p>该回归用例同时固定三条容易在后续迁移中被误改的边界：策略复用现有 {@code AI_RUNTIME}
+     * 数据范围、只开放给交互式普通用户和项目负责人，以及发生唯一键冲突时保留管理员已调整的策略。
+     * 这样工具显示名或实现位置改变时，权限码仍可作为稳定的控制面契约。</p>
+     */
+    @Test
+    void repositoryTextSearchPermissionUsesExactCodeAndNeverOverwritesExistingPolicies() throws IOException {
+        String sql = Files.readString(MIGRATION_DIRECTORY.resolve(
+                "V54__repository_text_search_agent_permission_policy.sql"));
+
+        assertThat(sql)
+                .contains("workspace.text.search")
+                .contains("agent:repository-text:search")
+                .contains("'/internal/agent-runtime/tools/repository-text/search'")
+                .contains("'AI_RUNTIME'")
+                .contains("'ORDINARY_USER'")
+                .contains("'PROJECT_OWNER'")
+                .contains("WHERE NOT EXISTS")
+                .contains("ON CONFLICT DO NOTHING")
+                .doesNotContain("DO UPDATE")
+                .doesNotContain("DELETE FROM")
+                .doesNotContain("workspace_id")
+                .doesNotContain("WORKSPACE");
+    }
+
+    /** Autopilot recovery status is an execution VIEW contract, never a callback or recovery mutation. */
+    @Test
+    void autopilotRecoveryStatusRouteIsExplicitlyReadOnly() throws IOException {
+        String sql = Files.readString(MIGRATION_DIRECTORY.resolve(
+                "V55__data_sync_autopilot_recovery_status_route_policy.sql"));
+
+        assertThat(sql)
+                .contains("'/api/sync/sync-tasks/*/executions/*/autopilot-recovery'")
+                .contains("'SYNC_EXECUTION'")
+                .contains("'VIEW'")
+                .contains("'PROJECT_OWNER'")
+                .contains("'OPERATOR'")
+                .contains("'AUDITOR'")
+                .contains("'TENANT_ADMINISTRATOR'")
+                .doesNotContain("'RECOVER'")
+                .doesNotContain("'CALLBACK'");
+    }
+
     private boolean containsLegacyRoutePolicyColumn(Path path) {
         try {
             String sql = Files.readString(path);

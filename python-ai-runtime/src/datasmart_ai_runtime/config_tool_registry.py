@@ -874,6 +874,71 @@ def default_tool_registry() -> tuple[ToolDefinition, ...]:
             cache_policy="session_only",
         ),
         ToolDefinition(
+            name="workspace.text.search",
+            description=(
+                "在受控 Agent 代码仓库挂载内执行本地 literal 精确文本检索。这里的 workspace 仅是工具族历史名称，"
+                "不是产品业务层级；真实 repository root 由执行器注入。工具不会执行 shell、不会联网、不会跟随符号链接，也不会使用 regex。"
+                "结果只返回命中的相对路径、行号、短片段及 path/content 摘要，并受文件类型、文件数、字节、行长和命中数预算约束。"
+            ),
+            risk_level=ToolRiskLevel.MEDIUM,
+            execution_mode=ToolExecutionMode.ASYNC_TASK,
+            required_permissions=("agent:repository-text:search",),
+            target_service="python-ai-runtime",
+            target_endpoint="internal://workspace-text/search",
+            input_schema={
+                "repositoryReference": {
+                    "type": "string",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "system_injected",
+                    "description": "受控代码仓库挂载的低敏引用；真实 root 只能由受控执行器解析，模型不可提供。",
+                },
+                "query": {
+                    "type": "string",
+                    "required": True,
+                    "sensitive": True,
+                    "resolution": "model_required",
+                    "description": "不超过服务端硬上限的单行 literal 查询。当前不支持 regex，不能传入文件正文、命令或凭据。",
+                },
+                "relativePathPrefix": {
+                    "type": "string",
+                    "required": False,
+                    "sensitive": True,
+                    "resolution": "model_optional",
+                    "description": "可选 repository 相对目录或单文件范围；执行器会拒绝绝对路径、..、隐藏路径、凭据路径和符号链接。",
+                },
+                "caseSensitive": {
+                    "type": "boolean",
+                    "required": False,
+                    "sensitive": False,
+                    "resolution": "model_optional",
+                    "description": "是否区分大小写；未提供时执行器使用 literal 精确匹配默认值。",
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "required": False,
+                    "sensitive": False,
+                    "resolution": "model_optional",
+                    "description": "希望返回的最大命中行数；服务端会进一步压缩到不可放大的硬上限。",
+                },
+            },
+            output_schema={
+                "searchSummary": {
+                    "type": "object",
+                    "description": "仅包含 relativePath、lineNumber、短 snippet、pathDigest、contentSha256 和预算摘要；不含绝对路径、query 或文件正文。",
+                }
+            },
+            read_only=True,
+            idempotent=True,
+            allowed_actions=("SEARCH_TEXT_LITERAL",),
+            tool_type="AGENT_WORKSPACE_TEXT_SEARCH",
+            tenant_scoped=True,
+            project_scoped=True,
+            sensitive_fields=("query", "relativePathPrefix"),
+            memory_write_policy="none",
+            cache_policy="session_only",
+        ),
+        ToolDefinition(
             name="knowledge.rag.query",
             description=(
                 "执行受控治理知识 RAG 查询。该工具只接收 queryRef、scopePolicy、evidencePolicy 等低敏引用，"

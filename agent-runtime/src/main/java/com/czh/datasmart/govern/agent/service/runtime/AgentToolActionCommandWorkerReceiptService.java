@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 受控命令 worker 回执接收服务。
@@ -49,6 +50,10 @@ public class AgentToolActionCommandWorkerReceiptService {
     private static final int MAX_ACTION_COUNT = 6;
     private static final int MAX_ACTION_LENGTH = 240;
     private static final int MAX_ISSUE_CODE_COUNT = 12;
+    private static final int MAX_TOOL_CODE_LENGTH = 160;
+    private static final Pattern TOOL_CODE_PATTERN = Pattern.compile(
+            "^[A-Za-z][A-Za-z0-9]*(?:[._-][A-Za-z0-9]+)*$"
+    );
 
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentToolActionWorkerReceiptIndexService receiptIndexService;
@@ -210,7 +215,7 @@ public class AgentToolActionCommandWorkerReceiptService {
         attributes.put("artifactAvailable", Boolean.TRUE.equals(request.artifactAvailable()));
         attributes.put("errorCode", safeShortText(request.errorCode(), errorCode(outcome), 160));
         attributes.put("auditId", safeShortText(request.auditId(), null, 200));
-        attributes.put("toolCode", safeShortText(request.toolCode(), null, 160));
+        attributes.put("toolCode", safeToolCode(request.toolCode()));
         attributes.put("targetService", safeShortText(request.targetService(), null, 120));
         attributes.put("workerReceiptMode", safeShortText(request.workerReceiptMode(), mode(outcome), 120));
         attributes.put("message", message);
@@ -442,6 +447,36 @@ public class AgentToolActionCommandWorkerReceiptService {
             return fallback == null ? "REDACTED_SENSITIVE_TEXT" : fallback;
         }
         return text.length() <= maxLength ? text : text.substring(0, maxLength);
+    }
+
+    /**
+     * 校验并返回可以写入控制面的工具编码。
+     *
+     * <p>普通自由文本仍然交给 {@link #looksSensitive(String)} 检查，因为消息、建议动作等字段可能携带路径、
+     * token 或命令输出。但 {@code toolCode} 是类似枚举的目录标识，例如 {@code knowledge.rag.query}、
+     * {@code command.run-program} 和 {@code workspace.text.search}。如果继续复用自由文本规则，合法的
+     * {@code workspace.text.search} 会因为包含单词 workspace 而被误删。</p>
+     *
+     * <p>这里没有放宽自由文本边界，而是为工具编码建立更窄的格式白名单：只能由字母开头，后续只能使用
+     * 字母、数字以及用于分段的点、下划线和短横线；不允许空格、斜杠、冒号、URL、换行或任意正文。
+     * 格式不合法时直接拒绝整条回执，避免把无法与工具目录稳定关联的数据写入 timeline 和 receipt index。</p>
+     *
+     * @param value worker 回执声明的工具编码；允许为空以兼容没有工具编码的历史低敏回执
+     * @return 去除首尾空白后的合法工具编码；输入为空时返回 {@code null}
+     * @throws PlatformBusinessException 工具编码超过长度限制或不符合枚举式格式时抛出
+     */
+    private String safeToolCode(String value) {
+        String toolCode = trimToNull(value);
+        if (toolCode == null) {
+            return null;
+        }
+        if (toolCode.length() > MAX_TOOL_CODE_LENGTH || !TOOL_CODE_PATTERN.matcher(toolCode).matches()) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.BAD_REQUEST,
+                    "受控命令 worker 回执字段 toolCode 不是合法的工具目录编码"
+            );
+        }
+        return toolCode;
     }
 
     private String trimToNull(String value) {

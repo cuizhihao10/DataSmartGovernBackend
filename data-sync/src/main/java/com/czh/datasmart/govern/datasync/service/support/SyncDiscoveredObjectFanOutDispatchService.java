@@ -408,6 +408,7 @@ public class SyncDiscoveredObjectFanOutDispatchService {
         copy.setCustomSqlConfig(definition.getCustomSqlConfig());
         copy.setPartitionConfig(definition.getPartitionConfig());
         copy.setRetryPolicy(definition.getRetryPolicy());
+        copy.setAutopilotPolicy(definition.getAutopilotPolicy());
         copy.setTimeoutPolicy(definition.getTimeoutPolicy());
         copy.setEnabled(definition.getEnabled());
         copy.setCreatedBy(definition.getCreatedBy());

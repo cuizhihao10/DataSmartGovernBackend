@@ -15,7 +15,13 @@ from typing import Any, Mapping
 import pytest
 
 from datasmart_ai_runtime.config import default_tool_registry
-from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ToolExecutionMode,
+    ToolPlan,
+    ToolRiskLevel,
+)
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
 from datasmart_ai_runtime.services.agent_control_plane_feedback import (
     AgentControlPlaneFeedbackItem,
@@ -703,7 +709,10 @@ def test_recovery_explicitly_delegates_only_generated_registered_read_only_previ
         tool.name
         for tool in bridge._follow_up.visible_tools(request, plan)
     }
-    assert RECOVERY_MINIMAL_READ_ONLY_DELEGATION_TOOL_NAMES.isdisjoint(baseline_names)
+    # RAG is already visible in this fixture; the preview delegation test only
+    # requires that no unrelated recovery preview leaked into the parent frontier.
+    preview_only_names = RECOVERY_MINIMAL_READ_ONLY_DELEGATION_TOOL_NAMES - {"sync.execution.rag.lookup"}
+    assert preview_only_names.isdisjoint(baseline_names)
 
     result = bridge.bridge(
         request=request,
@@ -720,6 +729,28 @@ def test_recovery_explicitly_delegates_only_generated_registered_read_only_previ
     assert "datasource.schema.repair.preview" not in result.visible_tool_names
     assert "sync.dirty-record.quarantine.apply" not in result.visible_tool_names
     assert "datasource.schema.repair.apply" not in result.visible_tool_names
+
+
+def test_recovery_model_search_decision_bridges_only_read_only_rag_lookup() -> None:
+    """A model SEARCH decision becomes one scoped RAG lookup, never a repair mutation."""
+
+    request = _request()
+    result = _bridge().bridge(
+        request=request,
+        plan=_plan_without_recovery_preview_tools(request),
+        specialist_result=_recovery_result("SEARCH_RECOVERY_KNOWLEDGE"),
+        control_plane_feedback=_diagnosis_feedback(include_rag=False),
+    )
+
+    assert result.status is SpecialistBridgeStatus.ACCEPTED
+    assert tuple(item.tool_name for item in result.accepted_tool_plans) == (
+        "sync.execution.rag.lookup",
+    )
+    rag_plan = result.accepted_tool_plans[0]
+    assert rag_plan.risk_level is ToolRiskLevel.LOW
+    assert rag_plan.execution_mode is ToolExecutionMode.SYNC
+    assert rag_plan.requires_human_approval is False
+    assert rag_plan.arguments["diagnosisRef"]["fromTool"] == "sync.execution.diagnose"
 
 
 def test_recovery_delegates_each_explicit_complete_read_only_preview_without_parent_prediction() -> None:

@@ -27,6 +27,15 @@ import java.util.List;
 public class SyncObjectRetryRequest {
 
     /**
+     * 可选：本次控制面重试的幂等键。
+     *
+     * <p>人工页面可以不传，保持原有一次性操作语义；Agent Autopilot 必须传入稳定 eventId。
+     * data-sync 会把该键与 tenant/task/execution 范围共同持久化。若 HTTP 响应在服务端提交后丢失，
+     * 调用方使用同一键重试时会收到首次成功结果，而不会再次重置对象或重复写入审计。</p>
+     */
+    private String idempotencyKey;
+
+    /**
      * 可选：按对象级账本主键精确选择要重试的失败对象。
      */
     private List<Long> objectExecutionIds;

@@ -156,3 +156,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 本文件前文的角色名册、源码行数和测试计数是 2026-07 冻结批次的历史证据，不应再被当作当前工作区统计。后续双仓迁移复核以当前六 Specialist roster（`KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`）及其 Java bridge 边界为准；长期八 Agent 描述仍是产品路线，不是当前验收名册。
 
 2026-08-10 当前复验结果为 Python Runtime `1099 passed`（一条弃用警告）、JDK 21 Maven Reactor `1323 tests / 0 failures / 0 errors / 9 skipped`，Frontend 6 个合同脚本、lint 和 build 全部通过。真实 Success `six-agent-success-type-normalized-20260810112629` 与 Recovery `six-agent-recovery-rag-durable-20260810214832` 均通过脚本门禁；Recovery 的独立数据库审计确认没有审批、提交、异步命令或恢复副作用。该本地黑盒结论不改变第 7 节第 4 条：生产上线仍必须补客户环境、Secret 轮换、备份恢复、容量、故障演练和供应链证据。
+
+## 9. 2026-08-12 当前工作树勘误
+
+本节覆盖前文的历史冻结口径，不删除其历史证据。当前工作树新增了 Autopilot 恢复控制面 V20-V25、Kafka 触发/消费、Python Recovery 规划和受限 Java/data-sync 执行分支；V25 只保存模型 `SEARCH`/`SKIP`、策略、证据计数和 evidence-ID digest，不保存 RAG 正文或模型推理。当前普通规划也已将 RAG 改为模型可见、模型按需调用的工具，不能由规则回填成强制计划。
+
+但本审计不能宣布“全流程无人值守恢复已完成”：当前 Python `AutopilotRecoveryCoordinator` 没有在恢复写动作完成后调用 `PRECHECK_AGENT` 或 `MONITOR_AGENT`。2026-08-10 的历史 Recovery E2E 已验证只读 preview 后的后置复核，却没有产生 Autopilot 写副作用。主线必须先补 durable post-action finalization，再以 V20-V25 Flyway、Kafka、Python Provider、worker receipt、PRECHECK/MONITOR fact、指标告警和高风险审批停点的真实 E2E 重做结论。
+
+## 10. 2026-08-13 当前复核勘误
+
+上述第 9 节记录的是 2026-08-12 的审计快照。本轮已经补齐 Recovery 写动作后的 durable post-action finalization，并以 checkpoint、turn ID 和 Java durable fact sink 保证 Specialist 事实登记、终态重放与失败传播的幂等边界。普通规划仍由模型自主选择 RAG `SEARCH`/`SKIP`，Recovery 仍强制检索；Python 不直接写 data-sync，恢复执行继续由 Java/data-sync 双策略和授权盒子控制。
+
+2026-08-13 验证结果：Python 全量 `1162 passed, 1 skipped`，Recovery 聚焦 `24 passed`；JDK 21 的 `agent-runtime`/`data-sync` 编译成功；Frontend lint、build、API/WebSocket 与 Agent 控制面合同测试通过；最新 `data-sync`、`agent-runtime`、`python-ai-runtime` 容器 healthy，Kafka Autopilot 主 topic、retry-1000、retry-2000 和 DLT consumer 已启动。durable fact 缺失的 HTTP 503、Kafka 不 ACK、有界重试/DLT、terminal checkpoint 重放和 post-recovery PRECHECK/MONITOR 投影均有回归覆盖。
+
+仍不能把本轮证据扩大为“客户生产环境真实恢复已验收”：宿主机没有 `DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD`，真实 project-owner 授权后的 `-Execute -ConfirmAndExecute -EnableAutopilot` 写动作未运行。真实环境仍需验证 V20-V25 Flyway、Kafka 消费/重投递、Provider/RAG、worker receipt、低风险自动 retry/quarantine、高风险审批停点、重复投递/过期授权/Provider 失败、补偿、指标告警和备份恢复。默认高风险与真实副作用开关继续保持受控关闭。

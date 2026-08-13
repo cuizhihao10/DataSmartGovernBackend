@@ -13,6 +13,16 @@ data-sync 不是普通 CRUD 服务，它会持续执行同步任务、维护执�
 
 因此，本 runbook 的目标是把代码中的 Micrometer 指标转化为可理解、可告警、可运营的生产能力。
 
+### 1.1 Autopilot 观测边界（2026-08-11）
+
+本 runbook 第 5 节的 `datasmart_data_sync_recovery_*` 指标描述的是既有 execution lease/队列恢复扫描：过期执行重新入队、重入跳过、超过退避上限后转人工关注。它们不能用于证明新 Autopilot 已经执行，`last_recovered` 也不等同于 Autopilot 的 `AUTO_APPROVED`。
+
+当前工作树的 Autopilot 已具备 data-sync controller/outbox/scheduler、精确 topic 的 Agent Runtime Kafka consumer、Java 到 Python Recovery/RAG 规划调用、失败对象重新排队、preview 约束 quarantine、最终 receipt，以及 V23 sidecar compensation/V24 quarantine receipt/V25 retrieval evidence projection。`SyncAutopilotRecoveryMetrics`、`AgentAutopilotRecoveryMetrics` 和仓库自带 Prometheus rules 已覆盖触发、消费、规划、策略结果、sidecar 失败与补偿死信等低基数趋势；静态指标存在仍不能替代真实运行 E2E。单独一条 `AUTO_APPROVED` 不是恢复副作用或最终成功证据；`WAITING_APPROVAL` 需要人工控制面，预算/期限耗尽、重复错误、证据或置信度不足应保持 `ATTENTION_REQUIRED`。
+
+`SEARCH`/`SKIP`、检索策略、证据计数和 evidence digest 只能作为低基数以外的查询字段或日志/审计摘要，不能作为 Prometheus 标签，更不能承载 citation、RAG 正文、prompt、原始错误日志或模型推理。当前源码尚未证明恢复写动作完成后已自动产生 PRECHECK/MONITOR durable fact；对应指标、告警与 E2E 需要等主线接线完成后再声明为已验收。
+
+现有指标仍需在 broker、HTTP、worker、retry/quarantine receipt 和 V23/V24 补偿或回执故障演练中验证实际增长与告警触发。标签只能使用 `state`、`reason`、`action`、`risk` 等枚举，不能使用 tenantId、taskId、executionId、caseId、receiptId 或摘要指纹。在隔离环境 E2E 留存证据前，dashboard 只能表达静态监控能力和当前计数，不能单凭指标定义宣称无人值守恢复已经成功。
+
 ## 2. Prometheus 抓取关系
 
 Prometheus 配置文件：`docker/prometheus/prometheus.yml`

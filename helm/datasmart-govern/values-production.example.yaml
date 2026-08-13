@@ -4,14 +4,12 @@
 # 放入 `global.existingSecret` 指向的 Kubernetes Secret 或企业 Secret 管理系统。
 
 global:
-  imageRegistry: harbor.example.com/datasmart
+  imageRegistry: harbor.example.com
   imageTag: "2026.07.01-REPLACE_WITH_GIT_SHA"
   existingSecret: datasmart-prod-secrets
   replicaCount: 2
   javaEnv:
     SPRING_PROFILES_ACTIVE: prod
-    SPRING_DATASOURCE_URL: jdbc:mysql://mysql.prod.svc.cluster.local:3306/datasmart_govern?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=true&rewriteBatchedStatements=true
-    SPRING_DATASOURCE_USERNAME: datasmart_app
     SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka-prod-bootstrap.kafka.svc:9092
     SPRING_CLOUD_NACOS_DISCOVERY_SERVER_ADDR: nacos.prod.svc:8848
     SPRING_REDIS_HOST: redis.prod.svc
@@ -43,13 +41,44 @@ services:
     replicaCount: 2
   data-sync:
     replicaCount: 2
+    env:
+      DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_ENABLED: "true"
+      DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_TOPIC: datasmart.agent.autopilot-recovery-trigger.v1
   data-quality:
     replicaCount: 2
   agent-runtime:
     replicaCount: 2
     env:
       DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ENDPOINT: https://minio.example.com
+      DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED: "true"
+      DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_TOPIC: datasmart.agent.autopilot-recovery-trigger.v1
+      DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_GROUP_ID: datasmart-agent-autopilot-recovery
+      DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_ENABLED: "true"
   python-ai-runtime:
     replicaCount: 2
     env:
       DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL: https://model-gateway.example.com/v1
+      DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED: "true"
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_ENABLED: "true"
+      DATASMART_AI_RUNTIME_KAFKA_BOOTSTRAP_SERVERS: kafka-prod-bootstrap.kafka.svc:9092
+      DATASMART_AI_RUNTIME_REDIS_URL: redis://redis.prod.svc:6379/0
+      DATASMART_AGENT_DURABLE_LOOP_REDIS_URL: redis://redis.prod.svc:6379/2
+      DATASMART_GATEWAY_SIGNATURE_NONCE_REDIS_URL: redis://redis.prod.svc:6379/1
+    # Workspace text search only operates on explicit, read-only repository
+    # mounts. Replace these PVC names with the customer-approved workspace sync
+    # mechanism; do not mount a host root or an unrestricted repository path.
+    volumeMounts:
+      - name: backend-workspace
+        mountPath: /repositories/backend
+        readOnly: true
+      - name: frontend-workspace
+        mountPath: /repositories/frontend
+        readOnly: true
+    volumes:
+      - name: backend-workspace
+        persistentVolumeClaim:
+          claimName: datasmart-backend-workspace
+      - name: frontend-workspace
+        persistentVolumeClaim:
+          claimName: datasmart-frontend-workspace

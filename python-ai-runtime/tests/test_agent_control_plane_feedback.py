@@ -80,6 +80,181 @@ class AgentControlPlaneFeedbackCollectorTest(unittest.TestCase):
         self.assertEqual(("call-missing",), snapshot.missing_tool_call_ids)
         self.assertTrue(any("缺失" in action or "尚未拿到" in action for action in snapshot.recommended_actions))
 
+    def test_bounded_metadata_wait_refreshes_pending_java_fact(self) -> None:
+        """Java 元数据 worker 稍晚完成时，bridge 应看到第二次真实反馈。"""
+
+        clock = FakeClock()
+        provider = SequencedFeedbackProvider(
+            (
+                {
+                    "call-source": ToolExecutionFeedbackStatus.SUCCEEDED,
+                    "call-target": ToolExecutionFeedbackStatus.PENDING,
+                },
+                {
+                    "call-source": ToolExecutionFeedbackStatus.SUCCEEDED,
+                    "call-target": ToolExecutionFeedbackStatus.SUCCEEDED,
+                },
+            )
+        )
+        collector = AgentControlPlaneFeedbackCollector(
+            provider,
+            metadata_wait_timeout_seconds=1.0,
+            metadata_poll_interval_seconds=0.25,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+        snapshot = collector.collect_with_bounded_metadata_wait(
+            self._plan(
+                self._metadata_tool_plan("call-source", "datasource.source.metadata.read"),
+                self._metadata_tool_plan("call-target", "datasource.target.metadata.read"),
+            )
+        )
+
+        self.assertEqual(2, provider.calls)
+        self.assertEqual(
+            [("call-source", "call-target"), ("call-target",)],
+            provider.requested_call_ids,
+        )
+        self.assertEqual({"succeeded": 2}, snapshot.status_counts)
+        self.assertTrue(snapshot.second_turn_eligible)
+        self.assertEqual([0.25], clock.sleeps)
+
+    def test_bounded_metadata_wait_keeps_pending_fact_after_deadline(self) -> None:
+        """超出短等待预算时必须保持 pending，不能伪造成功。"""
+
+        clock = FakeClock()
+        provider = SequencedFeedbackProvider(
+            ({
+                "call-source": ToolExecutionFeedbackStatus.SUCCEEDED,
+                "call-target": ToolExecutionFeedbackStatus.PENDING,
+            },)
+        )
+        collector = AgentControlPlaneFeedbackCollector(
+            provider,
+            metadata_wait_timeout_seconds=0.5,
+            metadata_poll_interval_seconds=0.25,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+        snapshot = collector.collect_with_bounded_metadata_wait(
+            self._plan(
+                self._metadata_tool_plan("call-source", "datasource.source.metadata.read"),
+                self._metadata_tool_plan("call-target", "datasource.target.metadata.read"),
+            )
+        )
+
+        self.assertEqual(3, provider.calls)
+        self.assertEqual({"succeeded": 1, "pending": 1}, snapshot.status_counts)
+        self.assertFalse(snapshot.second_turn_eligible)
+        self.assertLessEqual(clock.now, 0.5)
+
+    def test_bounded_metadata_wait_stops_on_failure_or_approval(self) -> None:
+        """终态失败或审批等待不能被轮询隐藏，也不能被自动批准。"""
+
+        clock = FakeClock()
+        provider = SequencedFeedbackProvider(
+            (
+                {"call-target": ToolExecutionFeedbackStatus.PENDING},
+                {"call-target": ToolExecutionFeedbackStatus.WAITING_APPROVAL},
+            )
+        )
+        collector = AgentControlPlaneFeedbackCollector(
+            provider,
+            metadata_wait_timeout_seconds=10.0,
+            metadata_poll_interval_seconds=0.25,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+        snapshot = collector.collect_with_bounded_metadata_wait(
+            self._plan(self._metadata_tool_plan("call-target", "datasource.target.metadata.read"))
+        )
+
+        self.assertEqual(2, provider.calls)
+        self.assertEqual({"waiting_approval": 1}, snapshot.status_counts)
+        self.assertEqual([0.25], clock.sleeps)
+
+    def test_bounded_metadata_wait_does_not_require_non_metadata_write_nodes(self) -> None:
+        """元数据可完成时只刷新元数据，草稿/发布/运行节点仍由各自门禁决定。"""
+
+        clock = FakeClock()
+        provider = SequencedFeedbackProvider(
+            (
+                {
+                    "call-target": ToolExecutionFeedbackStatus.PENDING,
+                    "call-draft": ToolExecutionFeedbackStatus.PENDING,
+                },
+                {
+                    "call-target": ToolExecutionFeedbackStatus.SUCCEEDED,
+                    "call-draft": ToolExecutionFeedbackStatus.PENDING,
+                },
+            )
+        )
+        collector = AgentControlPlaneFeedbackCollector(
+            provider,
+            metadata_wait_timeout_seconds=1.0,
+            metadata_poll_interval_seconds=0.25,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+        snapshot = collector.collect_with_bounded_metadata_wait(
+            self._plan(
+                self._metadata_tool_plan("call-target", "datasource.target.metadata.read"),
+                self._metadata_tool_plan("call-draft", "sync.task.draft.save"),
+            )
+        )
+
+        self.assertEqual(2, provider.calls)
+        self.assertEqual(
+            [("call-target", "call-draft"), ("call-target",)],
+            provider.requested_call_ids,
+        )
+        by_call_id = {item.model_tool_call_id: item for item in snapshot.feedback_items}
+        self.assertEqual(ToolExecutionFeedbackStatus.SUCCEEDED, by_call_id["call-target"].status)
+        self.assertEqual(ToolExecutionFeedbackStatus.PENDING, by_call_id["call-draft"].status)
+
+    def test_bounded_metadata_wait_preserves_initial_auto_execution_summary(self) -> None:
+        """元数据子查询清空 Provider 摘要时，响应仍保留首轮真实自动执行事实。"""
+
+        clock = FakeClock()
+        provider = SequencedFeedbackProvider(
+            (
+                {"call-target": ToolExecutionFeedbackStatus.PENDING},
+                {"call-target": ToolExecutionFeedbackStatus.SUCCEEDED},
+            ),
+            auto_execution_summaries=(
+                {"executedCount": 1, "selectedAuditIds": ("audit-call-target",)},
+                None,
+            ),
+        )
+        collector = AgentControlPlaneFeedbackCollector(
+            provider,
+            metadata_wait_timeout_seconds=1.0,
+            metadata_poll_interval_seconds=0.25,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+        )
+
+        snapshot = collector.collect_with_bounded_metadata_wait(
+            self._plan(self._metadata_tool_plan("call-target", "datasource.target.metadata.read"))
+        )
+
+        self.assertEqual(
+            {"executedCount": 1, "selectedAuditIds": ("audit-call-target",)},
+            snapshot.auto_execution_summary,
+        )
+
+    def _metadata_tool_plan(self, call_id: str, tool_name: str) -> ToolPlan:
+        return ToolPlan(
+            tool_name=tool_name,
+            reason="测试用 Java 元数据读取。",
+            arguments={"datasourceId": 1001},
+            governance_hints={"modelToolCallId": call_id},
+        )
+
     def test_build_plan_response_exposes_control_plane_feedback_after_ingestion(self) -> None:
         request = AgentRequest(
             tenant_id="10",
@@ -277,6 +452,84 @@ class FakeFeedbackProvider:
                 )
             )
         return tuple(feedback)
+
+
+class SequencedFeedbackProvider:
+    """按查询次数返回状态序列，模拟 Java worker 的异步状态变化。"""
+
+    def __init__(
+        self,
+        states: tuple[dict[str, ToolExecutionFeedbackStatus], ...],
+        *,
+        auto_execution_summaries: tuple[dict[str, object] | None, ...] = (),
+    ) -> None:
+        self._states = states
+        self._auto_execution_summaries = auto_execution_summaries
+        self._last_auto_execution_summary: FakeAutoExecutionSummary | None = None
+        self.calls = 0
+        self.requested_call_ids: list[tuple[str, ...]] = []
+
+    @property
+    def last_auto_execution_summary(self) -> "FakeAutoExecutionSummary | None":
+        """Expose the summary produced by the latest simulated Provider call."""
+
+        return self._last_auto_execution_summary
+
+    def feedback_for(
+        self,
+        tool_calls: tuple[ModelToolCall, ...],
+        tool_plans: tuple[ToolPlan, ...],
+    ) -> tuple[ToolExecutionFeedback, ...]:
+        state = self._states[min(self.calls, len(self._states) - 1)]
+        summary = (
+            self._auto_execution_summaries[min(self.calls, len(self._auto_execution_summaries) - 1)]
+            if self._auto_execution_summaries
+            else None
+        )
+        self._last_auto_execution_summary = FakeAutoExecutionSummary(summary) if summary else None
+        self.requested_call_ids.append(tuple(call.call_id for call in tool_calls if call.call_id))
+        self.calls += 1
+        return tuple(
+            ToolExecutionFeedback(
+                tool_call_id=tool_call.call_id,
+                tool_name=tool_call.name,
+                status=status,
+                summary=f"{tool_call.name} 当前状态为 {status.value}",
+                audit_id=f"audit-{tool_call.call_id}",
+                run_id="run-sequenced",
+                output_ref=f"agent-runtime://tool-results/{tool_call.call_id}",
+                result={"objects": [{"name": "customer"}]} if status is ToolExecutionFeedbackStatus.SUCCEEDED else {},
+            )
+            for tool_call in tool_calls
+            if (status := state.get(tool_call.call_id)) is not None
+        )
+
+
+class FakeAutoExecutionSummary:
+    """Minimal Java auto-execution summary projection used by collector tests."""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        self._summary = summary
+
+    def to_event_summary(self) -> dict[str, object]:
+        """Return the same low-sensitivity shape exposed by the real Provider."""
+
+        return dict(self._summary)
+
+
+class FakeClock:
+    """无真实等待的单调时钟，用于验证轮询预算。"""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
 class FakePlanIngestionClient:

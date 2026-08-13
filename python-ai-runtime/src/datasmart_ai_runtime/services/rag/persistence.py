@@ -251,20 +251,23 @@ class PostgresRagKnowledgeBase:
         limit = max(5, min(int(query.candidate_limit), self._settings.candidate_limit, 200))
         try:
             with self._lock:
-                if self._settings.vector_enabled:
+                retrieval_mode = str(query.retrieval_mode or "hybrid").strip().lower()
+                lexical_rows = () if retrieval_mode == "vector" else self._query_lexical_rows(query, limit)
+                vector_rows = ()
+                if retrieval_mode in {"hybrid", "vector"} and self._settings.vector_enabled:
                     if self._embedding_provider is None:
                         self._record_error("RAG_PGVECTOR_PROVIDER_UNAVAILABLE", RuntimeError)
-                        return ()
-                    query_embedding = validate_embedding_vector(
-                        self._embedding_provider.embed_text(str(query.question or "")[:4000])
-                    )
-                    rows = self._query_vector_rows(query, query_embedding, limit)
-                    # A newly indexed document may not have a vector yet.  A
-                    # lexical window preserves safe, explainable retrieval for
-                    # those rows without weakening the SQL scope boundary.
-                    if not rows:
-                        rows = self._query_scope_rows(query, limit)
-                else:
+                    else:
+                        query_embedding = validate_embedding_vector(
+                            self._embedding_provider.embed_text(str(query.question or "")[:4000])
+                        )
+                        vector_rows = self._query_vector_rows(query, query_embedding, limit)
+                rows = _merge_rows(lexical_rows, vector_rows, limit)
+                if not rows and retrieval_mode != "vector":
+                    # Keep the bounded scope fallback for deployments whose
+                    # PostgreSQL text configuration does not tokenize a local
+                    # language well. The outer retriever still performs exact
+                    # token scoring and the evidence gate remains authoritative.
                     rows = self._query_scope_rows(query, limit)
                 chunks = tuple(self._row_to_chunk(row) for row in rows)
                 self._last_query_row_count = len(chunks)
@@ -454,6 +457,32 @@ class PostgresRagKnowledgeBase:
             f"AND {' AND '.join(predicates)} "
             "ORDER BY updated_at DESC, chunk_index ASC, chunk_id ASC LIMIT %s",
             tuple(params + [limit]),
+        )
+        return tuple(cursor.fetchall())
+
+    def _query_lexical_rows(self, query: RagQuery, limit: int) -> tuple[Any, ...]:
+        """Use PostgreSQL FTS before Python reranking.
+
+        The generated ``content_search_vector`` GIN index is the durable exact
+        retrieval path for error codes, identifiers and runbook terms. Scope
+        predicates remain in the same SQL statement, so a lexical hit cannot
+        widen tenant/project visibility before ranking.
+        """
+
+        predicates, params = _scope_predicates(query)
+        params = [str(query.question or "")[:4000], *params, limit]
+        cursor = self._execute(
+            f"SELECT {self._SELECT_COLUMNS} "
+            f"FROM {self._table} "
+            "CROSS JOIN LATERAL ("
+            "SELECT websearch_to_tsquery('simple', %s) AS tsq"
+            ") query "
+            f"WHERE enabled = TRUE AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) "
+            f"AND {' AND '.join(predicates)} "
+            "AND content_search_vector @@ query.tsq "
+            "ORDER BY ts_rank_cd(content_search_vector, query.tsq) DESC, updated_at DESC, chunk_index ASC, chunk_id ASC "
+            "LIMIT %s",
+            tuple(params),
         )
         return tuple(cursor.fetchall())
 
@@ -784,14 +813,37 @@ def _normalized_settings(settings: RagKnowledgeBaseSettings) -> RagKnowledgeBase
 
 
 def _scope_predicates(query: RagQuery) -> tuple[list[str], list[Any]]:
-    return (
-        [
+    predicates = [
             "tenant_id IN ('*', %s)",
             "project_id IN ('*', %s)",
             "workspace_key IN ('*', %s)",
-        ],
-        [str(query.tenant_id or "*"), str(query.project_id or "*"), str(query.workspace_key or "*")],
-    )
+        ]
+    params: list[Any] = [
+        str(query.tenant_id or "*"),
+        str(query.project_id or "*"),
+        str(query.workspace_key or "*"),
+    ]
+    source_types = tuple(sorted({str(value).strip().lower() for value in (query.source_types or ()) if str(value).strip()}))
+    if source_types:
+        predicates.append("source_type IN (" + ", ".join("%s" for _ in source_types) + ")")
+        params.extend(source_types)
+    return predicates, params
+
+
+def _merge_rows(left: tuple[Any, ...], right: tuple[Any, ...], limit: int) -> tuple[Any, ...]:
+    """Merge lexical and vector windows without duplicate chunks."""
+
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for row in (*left, *right):
+        chunk_id = str(_row_value(row, "chunk_id", 0))
+        if chunk_id in seen:
+            continue
+        seen.add(chunk_id)
+        merged.append(row)
+        if len(merged) >= limit:
+            break
+    return tuple(merged)
 
 
 def _row_value(row: Any, key: str, index: int) -> Any:

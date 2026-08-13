@@ -163,6 +163,68 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
         self.assertTrue(output.invocation_summary["structuredJsonParsed"])
         self.assertFalse(output.invocation_summary["responseContentStored"])
 
+    def test_sync_model_preserves_inert_execution_summary_for_specialist_quarantine(self) -> None:
+        """适配器不应在模型层静默吞掉边界摘要，由 DATA_SYNC_AGENT 统一隔离并审计。"""
+
+        engine = _QueryEngine(
+            json.dumps(
+                {
+                    "configuration": {
+                        "taskName": "客户同步",
+                        "syncMode": "FULL",
+                        "execution": {
+                            "status": "NOT_STARTED",
+                            "executed": False,
+                        },
+                    },
+                    "publicSummary": "已形成草案",
+                    "requestedToolNames": [],
+                    "requestedActions": [],
+                },
+                ensure_ascii=False,
+            )
+        )
+        model = GovernedSyncPlanningModel(self._json_model(engine))
+
+        output = model.plan(
+            SyncPlanningModelInput(
+                objective="创建全量同步任务",
+                context={"sourceDatasourceId": 1, "targetDatasourceId": 2},
+                allowed_tool_names=(),
+                max_output_tokens=1024,
+                tenant_id="10",
+                project_id="101",
+                actor_id="37",
+                session_id="session-execution-summary",
+                run_id="run-execution-summary",
+                trace_id="trace-execution-summary",
+            )
+        )
+
+        self.assertEqual("NOT_STARTED", output.configuration["execution"]["status"])
+        self.assertFalse(output.configuration["execution"]["executed"])
+
+    def test_sync_model_preserves_active_execution_for_specialist_fail_closed(self) -> None:
+        """适配器保留配置候选，后续 DATA_SYNC_AGENT 安全门负责拒绝真实副作用声明。"""
+
+        engine = _QueryEngine(
+            '{"configuration":{"taskName":"客户同步","execution":{"taskId":9001}},'
+            '"publicSummary":"已形成草案","requestedToolNames":[],"requestedActions":[]}'
+        )
+        output = GovernedSyncPlanningModel(self._json_model(engine)).plan(
+            SyncPlanningModelInput(
+                objective="创建任务",
+                context={},
+                allowed_tool_names=(),
+                max_output_tokens=512,
+                tenant_id="10",
+                actor_id="37",
+                session_id="session-active-execution",
+                run_id="run-active-execution",
+            )
+        )
+        self.assertEqual(9001, output.configuration["execution"]["taskId"])
+
     def test_model_error_and_invalid_json_fail_closed(self) -> None:
         with self.assertRaises(SpecialistRuntimeAdapterError) as invalid_json:
             GovernedSyncPlanningModel(self._json_model(_QueryEngine("not-json"))).plan(
@@ -354,6 +416,7 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
                 "caseEvidence",
                 "knowledgeSummary",
                 "monitoringSummary",
+                "evidenceAudit",
                 "evidenceReferences",
                 "allowedToolNames",
                 "maxOutputTokens",
@@ -369,8 +432,12 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
         self.assertNotIn("must-not-reach-model", str(payload))
         self.assertNotIn("SELECT secret", str(payload))
         self.assertEqual({}, payload["monitoringSummary"])
+        self.assertEqual({}, payload["evidenceAudit"])
         self.assertEqual((), engine.requests[0].available_tools)
         self.assertIsNone(engine.requests[0].tool_choice)
+        system_instruction = engine.requests[0].messages[0].content
+        self.assertIn("每一轮最多返回一个", system_instruction)
+        self.assertIn("不能在同一轮同时建议 preview", system_instruction)
         self.assertEqual("test-specialist-model", output.invocation_summary["selectedModelName"])
         self.assertFalse(output.invocation_summary["rawModelOutputStored"])
 
@@ -797,6 +864,60 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
         sent_request = mocked_urlopen.call_args.args[0]
         self.assertEqual("10", sent_request.headers["X-datasmart-tenant-id"])
         self.assertEqual("101", sent_request.headers["X-datasmart-project-id"])
+
+    @patch("datasmart_ai_runtime.services.multi_agent.specialist_runtime_adapters.urlopen")
+    def test_datasource_discovery_explicit_id_is_not_invalidated_by_stale_display_name(
+        self,
+        mocked_urlopen,
+    ) -> None:
+        """已确认的数据源 ID 必须优先于可能因重命名而过期的显示名称。
+
+        页面常会同时提交 ``datasourceId`` 和当时看到的名称。资源在计划真正执行前可能被管理员
+        重命名；若适配器仍把旧名称作为服务端 keyword，分页接口会先返回空集合，使一个仍在相同
+        tenant/project、方向和连接器范围内的授权 ID 被错误判成不存在。显式 ID 场景因此不发送
+        keyword，随后仍由返回记录、USE/MANAGE/owner 关系和客户端 ID 精确匹配共同完成校验。
+        """
+
+        mocked_urlopen.return_value = _HttpResponse(
+            {
+                "code": 0,
+                "data": {
+                    "records": [
+                        {
+                            "id": 55,
+                            "ownerId": 1001,
+                            "name": "E2E MySQL source renamed",
+                            "type": "MYSQL",
+                            "status": "ACTIVE",
+                            "effectiveActions": ["VIEW", "USE"],
+                        }
+                    ]
+                },
+            }
+        )
+        tool = HttpDatasourceDiscoveryTool("http://datasource-management:8082")
+
+        result = tool.discover(
+            DatasourceDiscoveryRequest(
+                tenant_id="10",
+                application_id="10010",
+                project_id="101",
+                actor_id="1001",
+                delegation_id="delegation-1",
+                turn_id="turn-1",
+                run_id="run-1",
+                direction=DatasourceDirection.SOURCE,
+                connector_type="MYSQL",
+                name="FlashSync MySQL 源",
+                datasource_id="55",
+            )
+        )
+
+        self.assertEqual(("55",), tuple(candidate.datasource_id for candidate in result.candidates))
+        sent_request = mocked_urlopen.call_args.args[0]
+        self.assertNotIn("keyword=", sent_request.full_url)
+        self.assertIn("projectId=101", sent_request.full_url)
+        self.assertIn("usagePurpose=SOURCE", sent_request.full_url)
 
 
 if __name__ == "__main__":

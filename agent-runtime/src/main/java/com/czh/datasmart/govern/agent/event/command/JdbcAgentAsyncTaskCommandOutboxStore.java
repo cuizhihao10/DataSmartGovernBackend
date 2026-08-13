@@ -174,18 +174,32 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
      */
     @Override
     public List<AgentAsyncTaskCommandOutboxRecord> listPublishable(int limit, Instant now) {
+        return listPublishableByToolCodes(List.of(), limit, now);
+    }
+
+    /**
+     * 在 SQL 层应用工具白名单并在过滤后分页，避免未开放工具占满 LIMIT 窗口。
+     */
+    @Override
+    public List<AgentAsyncTaskCommandOutboxRecord> listPublishableByToolCodes(
+            Collection<String> allowedToolCodes,
+            int limit,
+            Instant now) {
         Instant referenceTime = now == null ? Instant.now() : now;
-        String sql = "SELECT " + JdbcAgentAsyncTaskCommandOutboxRecordMapper.SELECT_COLUMNS
-                + " FROM agent_async_task_command_outbox"
-                + " WHERE status IN (?, ?)"
-                + " AND (next_retry_at IS NULL OR next_retry_at <= ?)"
-                + " ORDER BY id ASC LIMIT ?";
-        QueryPlan queryPlan = new QueryPlan(sql, parameters(
+        List<String> normalizedToolCodes = normalizeToolCodes(allowedToolCodes);
+        StringBuilder sql = new StringBuilder("SELECT ")
+                .append(JdbcAgentAsyncTaskCommandOutboxRecordMapper.SELECT_COLUMNS)
+                .append(" FROM agent_async_task_command_outbox")
+                .append(" WHERE status IN (?, ?)")
+                .append(" AND (next_retry_at IS NULL OR next_retry_at <= ?)");
+        List<Object> queryParameters = parameters(
                 AgentAsyncTaskCommandOutboxStatus.PENDING.name(),
                 AgentAsyncTaskCommandOutboxStatus.FAILED.name(),
-                referenceTime,
-                normalizeLimit(limit)
-        ));
+                referenceTime);
+        appendToolCodeFilter(sql, queryParameters, normalizedToolCodes);
+        sql.append(" ORDER BY id ASC LIMIT ?");
+        queryParameters.add(normalizeLimit(limit));
+        QueryPlan queryPlan = new QueryPlan(sql.toString(), queryParameters);
         return query(queryPlan, "查询可投递 Agent 异步命令 outbox 失败");
     }
 
@@ -295,21 +309,34 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
     public int recoverStalePublishing(Instant staleBefore,
                                       Instant now,
                                       String error) {
+        return recoverStalePublishingByToolCodes(List.of(), staleBefore, now, error);
+    }
+
+    /**
+     * 只恢复白名单工具的超时 PUBLISHING 记录，保持灰度派发边界和状态变更边界一致。
+     */
+    @Override
+    public int recoverStalePublishingByToolCodes(Collection<String> allowedToolCodes,
+                                                 Instant staleBefore,
+                                                 Instant now,
+                                                 String error) {
         Instant cutoff = staleBefore == null ? Instant.now() : staleBefore;
         Instant referenceTime = now == null ? Instant.now() : now;
-        String sql = "UPDATE agent_async_task_command_outbox SET status = ?, next_retry_at = ?, "
-                + "last_error = ?, update_time = ? WHERE status = ? AND update_time <= ?";
+        List<String> normalizedToolCodes = normalizeToolCodes(allowedToolCodes);
+        StringBuilder sql = new StringBuilder("UPDATE agent_async_task_command_outbox SET status = ?, next_retry_at = ?, ")
+                .append("last_error = ?, update_time = ? WHERE status = ? AND update_time <= ?");
+        List<Object> updateParameters = parameters(
+                AgentAsyncTaskCommandOutboxStatus.FAILED.name(),
+                referenceTime,
+                JdbcAgentAsyncTaskCommandOutboxRecordMapper.truncate(error, 1024),
+                referenceTime,
+                AgentAsyncTaskCommandOutboxStatus.PUBLISHING.name(),
+                cutoff);
+        appendToolCodeFilter(sql, updateParameters, normalizedToolCodes);
         try {
             return connectionManager.executeWithConnection(connection -> {
-                try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                    JdbcAgentAsyncTaskCommandOutboxRecordMapper.bindParameters(statement, parameters(
-                            AgentAsyncTaskCommandOutboxStatus.FAILED.name(),
-                            referenceTime,
-                            JdbcAgentAsyncTaskCommandOutboxRecordMapper.truncate(error, 1024),
-                            referenceTime,
-                            AgentAsyncTaskCommandOutboxStatus.PUBLISHING.name(),
-                            cutoff
-                    ));
+                try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+                    JdbcAgentAsyncTaskCommandOutboxRecordMapper.bindParameters(statement, updateParameters);
                     return statement.executeUpdate();
                 }
             });
@@ -454,6 +481,35 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
             result.add(value);
         }
         return result;
+    }
+
+    /**
+     * 规范化配置中的工具码，去掉空值并去重，使 SQL 占位符数量稳定且不会接受空工具码。
+     */
+    private List<String> normalizeToolCodes(Collection<String> toolCodes) {
+        if (toolCodes == null || toolCodes.isEmpty()) {
+            return List.of();
+        }
+        return toolCodes.stream()
+                .filter(this::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+    }
+
+    /**
+     * 为查询或更新追加参数化 IN 条件，工具码永远通过 JDBC 参数绑定而不是拼接进 SQL。
+     */
+    private void appendToolCodeFilter(StringBuilder sql,
+                                      List<Object> queryParameters,
+                                      List<String> normalizedToolCodes) {
+        if (normalizedToolCodes.isEmpty()) {
+            return;
+        }
+        sql.append(" AND tool_code IN (")
+                .append(String.join(", ", java.util.Collections.nCopies(normalizedToolCodes.size(), "?")))
+                .append(')');
+        queryParameters.addAll(normalizedToolCodes);
     }
 
     private Optional<AgentAsyncTaskCommandOutboxStatus> parseStatus(String value) {

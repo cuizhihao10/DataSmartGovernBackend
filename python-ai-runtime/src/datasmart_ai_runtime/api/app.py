@@ -46,12 +46,16 @@ from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     truthy_env as _truthy_env,
 )
 from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
+from datasmart_ai_runtime.api.agent.autopilot_recovery import register_autopilot_recovery_routes
 from datasmart_ai_runtime.api.agent.langgraph_checkpoints import register_langgraph_checkpoint_routes
 from datasmart_ai_runtime.api.agent.mcp_worker import register_mcp_durable_worker_routes
 from datasmart_ai_runtime.api.agent.post_confirm_continuation import (
     register_post_confirm_continuation_routes,
 )
 from datasmart_ai_runtime.api.agent.rag_command_worker import register_rag_command_worker_routes
+from datasmart_ai_runtime.api.agent.workspace_text_search_worker import (
+    register_workspace_text_search_worker_routes,
+)
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.api.lifecycle import register_lifecycle_handler
@@ -73,6 +77,7 @@ from datasmart_ai_runtime.services.agent_capability import default_agent_capabil
 from datasmart_ai_runtime.services.agent_execution import (
     AgentDurableModelToolLoopRunner,
     AgentPostConfirmContinuationCoordinator,
+    AutopilotRecoveryCoordinator,
     DurableAgentLoopService,
     build_durable_agent_loop_store,
     durable_agent_loop_store_settings_from_env,
@@ -80,6 +85,12 @@ from datasmart_ai_runtime.services.agent_execution import (
     build_langgraph_checkpoint_store,
     langgraph_checkpoint_store_diagnostics,
     langgraph_durable_checkpointer_settings_from_env,
+)
+from datasmart_ai_runtime.services.agent_execution.autopilot_recovery_investigation import (
+    AutopilotRecoveryInvestigationCollaborator,
+)
+from datasmart_ai_runtime.services.agent_execution.autopilot_post_recovery_verification import (
+    AutopilotPostRecoveryVerificationCoordinator,
 )
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
 from datasmart_ai_runtime.services.agent_follow_up_tool_planner import AgentFollowUpToolPlanner
@@ -175,6 +186,11 @@ from datasmart_ai_runtime.services.tools.mcp import (
     mcp_client_runtime_settings_from_env,
     mcp_model_feedback_second_turn_settings_from_env,
     mcp_server_configurations_from_env,
+)
+from datasmart_ai_runtime.services.tools.workspace_text_search_tool import WorkspaceTextSearchService
+from datasmart_ai_runtime.services.tools.workspace_text_search_worker import (
+    WorkspaceTextSearchCommandWorker,
+    workspace_text_search_settings_from_env,
 )
 
 
@@ -371,6 +387,18 @@ def create_app() -> Any:
         rag_pipeline=rag_pipeline,
         artifact_writer=rag_answer_artifact_writer,
     )
+    # Exact text search is a separate retrieval lane from RAG.  The model may
+    # choose it through native tool calls, but the real filesystem root and all
+    # scan budgets are injected here from deployment configuration.  An empty
+    # allowlist keeps the worker disabled even if the feature flag is set.
+    workspace_text_search_service = WorkspaceTextSearchService(
+        workspace_text_search_settings_from_env(os.getenv)
+    )
+    workspace_text_search_worker = WorkspaceTextSearchCommandWorker(
+        workspace_text_search_service
+    )
+    app.state.workspace_text_search_service = workspace_text_search_service
+    app.state.workspace_text_search_worker = workspace_text_search_worker
     # Durable Agent Loop 的状态仓储必须在应用启动时统一装配，不能让每个请求临时创建 store：
     # - 默认 in-memory 兼容本地学习与单测；
     # - 生产设置 DATASMART_AGENT_DURABLE_LOOP_STORE=redis 后，同一 run 可跨实例、跨重启恢复；
@@ -479,7 +507,20 @@ def create_app() -> Any:
                 auto_execute_sync_enabled=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED"),
                 auto_execute_dry_run=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_DRY_RUN"),
                 max_auto_executions=_optional_positive_int_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_MAX"),
-            )
+            ),
+            # A newly ingested metadata audit can briefly remain PLANNED while
+            # the Java worker commits its low-sensitive result.  Keep this wait
+            # small and bounded: it improves the common synchronous planning
+            # path, while a longer operation still resumes through events or a
+            # durable continuation rather than holding an HTTP request open.
+            metadata_wait_timeout_seconds=(
+                (_optional_positive_int_env("DATASMART_AGENT_RUNTIME_METADATA_FEEDBACK_WAIT_MS") or 5000)
+                / 1000.0
+            ),
+            metadata_poll_interval_seconds=(
+                (_optional_positive_int_env("DATASMART_AGENT_RUNTIME_METADATA_FEEDBACK_POLL_MS") or 250)
+                / 1000.0
+            ),
         )
         if agent_runtime_base_url and _truthy_env("DATASMART_AGENT_RUNTIME_TOOL_FEEDBACK_ENABLED")
         else None
@@ -528,6 +569,48 @@ def create_app() -> Any:
         follow_up_tool_planner=follow_up_tool_planner,
     )
     app.state.specialist_toolplan_bridge = specialist_toolplan_bridge
+    # Autopilot Recovery 复用同一 Specialist 注册表、RAG pipeline、事实登记器、ToolPlan bridge 和 durable
+    # checkpointer。调查协作者只有在 Java plan ingestion 与真实 feedback 都装配完成时才启用；否则普通诊断
+    # 仍可返回候选，但要求人工关注，绝不使用 Python 本地模拟执行替代无人值守恢复。
+    autopilot_recovery_investigation = (
+        AutopilotRecoveryInvestigationCollaborator(
+            bridge=specialist_toolplan_bridge,
+            plan_ingestion_client=plan_ingestion_client,
+            feedback_collector=control_plane_feedback_collector,
+        )
+        if plan_ingestion_client is not None and control_plane_feedback_collector is not None
+        else None
+    )
+    autopilot_recovery_coordinator = AutopilotRecoveryCoordinator(
+        specialist_registry=specialist_agent_registry,
+        rag_pipeline=rag_pipeline,
+        checkpointer=langgraph_checkpointer_service,
+        result_sink=specialist_turn_fact_client,
+        investigation_collaborator=autopilot_recovery_investigation,
+    )
+    # Recovery planning finishes before any business write.  This separate
+    # coordinator is invoked only after Java receives a real data-sync retry
+    # receipt; it reuses the same registry, role tool allow-lists, PostgreSQL
+    # checkpointer and Java durable fact sink as the normal six-Agent flow.
+    # Keeping the fact sink explicit makes the unattended path fail closed even
+    # if a local developer configured the shared client in fail-open mode.
+    autopilot_post_recovery_verification_coordinator = (
+        AutopilotPostRecoveryVerificationCoordinator(
+            specialist_coordinator=specialist_agent_coordinator,
+            allowed_tools_by_role=specialist_allowed_tools_by_role,
+            checkpointer=langgraph_checkpointer_service,
+            result_sink=specialist_turn_fact_client,
+        )
+        if all(
+            role in specialist_allowed_tools_by_role
+            for role in ("PRECHECK_AGENT", "MONITOR_AGENT")
+        )
+        else None
+    )
+    app.state.autopilot_recovery_investigation = autopilot_recovery_investigation
+    app.state.autopilot_post_recovery_verification_coordinator = (
+        autopilot_post_recovery_verification_coordinator
+    )
     second_turn_orchestrator = (
         AgentSecondTurnOrchestrator(
             model_providers=model_provider_registry,
@@ -920,6 +1003,16 @@ def create_app() -> Any:
         service_account_token=os.getenv("DATASMART_AGENT_POST_CONFIRM_CONTINUATION_TOKEN"),
         error_factory=lambda status_code, detail: HTTPException(status_code=status_code, detail=detail),
     )
+    register_autopilot_recovery_routes(
+        app,
+        request_type=Request,
+        coordinator=autopilot_recovery_coordinator,
+        post_recovery_verification_coordinator=(
+            autopilot_post_recovery_verification_coordinator
+        ),
+        service_account_token=os.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN"),
+        error_factory=lambda status_code, detail: HTTPException(status_code=status_code, detail=detail),
+    )
 
     register_memory_write_routes(app, memory_runtime.memory_write_governance)
     register_user_profile_routes(app, user_profile_memory)
@@ -954,6 +1047,18 @@ def create_app() -> Any:
         worker_runner=rag_command_worker_runner,
         langgraph_checkpointer_service=langgraph_checkpointer_service,
         receipt_client=command_worker_receipt_client,
+    )
+    register_workspace_text_search_worker_routes(
+        app,
+        request_type=Request,
+        worker=workspace_text_search_worker,
+        # Java and Compose inject this worker-specific secret under one shared environment-variable name.  It has no
+        # default: when deployment configuration omits the secret, the Python route returns a generic 401 before it
+        # parses the command body.
+        service_account_token=os.getenv(
+            "DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_SERVICE_TOKEN"
+        ),
+        error_factory=lambda status_code, detail: HTTPException(status_code=status_code, detail=detail),
     )
     # LangGraph checkpoint 控制面在这里集中挂载，并复用启动期创建的同一个 checkpointer service。
     # 这样 MCP worker、长期记忆节点、多 Agent runner 和后续 Java/gateway 查询看到的是同一条 thread/event

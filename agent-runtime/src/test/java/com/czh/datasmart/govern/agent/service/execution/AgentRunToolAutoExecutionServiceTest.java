@@ -39,6 +39,12 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 /**
  * Run 级同步工具自动执行服务测试。
@@ -186,6 +192,7 @@ class AgentRunToolAutoExecutionServiceTest {
                         )
                 )
         );
+        clearInvocations(fixture.sessionStore);
 
         AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
                 "session-auto-001",
@@ -228,6 +235,8 @@ class AgentRunToolAutoExecutionServiceTest {
         assertEquals(2, response.executedCount());
         assertEquals(AgentRunState.SUCCEEDED, fixture.run.getState());
         assertTrue(fixture.run.getMessage().contains("同一会话继续下一轮"));
+        verify(fixture.sessionStore).updateRunLifecycle(eq("session-auto-001"), eq(fixture.run));
+        verify(fixture.sessionStore, never()).save(any());
     }
 
     /**
@@ -252,6 +261,7 @@ class AgentRunToolAutoExecutionServiceTest {
                 true,
                 Map.of("planNodeId", "failed-root")
         ));
+        clearInvocations(fixture.sessionStore);
 
         AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
                 "session-auto-001",
@@ -264,12 +274,14 @@ class AgentRunToolAutoExecutionServiceTest {
         assertEquals(AgentRunState.FAILED, fixture.run.getState());
         assertTrue(fixture.run.getMessage().contains("datasource.unsupported.read"));
         assertTrue(fixture.run.getFinishTime() != null);
+        verify(fixture.sessionStore).updateRunLifecycle(eq("session-auto-001"), eq(fixture.run));
+        verify(fixture.sessionStore, never()).save(any());
     }
 
     private TestFixture newFixture(int maxAutoExecutions) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
         properties.setMaxSyncAutoExecutionsPerRun(maxAutoExecutions);
-        AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
+        AgentSessionMemoryStore sessionStore = spy(new AgentSessionMemoryStore());
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
         AgentToolExecutionAuditService auditService = new AgentToolExecutionAuditService(
                 auditStore,
@@ -299,8 +311,10 @@ class AgentRunToolAutoExecutionServiceTest {
         );
         AgentSessionRecord session = sessionWithRun();
         sessionStore.save(session);
+        clearInvocations(sessionStore);
         return new TestFixture(
                 autoExecutionService,
+                sessionStore,
                 auditStore,
                 auditService,
                 session.getRuns().getFirst()
@@ -422,6 +436,7 @@ class AgentRunToolAutoExecutionServiceTest {
     }
 
     private record TestFixture(AgentRunToolAutoExecutionService service,
+                               AgentSessionMemoryStore sessionStore,
                                AgentToolExecutionAuditMemoryStore auditStore,
                                AgentToolExecutionAuditService auditService,
                                AgentRunRecord run) {

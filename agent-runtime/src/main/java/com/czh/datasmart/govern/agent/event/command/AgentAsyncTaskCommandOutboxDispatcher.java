@@ -14,8 +14,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -112,8 +114,12 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
 
     private AgentAsyncTaskCommandOutboxDispatchSummary doDispatchOnce() {
         Instant now = Instant.now();
-        int recovered = recoverStalePublishing(now);
-        List<AgentAsyncTaskCommandOutboxRecord> candidates = outboxStore.listPublishable(normalizeBatchSize(), now);
+        Set<String> allowedToolCodes = normalizedAllowedToolCodes();
+        int recovered = recoverStalePublishing(now, allowedToolCodes);
+        List<AgentAsyncTaskCommandOutboxRecord> candidates = outboxStore.listPublishableByToolCodes(
+                allowedToolCodes,
+                normalizeBatchSize(),
+                now);
         int published = 0;
         int failed = 0;
         int blocked = 0;
@@ -140,17 +146,38 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
         );
     }
 
-    private int recoverStalePublishing(Instant now) {
+    private int recoverStalePublishing(Instant now, Set<String> allowedToolCodes) {
         if (!properties.isDispatcherRecoverStalePublishingEnabled()) {
             return 0;
         }
         long timeoutSeconds = Math.max(1, properties.getDispatcherPublishingTimeoutSeconds());
         Instant staleBefore = now.minusSeconds(timeoutSeconds);
-        return outboxStore.recoverStalePublishing(
+        return outboxStore.recoverStalePublishingByToolCodes(
+                allowedToolCodes,
                 staleBefore,
                 now,
                 "异步命令 PUBLISHING 超过 " + timeoutSeconds + " 秒仍未完成，已恢复为 FAILED 等待补偿重试。"
         );
+    }
+
+    /**
+     * 把配置中的派发白名单整理为不可重复、无空值的稳定集合。
+     *
+     * <p>空集合具有明确的兼容语义：允许 dispatcher 处理所有工具。生产灰度必须显式配置非空集合，
+     * 让模型可见工具、授权盒和实际后台 worker 的开放范围能够分别收紧并共同生效。</p>
+     */
+    private Set<String> normalizedAllowedToolCodes() {
+        List<String> configured = properties.getDispatcherAllowedToolCodes();
+        if (configured == null || configured.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String toolCode : configured) {
+            if (toolCode != null && !toolCode.isBlank()) {
+                normalized.add(toolCode.trim());
+            }
+        }
+        return Set.copyOf(normalized);
     }
 
     private DispatchOutcome dispatchRecord(AgentAsyncTaskCommandOutboxRecord candidate, Instant now) {

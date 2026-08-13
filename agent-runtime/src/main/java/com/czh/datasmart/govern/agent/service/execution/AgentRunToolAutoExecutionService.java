@@ -83,7 +83,10 @@ public class AgentRunToolAutoExecutionService {
             AgentRunToolExecutionPolicyView policy = policyService.inspectRunPolicy(sessionId, runId);
             AutoExecutionBatch batch = executeBatch(session, run, policy, normalizeRequest(request), traceId);
             convergeRunAfterAutoExecution(run, sessionId, runId, batch);
-            sessionMemoryStore.save(session);
+            if (run.getState().isTerminal() && !sessionMemoryStore.updateRunLifecycle(sessionId, run)) {
+                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "Agent Run changed while automatic tool execution was converging, runId=" + runId);
+            }
             return new AgentRunToolAutoExecutionResponse(
                     sessionId,
                     runId,

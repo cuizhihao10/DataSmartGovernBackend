@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any
 
@@ -312,6 +314,40 @@ class RagPipeline:
     ) -> dict[str, Any]:
         """构建低敏检索摘要。"""
 
+        query_digest = "sha256:" + hashlib.sha256(query.question.encode("utf-8")).hexdigest()
+        retrieved_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        query_terms = tokenize_for_rag(query.question)
+        query_summary = {
+            "kind": "RAG_QUERY",
+            "queryLength": len(query.question),
+            "tokenCount": len(query_terms),
+            "retrievalMode": str(query.retrieval_mode).lower(),
+            "sourceTypes": tuple(str(value).lower() for value in (query.source_types or ())),
+        }
+        evidence_records = tuple(
+            {
+                "evidenceId": "rag-evidence:" + hashlib.sha256(
+                    f"{query_digest}|{query.tenant_id}|{query.project_id}|{query.workspace_key}|{item.chunk.chunk_id}".encode("utf-8")
+                ).hexdigest(),
+                "citationId": f"C{index}",
+                "documentId": item.chunk.document_id,
+                "chunkId": item.chunk.chunk_id,
+                "sourceType": item.chunk.source_type.value,
+                "sourceUri": item.chunk.source_uri,
+                "retrievedAt": retrieved_at,
+                "queryDigest": query_digest,
+                "querySummary": query_summary,
+                "finalScore": round(item.final_score, 6),
+            }
+            for index, item in enumerate(selected, start=1)
+        )
+        source_type_counts: dict[str, int] = {}
+        for record in evidence_records:
+            source_type = str(record["sourceType"])
+            source_type_counts[source_type] = source_type_counts.get(source_type, 0) + 1
+        evidence_digest = "sha256:" + hashlib.sha256(
+            "|".join(str(record["evidenceId"]) for record in evidence_records).encode("utf-8")
+        ).hexdigest()
         return {
             "candidateCount": len(retrieved),
             "evidenceAcceptedCount": len(gated),
@@ -324,6 +360,19 @@ class RagPipeline:
             "hasVectorSignal": any(item.vector_score > 0 for item in retrieved),
             "hasLexicalSignal": any(item.lexical_score > 0 for item in retrieved),
             "citationRequired": True,
+            "queryDigest": query_digest,
+            "querySummary": query_summary,
+            "retrievedAt": retrieved_at,
+            "evidenceRecords": evidence_records,
+            "sourceTypeCounts": dict(sorted(source_type_counts.items())),
+            "evidenceDigest": evidence_digest,
+            "evidenceCount": len(evidence_records),
+            "evidenceSourceTypes": tuple(sorted(source_type_counts)),
+            "scope": {
+                "tenantId": query.tenant_id,
+                "projectId": query.project_id,
+                "workspaceKey": query.workspace_key,
+            },
             "payloadPolicy": "LOW_SENSITIVE_RAG_RETRIEVAL_SUMMARY_ONLY",
         }
 
@@ -408,7 +457,16 @@ def _validate_query(query: RagQuery) -> RagQuery:
         generate_answer=bool(query.generate_answer),
         trace_id=query.trace_id,
         session_id=query.session_id,
+        retrieval_mode=_retrieval_mode(query.retrieval_mode),
+        source_types=tuple(
+            sorted({str(value).strip().lower() for value in (query.source_types or ()) if str(value).strip()})
+        ),
     )
+
+
+def _retrieval_mode(value: Any) -> str:
+    normalized = str(value or "hybrid").strip().lower()
+    return normalized if normalized in {"hybrid", "lexical", "vector"} else "hybrid"
 
 
 __all__ = [

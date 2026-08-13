@@ -1,5 +1,14 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-08-12 勘误：data-sync Autopilot PostgreSQL V20-V25 控制面契约
+
+当前源码包含 `data-sync` 的 V20-V25 连续增量。它们是 PostgreSQL `data_sync` schema 的恢复控制面契约，不是“任意环境已经自动恢复”的验收结论：实际环境仍须由 Flyway 按顺序执行，并单独保留版本、校验和和迁移结果证据。
+
+- V20 新增 `data_sync_autopilot_recovery_case` 和 `data_sync_autopilot_recovery_receipt`，并在 `data_sync_task_definition` 增加低敏 `autopilot_policy`；表中只保存范围标识、状态、轮次、截止时间、风险和摘要指纹，不保存 prompt、SQL、凭据、日志、模型输出或数据行。
+- V21 新增 durable trigger outbox；V22 新增消费者结果摘要；V23 新增带 claim token、退避和死信状态的 sidecar compensation journal；V24 新增 digest-bound quarantine durable receipt，防止同一 preview 选择集重复改变状态；V25 新增模型自主 `SEARCH`/`SKIP`、策略代码、证据计数和 evidence-ID digest 的低敏投影约束。
+- 这些变化不扩大 2026-07 data-sync MySQL 存量迁移的 10 张表范围，也没有需要从 MySQL 导入的 Autopilot 历史表；禁止把 V20-V25 表临时塞进 JSONL/COPY 脚本或手工补表。
+- `AUTO_APPROVED` 是可持久化决策，不是 worker 已执行的唯一证明。当前源码已包含 Kafka、Python、Java 双策略、失败对象 retry、受 preview/selector/receipt 约束的 quarantine 和最终 receipt；仍须以实际 Flyway、broker、内部 HTTP、worker、补偿 journal、指标和成功/失败 E2E 证明目标环境具备运行闭环。恢复写动作后的 PRECHECK/MONITOR durable 复核目前仍是主线待验证项，不能由 V25 或历史只读 Recovery E2E 代替。
+
 ## 2026-08-10 更新：RAG 与 LangGraph PostgreSQL durable 实证
 
 此前文档中“LangGraph durable checkpoint 尚未切换”与“PostgreSQL LangGraph store 真实 smoke 未完成”是 2026-07 阶段记录，已被后续实测取代。当前 Compose 显式使用 PostgreSQL checkpointer 且 `fail-open=false`；Gateway RAG 查询返回 2 条 citation，并在 `ai_memory.langgraph_thread_checkpoint` 与 `ai_memory.langgraph_checkpoint_event` 各写入 3 条 `retrieve -> evidence_gate -> grounded_answer_completed` 事实。Python Runtime 重启后仍可经 Gateway 读取最终 version 3 和 3 个事件，同项目其他 actor 被 `403` 拒绝。真实 Recovery `six-agent-recovery-rag-durable-20260810214832` 进一步验证 2 条 grounded citation 与 2 条 `rag:sha256:` durable evidence reference 进入六 Agent 闭环。

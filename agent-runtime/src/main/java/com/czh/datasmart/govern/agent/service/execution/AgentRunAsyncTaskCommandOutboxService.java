@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandPla
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStatus;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -269,6 +270,9 @@ public class AgentRunAsyncTaskCommandOutboxService {
             payload.put("targetEndpoint", item.targetEndpoint());
         }
         payload.put("tenantId", item.tenantId());
+        sessionStore.findById(plan.sessionId())
+                .map(AgentSessionRecord::getApplicationId)
+                .ifPresent(applicationId -> payload.put("applicationId", applicationId));
         payload.put("projectId", item.projectId());
         payload.put("workspaceId", item.workspaceId());
         payload.put("actorId", item.actorId());

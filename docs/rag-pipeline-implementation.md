@@ -153,3 +153,15 @@ MASTER_ORCHESTRATOR
 - `services/rag/command_worker_receipt.py` 新增 RAG 专用 worker receipt helper，把 `knowledge.rag.query` 的执行结果裁剪成 Java `AgentToolActionCommandWorkerReceiptRequest` 可消费的低敏 payload。
 - RAG receipt 只保存 `queryRef`、`commandId`、`artifactReference`、候选数、选中 chunk 数和引用数，不保存 question、answer、compressedContext、document body、chunk text、sourceUri、prompt、SQL、endpoint、token 或 secret。
 - 这一步仍不代表 dispatcher/worker 已经完整自动消费 outbox；它完成的是 `proposal -> outbox/write -> worker receipt payload` 的 Python/Java 控制面契约闭环，为后续真实 E2E worker 消费铺路。
+
+## 2026-08-11 补充：Recovery 按需 RAG 与双 durable turn 边界
+
+Recovery 不是“发生失败就先检索”的固定流程。`RECOVERY_AGENT` 让模型在低敏失败事实、诊断覆盖、已有引用和自身置信度基础上输出 `ragDecision=SEARCH|SKIP`、原因和置信度；`AgentSessionScheduler` 也只在结构化恢复证据需求成立时让 `KNOWLEDGE_AGENT` 参与，不把 RAG 设为每轮 Recovery 的第一步。
+
+- 普通同步规划也采用同一原则：结构化意图只决定 `knowledge.rag.query` 是否进入 model-visible tools；模型可以在获得候选工具后调用或跳过。规则式 ToolPlanner 不得把 `useRag`、`knowledgeQuery` 等请求变量重新解释成强制 RAG ToolPlan，否则会把模型的 `SKIP` 覆盖掉。这里的自主性只针对“是否使用已授权的检索工具”，不改变 Java 的权限、审计、审批和副作用边界。
+- `SEARCH` 且当前没有 grounded 知识时，系统会丢弃同轮任何修复建议，只保留 `SEARCH_RECOVERY_KNOWLEDGE -> sync.execution.rag.lookup` 的只读动作。检索结果先作为低敏 durable evidence/reference 固化，下一 turn 才能重新提出恢复候选，避免模型在“决定检索”的同一步假定证据已经支持修复。
+- `SKIP` 表示模型认为现有 grounded citation 已足够，不是一个执行许可；工具注册、可见性、tenant/project 范围、`allowed_actions`、参数 schema、风险、预算、审批和 Java control-plane handoff 仍逐项生效。
+- 为兼容未输出新字段的旧 Provider，`AUTO` 在缺少 grounded citation 时归一为 `SEARCH`，在已有有效 grounded citation 时归一为 `SKIP`。
+- RAG 证据只能补充恢复判断，不能替代 Autopilot 的幂等、作用域、循环/时间预算或风险决策。高风险动作仍由 Java 审批链路处理，Python 不因检索成功而直接执行恢复。
+
+本轮检索能力只包括受治理 RAG、结构化控制面查询与 allowlist 的 repository 文本搜索；不把 Elasticsearch 或 Web Search 作为自动恢复的隐含依赖。这里的 repository workspace 只是 worker 注入的文件系统搜索根，受相对路径、隐藏/凭据路径、符号链接和预算限制，不是产品数据模型中的 Workspace 层级。

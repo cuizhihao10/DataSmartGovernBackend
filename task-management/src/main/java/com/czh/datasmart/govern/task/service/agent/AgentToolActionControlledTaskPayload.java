@@ -52,8 +52,13 @@ public record AgentToolActionControlledTaskPayload(
         String taskStatus,
         String taskType,
         Long tenantId,
+        Long applicationId,
         Long projectId,
+        String userId,
         String actorId,
+        String agentId,
+        String delegationId,
+        String actionFingerprint,
         String commandId,
         String commandType,
         String commandKind,
@@ -75,6 +80,74 @@ public record AgentToolActionControlledTaskPayload(
         List<String> delegationEvidence,
         LocalDateTime parsedAt
 ) {
+
+    /**
+     * Keeps source compatibility for legacy in-module construction while
+     * leaving the new controlled-action scope fields unset. The resolver and
+     * approval gate deliberately reject such a payload before execution.
+     */
+    public AgentToolActionControlledTaskPayload(
+            Long taskId,
+            String taskStatus,
+            String taskType,
+            Long tenantId,
+            Long projectId,
+            String actorId,
+            String commandId,
+            String commandType,
+            String commandKind,
+            String auditId,
+            String sessionId,
+            String runId,
+            String toolCode,
+            String targetService,
+            String targetEndpoint,
+            Long workspaceId,
+            String payloadReference,
+            String payloadReferenceType,
+            String payloadKey,
+            Boolean workerDispatchEnabled,
+            List<String> argumentNames,
+            List<String> sensitiveArgumentNames,
+            String confirmationId,
+            List<String> policyVersions,
+            List<String> delegationEvidence,
+            LocalDateTime parsedAt
+    ) {
+        this(
+                taskId,
+                taskStatus,
+                taskType,
+                tenantId,
+                null,
+                projectId,
+                null,
+                actorId,
+                null,
+                null,
+                null,
+                commandId,
+                commandType,
+                commandKind,
+                auditId,
+                sessionId,
+                runId,
+                toolCode,
+                targetService,
+                targetEndpoint,
+                workspaceId,
+                payloadReference,
+                payloadReferenceType,
+                payloadKey,
+                workerDispatchEnabled,
+                argumentNames,
+                sensitiveArgumentNames,
+                confirmationId,
+                policyVersions,
+                delegationEvidence,
+                parsedAt
+        );
+    }
 
     public AgentToolActionControlledTaskPayload {
         argumentNames = argumentNames == null ? List.of() : List.copyOf(argumentNames);

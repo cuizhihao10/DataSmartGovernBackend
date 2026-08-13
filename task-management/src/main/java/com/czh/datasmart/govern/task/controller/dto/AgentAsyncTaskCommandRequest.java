@@ -111,6 +111,12 @@ public class AgentAsyncTaskCommandRequest {
     private Long tenantId;
 
     /**
+     * Product application boundary for controlled tool-action approval facts.
+     * Legacy async-tool commands do not require this field.
+     */
+    private Long applicationId;
+
+    /**
      * 项目边界。用于项目级队列、公平性、权限和成本归集。
      */
     @Min(value = 1, message = "projectId 必须大于 0")
@@ -130,6 +136,18 @@ public class AgentAsyncTaskCommandRequest {
      */
     @NotBlank(message = "actorId 不能为空")
     private String actorId;
+
+    /** Human identity represented by the controlled Agent action. */
+    private String userId;
+
+    /** Independently verified executing Agent identity. */
+    private String agentId;
+
+    /** Stable delegation record binding the human user to the executing Agent. */
+    private String delegationId;
+
+    /** Immutable low-sensitivity fingerprint of the approved action proposal. */
+    private String actionFingerprint;
 
     /**
      * 全链路追踪 ID。

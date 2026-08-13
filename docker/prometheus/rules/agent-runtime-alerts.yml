@@ -104,6 +104,54 @@ groups:
           summary: "Agent 异步 command pre-check 出现未知 issueCode"
           description: "最近 30 分钟出现 issueCode=OTHER。通常表示代码新增了 pre-check 原因但未同步指标白名单、告警和 runbook。请检查 AgentAsyncTaskCommandPreCheckMetricsService 的 ALLOWED_ISSUE_CODES。"
 
+  # Autopilot 指标只使用固定 outcome 标签。单个 eventId/taskId/executionId 继续通过 PostgreSQL
+  # recovery case、receipt、trigger outbox 和结构化日志排查，绝不能进入 Prometheus 标签。
+  - name: datasmart-agent-runtime-autopilot-recovery
+    rules:
+      - alert: AgentAutopilotRecoveryDeadLettered
+        expr: increase(datasmart_agent_autopilot_recovery_delivery_total{outcome="DEAD_LETTERED"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          module: agent-runtime
+          category: autopilot-recovery
+        annotations:
+          summary: "Agent Autopilot 恢复触发进入 DLT"
+          description: "最近 15 分钟有恢复触发耗尽 Kafka 技术重试。请暂停盲目重放，先检查 Python Runtime、data-sync callback、PostgreSQL 和内部服务令牌；按 runbook 使用原 eventId 做受控幂等重放。"
+
+      - alert: AgentAutopilotRecoveryPlanningFailureIncreasing
+        expr: increase(datasmart_agent_autopilot_recovery_planning_total{outcome="FAILED"}[15m]) > 2
+        for: 2m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: autopilot-recovery
+        annotations:
+          summary: "Agent Autopilot 恢复规划连续失败"
+          description: "最近 15 分钟 Recovery Specialist 调用或返回合同连续失败。请检查真实模型 Provider、Python Runtime、RAG 持久化和响应 schema；非法 2xx 合同也应计入该指标并走有界技术重试。"
+
+      - alert: AgentAutopilotRecoveryEvidenceRejected
+        expr: increase(datasmart_agent_autopilot_recovery_evidence_total{outcome="REJECTED"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: autopilot-recovery
+        annotations:
+          summary: "Agent Autopilot 恢复证据被 Java 拒绝"
+          description: "最近 15 分钟出现证据 scope、摘要、来源或新鲜度拒绝。该拒绝必须回写低敏 durable terminal result 并 ACK，不能靠 Kafka 重试改变业务事实；请按 case/receipt 定位排查。"
+
+      - alert: AgentAutopilotRecoveryAttentionRequired
+        expr: increase(datasmart_agent_autopilot_recovery_execution_total{outcome="ATTENTION_REQUIRED"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: autopilot-recovery
+        annotations:
+          summary: "Agent Autopilot 恢复需要人工介入"
+          description: "最近 15 分钟有恢复因风险、循环预算、重复修复策略或策略拒绝进入 ATTENTION_REQUIRED。请查询 data-sync recovery case 与 receipt，不要绕过首次授权或审批范围。"
+
   - name: datasmart-agent-runtime-skill-visibility-index
     rules:
       - alert: AgentRuntimeSkillVisibilityIndexMaterializationFailureDetected

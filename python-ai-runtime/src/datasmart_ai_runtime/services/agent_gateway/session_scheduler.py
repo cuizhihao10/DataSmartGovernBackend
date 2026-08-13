@@ -464,7 +464,7 @@ class AgentSessionScheduler:
             or (("sync.task.precheck",) if precheck_required and sync_lifecycle_requested else ())
         )
         recovery_required = bool(routing_recovery_tools) or cls._has_recovery_context(request) or cls._plan_has_recovery_fact(plan)
-        recovery_evidence_required = recovery_required or bool(routing_evidence_tools) or cls._has_explicit_true(
+        recovery_evidence_required = bool(routing_evidence_tools or evidence_tools) or cls._has_explicit_true(
             request_mappings,
             (
                 "recoveryEvidenceRequired",

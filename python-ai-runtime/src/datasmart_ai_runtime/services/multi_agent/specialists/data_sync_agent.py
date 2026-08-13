@@ -316,6 +316,7 @@ class _ModelRequestGovernance:
     quarantined_tool_names: tuple[str, ...] = ()
     quarantined_actions: tuple[str, ...] = ()
     quarantined_configuration_field_count: int = 0
+    active_configuration_control_fields: tuple[str, ...] = ()
     fatal_error_code: str | None = None
 
 
@@ -383,6 +384,70 @@ class DataSyncSpecialistAgent:
             "taskid",
             "toolcall",
             "toolcalls",
+        }
+    )
+    # Generic JSON models sometimes echo the execution boundary as a small status
+    # object, for example ``{"execution": {"status": "NOT_STARTED"}}``.
+    # These fields are still discarded by the deterministic configuration whitelist;
+    # this allowlist only tells the scanner when such an echo is an explicit negative
+    # statement rather than a real task/command claim. Unknown keys remain risky.
+    _INACTIVE_EXECUTION_STATUSES = frozenset(
+        {
+            "0",
+            "DRAFT",
+            "DRAFT_ONLY",
+            "IDLE",
+            "INACTIVE",
+            "NONE",
+            "NOT_APPLIED",
+            "NOT_EXECUTED",
+            "NOT_REQUESTED",
+            "NOT_RUN",
+            "NOT_STARTED",
+            "NO_EXECUTION",
+            "NO_SIDE_EFFECT",
+            "NO_SIDE_EFFECTS",
+            "NULL",
+            "PENDING_CONFIRMATION",
+            "PENDING_USER_CONFIRMATION",
+            "PLANNING",
+            "PLANNING_ONLY",
+            "PREVIEW_ONLY",
+            "PROPOSAL_ONLY",
+            "SKIPPED",
+            "UNSET",
+            "WAITING_FOR_CONFIRMATION",
+            "WAITING_USER_CONFIRMATION",
+        }
+    )
+    _INACTIVE_EXECUTION_SUMMARY_KEYS = frozenset(
+        {
+            "approved",
+            "description",
+            "executionmode",
+            "executionsummary",
+            "message",
+            "mode",
+            "phase",
+            "reason",
+            "requested",
+            "result",
+            "state",
+            "status",
+            "summary",
+        }
+    )
+    _INACTIVE_EXECUTION_BOOLEAN_KEYS = frozenset(
+        {
+            "approved",
+            "executed",
+            "hasexecution",
+            "persisted",
+            "published",
+            "requested",
+            "saved",
+            "sideeffect",
+            "started",
         }
     )
     _SAFE_INVOCATION_SUMMARY_KEYS = frozenset(
@@ -657,6 +722,14 @@ class DataSyncSpecialistAgent:
                     "模型建议包含 DATA_SYNC_AGENT 无权执行的工具或副作用，已在保存、发布和执行之前拦截。"
                 ),
                 model_invocation_summary=invocation_summary,
+                structured_output={
+                    "quarantinedConfigurationFieldCount": (
+                        request_governance.quarantined_configuration_field_count
+                    ),
+                    "activeConfigurationControlFields": (
+                        request_governance.active_configuration_control_fields
+                    ),
+                },
                 tool_activities=tuple(tool_activities),
                 evidence_references=tuple(evidence_references),
             )
@@ -2168,15 +2241,18 @@ class DataSyncSpecialistAgent:
         # 副作用”和“明确声明没有产生副作用”：前者拒绝整个 turn，后者只隔离并由后续
         # 确定性白名单重建丢弃。这样既不放宽执行权限，也避免模型返回
         # ``persisted: false`` 时把一份完整草案误判为越权。
-        forbidden_field_count, active_side_effect_claim = self._scan_forbidden_output_fields(
-            output.configuration
-        )
+        (
+            forbidden_field_count,
+            active_side_effect_claim,
+            active_control_fields,
+        ) = self._scan_forbidden_output_fields(output.configuration)
         if active_side_effect_claim:
             return _ModelRequestGovernance(
                 accepted_read_tools=accepted_read_tools,
                 quarantined_tool_names=quarantined_tool_names,
                 quarantined_actions=output.requested_actions,
                 quarantined_configuration_field_count=forbidden_field_count,
+                active_configuration_control_fields=active_control_fields,
                 fatal_error_code="DATA_SYNC_SPECIALIST_SIDE_EFFECT_REJECTED",
             )
         return _ModelRequestGovernance(
@@ -2192,53 +2268,69 @@ class DataSyncSpecialistAgent:
         value: Any,
         *,
         depth: int = 0,
-    ) -> tuple[int, bool]:
-        """扫描模型配置中的控制字段，并判断它是否声称产生了真实副作用。
+    ) -> tuple[int, bool, tuple[str, ...]]:
+        """扫描模型配置中的控制字段，并生成不含字段值的低敏诊断。
 
         Returns:
-            二元组第一项是命中的静态控制字段数量，只用于低敏治理统计；第二项表示是否存在
-            `publish: true`、非空 `toolCalls`、正数 `taskId` 等主动副作用声明。`false`、`null`、
-            空集合及 `NOT_EXECUTED` 一类显式否定值只会被隔离，因为确定性配置重建不会复制
-            这些字段。超过八层的未知结构仍直接标记为主动风险，保持原有 fail-closed 边界。
+            三元组第一项是命中的静态控制字段数量；第二项表示是否存在 `publish: true`、非空
+            `toolCalls`、正数 `taskId` 等主动副作用声明；第三项只包含实际处于主动状态的规范化
+            控制键名。键名来自本类固定白名单，不包含模型值、JSON 路径、工具参数、SQL 或模型正文，
+            因而可以安全用于运行日志和 E2E 定位。`false`、`null`、空集合及 `NOT_EXECUTED` 一类
+            显式否定值只会被隔离。超过八层的未知结构仍直接标记为主动风险，并使用固定诊断键
+            `depthlimit`，保持原有 fail-closed 边界。
         """
 
         if depth > 8:
-            return 0, True
+            return 0, True, ("depthlimit",)
         forbidden_count = 0
         active_claim = False
+        active_fields: list[str] = []
         if isinstance(value, Mapping):
             for key, child in value.items():
-                if cls._normalized_key(key) in cls._FORBIDDEN_OUTPUT_KEYS:
+                normalized_key = cls._normalized_key(key)
+                if normalized_key in cls._FORBIDDEN_OUTPUT_KEYS:
                     forbidden_count += 1
-                    active_claim = active_claim or cls._is_active_side_effect_claim(child)
+                    child_active = cls._is_active_side_effect_claim(child)
+                    active_claim = active_claim or child_active
+                    if child_active and normalized_key not in active_fields:
+                        active_fields.append(normalized_key)
                     # The complete value belongs to a forbidden control field.  Do not
                     # traverse it again and accidentally double count nested DTO members.
                     continue
-                child_count, child_active = cls._scan_forbidden_output_fields(
+                child_count, child_active, child_fields = cls._scan_forbidden_output_fields(
                     child,
                     depth=depth + 1,
                 )
                 forbidden_count += child_count
                 active_claim = active_claim or child_active
-            return forbidden_count, active_claim
+                for field_name in child_fields:
+                    if field_name not in active_fields:
+                        active_fields.append(field_name)
+            return forbidden_count, active_claim, tuple(active_fields)
         if isinstance(value, (list, tuple)):
             for item in value:
-                child_count, child_active = cls._scan_forbidden_output_fields(
+                child_count, child_active, child_fields = cls._scan_forbidden_output_fields(
                     item,
                     depth=depth + 1,
                 )
                 forbidden_count += child_count
                 active_claim = active_claim or child_active
-            return forbidden_count, active_claim
-        return 0, False
+                for field_name in child_fields:
+                    if field_name not in active_fields:
+                        active_fields.append(field_name)
+            return forbidden_count, active_claim, tuple(active_fields)
+        return 0, False, ()
 
-    @staticmethod
-    def _is_active_side_effect_claim(value: Any) -> bool:
-        """判断控制字段值是否表达“已经或应当执行”而不是明确否定。
+    @classmethod
+    def _is_active_side_effect_claim(cls, value: Any) -> bool:
+        """判断模型边界回显是否包含真实副作用声明。
 
-        该方法只负责分类，不会信任或执行模型值。即使结果为 ``False``，对应字段也会在
-        `_validate_configuration` 的业务白名单重建中被完全丢弃；结果为 ``True`` 时则终止
-        Specialist turn，防止任何任务 ID、执行回执或命令对象进入后续桥接层。
+        真实模型经常把系统要求的“尚未执行”说明包装成一个 ``execution`` 对象，里面可能有
+        ``status=NOT_STARTED``、``executed=false`` 或空的 ``taskId``。这些字段不会进入最终
+        配置，因为 `_validate_configuration` 会重新建立业务字段白名单；如果把所有非空 Mapping
+        都当成主动副作用，就会把合法的同步草案错误地拒绝。这里仅放行明确的负面状态和空值，
+        并且对未知键、非空 ID、非空动作、成功/运行中状态保持 fail-closed。该方法只分类，绝不
+        信任、保存或执行模型值。
         """
 
         if value is None or value is False:
@@ -2259,10 +2351,87 @@ class DataSyncSpecialistAgent:
                 "NOT_PERSISTED",
                 "NOT_PUBLISHED",
                 "NOT_SAVED",
+                "NOT_STARTED",
+                "NOT_RUN",
+                "NO_EXECUTION",
+                "NO_SIDE_EFFECT",
+                "NO_SIDE_EFFECTS",
+                "DRAFT",
                 "DRAFT_ONLY",
-            }
+                "PLANNING",
+                "PLANNING_ONLY",
+                "PREVIEW_ONLY",
+                "PROPOSAL_ONLY",
+                "PENDING_CONFIRMATION",
+                "PENDING_USER_CONFIRMATION",
+                "WAITING_FOR_CONFIRMATION",
+                "WAITING_USER_CONFIRMATION",
+                "SKIPPED",
+                "INACTIVE",
+                "IDLE",
+                "UNSET",
+            } and normalized not in cls._INACTIVE_EXECUTION_STATUSES
         if isinstance(value, Mapping):
-            return bool(value)
+            if not value:
+                return False
+
+            has_explicit_inactive_marker = False
+            for key, child in value.items():
+                normalized_key = cls._normalized_key(key)
+
+                # A nested control field is safe only when it is explicitly empty or
+                # negative. A non-empty task/execution identifier or action remains a
+                # real capability claim even if a sibling status says NOT_EXECUTED.
+                if normalized_key in cls._FORBIDDEN_OUTPUT_KEYS:
+                    if cls._is_active_side_effect_claim(child):
+                        return True
+                    has_explicit_inactive_marker = True
+                    continue
+
+                if normalized_key not in cls._INACTIVE_EXECUTION_SUMMARY_KEYS:
+                    return True
+
+                if normalized_key in cls._INACTIVE_EXECUTION_BOOLEAN_KEYS:
+                    if child is False or child is None:
+                        has_explicit_inactive_marker = True
+                        continue
+                    if isinstance(child, str):
+                        normalized_child = re.sub(r"[\s-]+", "_", child.strip()).upper()
+                        if normalized_child in {"", "0", "FALSE", "NO", "NONE", "NULL"}:
+                            has_explicit_inactive_marker = True
+                            continue
+                    return True
+
+                if normalized_key in {"status", "state", "phase", "mode", "executionmode"}:
+                    if isinstance(child, bool) and child is False:
+                        has_explicit_inactive_marker = True
+                        continue
+                    if isinstance(child, str):
+                        normalized_child = re.sub(r"[\s-]+", "_", child.strip()).upper()
+                        if normalized_child in cls._INACTIVE_EXECUTION_STATUSES:
+                            has_explicit_inactive_marker = True
+                            continue
+                    return True
+
+                if normalized_key == "result":
+                    if isinstance(child, Mapping) and not cls._is_active_side_effect_claim(child):
+                        has_explicit_inactive_marker = True
+                        continue
+                    if child in (None, False, "", "NONE", "NULL"):
+                        has_explicit_inactive_marker = True
+                        continue
+                    return True
+
+                # Human-readable summary/reason/message text cannot grant an execution
+                # capability, but it is accepted only alongside an explicit negative
+                # marker elsewhere in the same object. It is discarded before handoff.
+                if child is not None and not isinstance(child, (Mapping, list, tuple, set)):
+                    continue
+                if child is None:
+                    continue
+                return True
+
+            return not has_explicit_inactive_marker
         if isinstance(value, (list, tuple, set)):
             return bool(value)
         # Unknown object types are not valid JSON configuration values. Treat them as

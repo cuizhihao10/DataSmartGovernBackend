@@ -152,4 +152,21 @@ class GatewayAuthorizationPropertiesTest {
                     }
                 });
     }
+
+    /** The public Autopilot status query must be matched before the execution callback wildcard. */
+    @Test
+    void applicationYamlKeepsAutopilotRecoveryStatusReadOnly() throws IOException {
+        String yaml = Files.readString(Path.of("src/main/resources/application.yml"))
+                .replace("\r\n", "\n");
+        String statusPath = "/api/sync/sync-tasks/*/executions/*/autopilot-recovery";
+        String callbackPath = "/api/sync/sync-tasks/*/executions/*/**";
+
+        assertThat(yaml).contains(statusPath);
+        assertThat(yaml.indexOf(statusPath)).isLessThan(yaml.indexOf(callbackPath));
+        String statusRule = yaml.substring(yaml.indexOf(statusPath), yaml.indexOf(callbackPath));
+        assertThat(statusRule)
+                .contains("resource-type: SYNC_EXECUTION")
+                .contains("GET: VIEW")
+                .doesNotContain("POST: CALLBACK");
+    }
 }

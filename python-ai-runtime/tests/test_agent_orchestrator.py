@@ -385,7 +385,44 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertTrue(rag_plan.arguments["scopePolicy"]["projectScoped"])
         self.assertTrue(rag_plan.arguments["evidencePolicy"]["failClosedWhenNoEvidence"])
         self.assertEqual("model_tool_call", rag_plan.governance_hints["source"])
-        self.assertEqual("required", provider.requests[0].tool_choice)
+        self.assertEqual("auto", provider.requests[0].tool_choice)
+        self.assertEqual("SEARCH", plan.model_interaction_summary["planning"]["retrievalDecision"])
+
+    def test_model_can_skip_rag_without_rule_planner_adding_it_back(self) -> None:
+        """模型未选择检索时，规则式能力准入不得伪装成一次 SEARCH 决策。"""
+
+        provider = ToolCallingModelProviderRegistry(tool_calls=())
+        real_route = replace(
+            default_model_routes()[0],
+            provider_name="real-provider",
+            provider_type=ProviderType.OPENAI_COMPATIBLE,
+            model_name="real-model",
+            endpoint="https://model.example.local/v1",
+        )
+        orchestrator = AgentOrchestrator(
+            model_routes=ModelRouteRegistry((real_route,)),
+            tool_planner=ToolPlanner(default_tool_registry()),
+            model_providers=provider,
+            skill_registry=AgentSkillRegistry(default_skill_registry()),
+        )
+
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="operator-a",
+                objective="任务 Excel 导入失败，请判断现有结构化错误是否足以给出修复建议",
+                variables={"taskImportResultRef": "artifact:task-import-result/import-skip-rag"},
+            )
+        )
+
+        self.assertIn(
+            "knowledge.rag.query",
+            {tool.name for tool in provider.requests[0].available_tools},
+        )
+        self.assertEqual("auto", provider.requests[0].tool_choice)
+        self.assertNotIn("knowledge.rag.query", {item.tool_name for item in plan.tool_plans})
+        self.assertEqual("SKIP", plan.model_interaction_summary["planning"]["retrievalDecision"])
 
     def test_real_provider_waits_for_real_tool_receipts_before_second_turn(self) -> None:
         """真实 Provider 不得基于规划阶段的模拟工具结果生成二轮回答。"""

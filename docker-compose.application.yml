@@ -14,7 +14,9 @@ x-java-common-environment: &java-common-environment
   # `TZ` 影响容器内系统时间和部分 native 库；`-Duser.timezone` 明确约束 JVM 默认时区，
   # 避免 Spring Boot 日志、LocalDateTime.now()、MyBatis 自动填充时间和调度计算继续按 UTC 慢 8 小时。
   TZ: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
-  JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8 -Duser.timezone=${DATASMART_TIME_ZONE:-Asia/Shanghai}"
+  # Nacos Client 2.3.x 的 Naming CacheDirUtil 读取 `JM.SNAPSHOT.PATH`，再自动追加 `/nacos/naming/{namespace}`。
+  # Java 容器根文件系统只读，因此把快照根目录放到现有 `/tmp` tmpfs；重启后缓存可从 Nacos 安全重建。
+  JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8 -Duser.timezone=${DATASMART_TIME_ZONE:-Asia/Shanghai} -DJM.SNAPSHOT.PATH=/tmp"
   # Jackson 的时区主要影响 Date/Calendar/部分 Offset 类型的 JSON 展示；LocalDateTime 本身不带时区，
   # 仍依赖 JVM 默认时区和业务层写入策略，因此这里与 JVM 时区保持一致。
   SPRING_JACKSON_TIME_ZONE: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
@@ -83,6 +85,9 @@ services:
       DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_ENABLED: "true"
       DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_SECRET: ${DATASMART_GATEWAY_SIGNATURE_SECRET:-local-development-only-change-me}
       DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_KEY_ID: ${DATASMART_GATEWAY_SIGNATURE_KEY_ID:-gateway-compose-v1}
+      # 仅用于 Gateway -> Agent Runtime 外部控制面入口证明。生产必须由 Secret Manager 注入强随机值，
+      # 不能使用示例 fallback；Gateway 会删除浏览器传入值后再写入该值。
+      DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:-local-compose-agent-runtime-internal-token-change-before-production}
     ports:
       - "8080:8080"
     depends_on:
@@ -273,6 +278,11 @@ services:
       DATASMART_DATA_SYNC_DATASOURCE_CAPABILITY_BASE_URL: http://datasource-management:8082
       DATASMART_DATA_SYNC_DATASOURCE_RUN_ONCE_BASE_URL: http://datasource-management:8082
       DATASMART_DATA_SYNC_TASK_MANAGEMENT_RECEIPT_BASE_URL: http://task-management:8081
+      # Agent Runtime 只通过固定内部 API 回写 Autopilot decision/transition。显式注入同一服务令牌，
+      # 避免 data-sync 因“未配置即放行”的本地源码测试兼容行为而在 Compose 网络中失去认证边界。
+      DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:-local-compose-agent-runtime-internal-token-change-before-production}
+      DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_ENABLED: ${DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_ENABLED:-true}
+      DATASMART_DATA_SYNC_AUTOPILOT_RECOVERY_TRIGGER_TOPIC: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_TOPIC:-datasmart.agent.autopilot-recovery-trigger.v1}
       # 完整 Compose 运行模式代表“产品闭环联调”，不能只创建 QUEUED execution 而没有执行器消费。
       # task-scheduler 负责扫描 SCHEDULED/定期任务并创建到期 execution；
       # worker-loop 负责认领 QUEUED execution，并调用 datasource-management 的 run-once 执行真实读写。
@@ -355,6 +365,8 @@ services:
       DATASMART_AGENT_RUNTIME_JDBC_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_AGENT_RUNTIME_FLYWAY_ENABLED: "true"
       DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:-local-compose-agent-runtime-internal-token-change-before-production}
+      # Java 控制面只接受 Gateway 注入的部署 secret；源码测试默认关闭，完整 Compose 必须明确打开。
+      DATASMART_AGENT_RUNTIME_CONTROL_PLANE_INGRESS_ENABLED: "true"
       DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN: ${DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN:-local-agent-approval-fact-token-change-before-production}
       DATASMART_PERMISSION_ADMIN_EVALUATE_URL: http://permission-admin:8085/permissions/evaluate
       DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-action-approvals/evaluate
@@ -367,9 +379,21 @@ services:
       DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_TASK_MANAGEMENT: http://task-management:8081
       DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_DATA_SYNC: http://data-sync:8086
       DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_PYTHON_AI_RUNTIME: http://python-ai-runtime:8090
-      # dispatcher 默认关闭，避免容器启动后自动派发历史 outbox 或执行真实工具。
+      # 该 listener 只消费 data-sync durable outbox 的低敏恢复触发。单模块开发仍默认关闭，
+      # 完整 Compose 联调则显式开启，以验证 Kafka -> Java -> Python -> data-sync 的真实闭环。
+      DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED:-true}
+      DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_TOPIC: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_TOPIC:-datasmart.agent.autopilot-recovery-trigger.v1}
+      DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_GROUP_ID: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_GROUP_ID:-datasmart-agent-autopilot-recovery}
+      # 工具状态事件 outbox 仍保持关闭。异步命令 dispatcher 仅对已经完成权限、内部鉴权、只读挂载和
+      # 低敏回执闭环的 workspace.text.search 开放；工具码白名单在数据库查询前生效，不会触碰其他历史命令。
       DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_ENABLED: "false"
-      DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED: "false"
+      DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ALLOWED_TOOL_CODES: workspace.text.search
+      DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_BASE_URL: http://python-ai-runtime:8090
+      DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_RUN_PATH: /internal/agent/workspace-text/command-worker/run
+      DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_REPOSITORY_ROOT: /repositories/backend
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_SERVICE_TOKEN: ${DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_SERVICE_TOKEN:-local-compose-workspace-text-search-change-before-production}
       # MCP Durable Worker 是 agent-runtime 调用 Python Runtime 执行真实 MCP tools/call 的内部桥接。
       # 当前只打开 client 配置，不打开 outbox 自动消费；后续 dispatcher 接入后再由 outbox 状态机受控触发。
       DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_ENABLED: "true"
@@ -385,7 +409,8 @@ services:
       DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_PATH: /internal/agent/continuations/post-confirm
       DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_TOKEN: ${DATASMART_AGENT_POST_CONFIRM_CONTINUATION_TOKEN:-local-compose-post-confirm-change-before-production}
     ports:
-      - "8091:8091"
+      # 仅保留给本机诊断和真实 E2E；公网/局域网流量必须经 Gateway，避免绕过入口鉴权伪造身份 Header。
+      - "127.0.0.1:8091:8091"
     depends_on:
       - postgresql
       - redis
@@ -462,7 +487,8 @@ services:
       # 操作仍由 Java 受控工具执行，Python 不读取 JDBC URL、账号或密码。
       DATASMART_DATASOURCE_MANAGEMENT_BASE_URL: http://datasource-management:8082
       # PRECHECK/RECOVERY/MONITOR 只调用 data-sync 的确定性预检查、低敏诊断和运行账本接口。
-      # 恢复写动作不从该地址直接执行，仍须经过 Java ToolPlan、用户审批、outbox 和 worker receipt。
+      # 恢复写动作不从该地址直接执行，仍须经过 Java ToolPlan、首次授权盒、outbox、执行前治理和 worker receipt；
+      # 授权盒内的低风险修复与有限重跑不再要求用户逐轮点击确认。
       DATASMART_DATA_SYNC_BASE_URL: http://data-sync:8086
       # DATA_SYNC_AGENT 的只读 schema/table/field 发现也调用 data-sync façade，并与上述控制面
       # 复用同一个内部服务 token。Python 侧 ControlPlaneHttpClientSettings 会优先读取
@@ -483,6 +509,17 @@ services:
       DATASMART_AGENT_POST_CONFIRM_CONTINUATION_TOKEN: ${DATASMART_AGENT_POST_CONFIRM_CONTINUATION_TOKEN:-local-compose-post-confirm-change-before-production}
       DATASMART_AGENT_RUNTIME_EVENT_LOOP_FEEDBACK_ENABLED: "true"
       DATASMART_AGENT_DURABLE_MODEL_TOOL_MAX_TURNS: "6"
+      # 模型可自主选择本地精确检索；Worker 只接受 Java 服务令牌，并且只能访问两个显式只读挂载根目录。
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_ENABLED: "true"
+      DATASMART_AGENT_REPOSITORY_ROOT_ALLOWLIST: /repositories/backend,/repositories/frontend
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_SERVICE_TOKEN: ${DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_SERVICE_TOKEN:-local-compose-workspace-text-search-change-before-production}
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_QUERY_CHARS: "256"
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_FILES: "200"
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_FILE_BYTES: "262144"
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_SCAN_BYTES: "2097152"
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_MATCHES: "40"
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_LINE_CHARS: "800"
+      DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_SNIPPET_CHARS: "240"
       # 完整同步 Agent 通常要经历目录、连接、元数据和写计划四个模型阶段。
       # 保留总 token、全局耗时和下一轮预估三道硬边界，同时避免历史 16K 默认值在元数据后过早停止。
       DATASMART_AGENT_LOOP_MAX_TOTAL_TOKENS: ${DATASMART_AGENT_LOOP_MAX_TOTAL_TOKENS:-65536}
@@ -539,7 +576,12 @@ services:
       DATASMART_AI_OPENAI_COMPATIBLE_MAX_RETRIES: ${DATASMART_AI_OPENAI_COMPATIBLE_MAX_RETRIES:-1}
       DATASMART_AI_OPENAI_COMPATIBLE_RETRY_BACKOFF_SECONDS: ${DATASMART_AI_OPENAI_COMPATIBLE_RETRY_BACKOFF_SECONDS:-0.5}
     ports:
-      - "8090:8090"
+      # 本地 runbook 仍可直连诊断端口，但不再监听所有宿主机网卡；生产部署应完全移除该发布并只走内部网络。
+      - "127.0.0.1:8090:8090"
+    volumes:
+      # 只挂载明确的 DataSmart 两个仓库，禁止把 Desktop、父级 /repositories 或宿主机根目录作为搜索根。
+      - .:/repositories/backend:ro
+      - ../DataSmartGovernFrontend:/repositories/frontend:ro
     networks:
       - datasmart-network
     security_opt:

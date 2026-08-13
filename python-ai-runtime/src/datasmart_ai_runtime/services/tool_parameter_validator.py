@@ -51,6 +51,17 @@ class ToolParameterValidator:
             spec = self._normalize_parameter_spec(raw_schema)
             if not spec["required"]:
                 continue
+
+            # SYSTEM_INJECTED describes a control-plane obligation, not a value that the
+            # user or model is allowed to supply.  Such fields are deliberately hidden
+            # from the model schema and may still be absent while Python is constructing
+            # the plan.  The trusted Java execution boundary must inject and validate the
+            # concrete value immediately before dispatch.  Reporting it as a missing user
+            # parameter here would deadlock model-selected tools: the model cannot provide
+            # the field, the user must not provide it, and Java would never receive an
+            # executable plan from which to perform the injection.
+            if self._is_system_injected(spec):
+                continue
             value = arguments.get(parameter_name)
             if self._is_missing(value):
                 action = self._resolve_missing_action(tool, parameter_name, spec)
@@ -93,6 +104,21 @@ class ToolParameterValidator:
         }
 
     @staticmethod
+    def _is_system_injected(spec: dict[str, Any]) -> bool:
+        """Return whether a required field belongs exclusively to the platform.
+
+        Planning validation and execution validation happen at different trust
+        boundaries.  At planning time the value must be absent from model-authored
+        arguments; at execution time Java reconstructs it from authenticated session,
+        tenant, project, application and server configuration facts.  Keeping this
+        distinction explicit prevents a trusted control fact from being mistaken for a
+        clarification that a user should answer.
+        """
+
+        resolution = str(spec.get("resolution", "")).lower().replace("-", "_")
+        return resolution == "system_injected"
+
+    @staticmethod
     def _is_missing(value: Any) -> bool:
         """判断参数值是否缺失。
 
@@ -112,13 +138,15 @@ class ToolParameterValidator:
 
         当前策略是产品化的保守基线：
         - schema 明确声明 `resolution=context`、`context_or_clarify`、`can_fill_from_context`
-          或 `system_injected` 时，优先标记为可由上下文/系统补齐；
+          或 `derived` 时，优先标记为可由上下文或前序结果补齐；
+        - `system_injected` 在主校验循环中直接跳过，因为它必须由 Java 可信执行边界注入，不能要求
+          用户或模型补齐；
         - 草案类工具允许先生成草案，让用户在确认页补齐参数；
         - 审批类工具或真实执行工具缺少参数时必须澄清，不能把不完整请求推进到执行链路。
         """
 
         resolution = str(spec.get("resolution", "")).lower().replace("-", "_")
-        if resolution in {"context", "context_or_clarify", "can_fill_from_context", "system_injected", "derived"}:
+        if resolution in {"context", "context_or_clarify", "can_fill_from_context", "derived"}:
             return ToolParameterIssueAction.CAN_FILL_FROM_CONTEXT
         if tool.execution_mode == ToolExecutionMode.DRAFT_ONLY:
             return ToolParameterIssueAction.ALLOW_DRAFT

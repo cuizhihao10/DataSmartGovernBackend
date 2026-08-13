@@ -38,6 +38,9 @@ class RagChunkSourceType(str, Enum):
     METADATA = "metadata"
     RUNBOOK = "runbook"
     MEMORY_EXPORT = "memory_export"
+    WIKI = "wiki"
+    GIT_HISTORY = "git_history"
+    EXACT_SEARCH = "exact_search"
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,12 @@ class RagQuery:
     generate_answer: bool = True
     trace_id: str | None = None
     session_id: str | None = None
+    # `hybrid` is the default Codex-like retrieval policy: the model may use
+    # the same governed knowledge tool while the storage adapter combines FTS
+    # and pgvector. `lexical` is useful for exact error codes and identifiers;
+    # `vector` is reserved for semantic expansion after exact evidence is weak.
+    retrieval_mode: str = "hybrid"
+    source_types: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -27,13 +27,54 @@ package com.czh.datasmart.govern.task.service.agent;
 public record AgentToolActionControlledApprovalEvaluationRequest(
         String approvalFactId,
         Long tenantId,
+        Long applicationId,
         Long projectId,
+        String userId,
         String actorId,
+        String agentId,
         String sessionId,
         String runId,
+        String delegationId,
         String commandId,
         String toolCode,
+        String actionFingerprint,
         String requestedPolicyVersion,
         String traceId
 ) {
+
+    /**
+     * Compatibility constructor for callers compiled against the earlier
+     * single-subject contract. The approval client rejects the missing
+     * dual-subject scope before any HTTP request is sent.
+     */
+    public AgentToolActionControlledApprovalEvaluationRequest(
+            String approvalFactId,
+            Long tenantId,
+            Long projectId,
+            String actorId,
+            String sessionId,
+            String runId,
+            String commandId,
+            String toolCode,
+            String requestedPolicyVersion,
+            String traceId
+    ) {
+        this(
+                approvalFactId,
+                tenantId,
+                null,
+                projectId,
+                null,
+                actorId,
+                null,
+                sessionId,
+                runId,
+                null,
+                commandId,
+                toolCode,
+                null,
+                requestedPolicyVersion,
+                traceId
+        );
+    }
 }

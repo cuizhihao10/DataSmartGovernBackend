@@ -1,5 +1,21 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-08-12 勘误：Autopilot 低风险恢复执行边界与自主检索事实
+
+本阶段没有把 Recovery 升级成“模型可任意修复数据”。首次确认 Agent Run 会固化不可被后续 Run 替换或扩大的 `autopilotAuthorization`，Python 只生成诊断/RAG 候选，Java/data-sync 在双重策略和持久回执边界内实际执行极小的低风险分支：`RETRY_EXECUTION` 重新排队当前 execution 的失败对象；`APPLY_QUARANTINE` 还必须复核真实 preview、精确 selector、范围、预算和幂等 receipt。它仍把用户授权、模型建议和实际执行明确拆开，避免一个模型输出同时拥有计划、批准和副作用。
+
+- 授权绑定 tenant/application/project、用户/actor/Agent/delegation、根 session/run、有效期、循环/总时长预算和 SHA-256 摘要；默认 `5` 轮、`120` 分钟，自动风险上限固定为 `LOW`。
+- 模型对 Recovery 自主给出 `SEARCH` 或 `SKIP`。缺少 grounded 证据的 `SEARCH` 只能进入只读 RAG 检索 turn；`SKIP` 也必须继续经过工具注册、可见性、范围、参数、风险、预算和审批，不是执行许可。普通同步规划同样只将 `knowledge.rag.query` 开放为模型候选工具，规则层不得在模型跳过后补出 RAG ToolPlan。
+- “平台开放工具”是已注册、可发现且可治理的工具，不是 Python 或模型的自由调用权。动作要确定性映射到目标 service/endpoint，并通过 `allowed_actions`、tenant/project 隔离、schema、幂等、审计和 Java control-plane；最小只读工具可受限委派，高风险动作仍走 Java handoff。
+- `CHANGE_SCHEMA`、`CHANGE_CREDENTIAL`、`DELETE_DATA`、`OVERWRITE_TARGET`、`EXPAND_DATA_SCOPE` 必须 `WAITING_APPROVAL`。预算/期限耗尽、重复错误、证据或置信度不足、无效指纹/receipt/risk 必须停止在 `ATTENTION_REQUIRED`；无效范围或未授权动作直接 `REJECTED`。
+- data-sync 的低风险资格白名单包含 `RETRY_EXECUTION`、`APPLY_QUARANTINE`、`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS`；当前工作树的 Java 执行分支进一步收窄为 `RETRY_EXECUTION` 和满足 preview/selector/receipt 门禁的 `APPLY_QUARANTINE`。其它低风险资格动作尚无执行器，必须停在 `ATTENTION_REQUIRED`。data-sync controller/outbox scheduler、精确 topic 的 Agent Runtime Kafka consumer（默认关闭）和 Java 到 Python 规划调用均已存在，V25 也已持久化 `SEARCH`/`SKIP` 的低敏投影，但 `AUTO_APPROVED` 本身仍只是持久化决策，不能证明 broker、Python、worker 或 receipt 已实际运行；在指标告警和真实 E2E 证据齐备前，不能对外表述为“已上线自动恢复”。
+
+repository workspace 在这一轮只表示受控 repository 文本/文件工具的 allowlist 搜索根，绝不恢复为产品模型中的应用层级，也不能与 tenant/application/project 或历史业务 `workspaceId` 混同。本轮不以 Elasticsearch 或 Web Search 作为 Agent 自治恢复的依赖；RAG、结构化 API/日志和 repository 文本搜索由模型在已授权工具范围内按需选择。
+
+当前 Autopilot 协调器能将 RECOVERY、可选 RAG 与 Java-governed preview 形成 durable 规划，但恢复写动作结束后重新调度 `PRECHECK_AGENT`/`MONITOR_AGENT` 并写入 durable fact 仍待主线实现与 E2E 复核。2026-08-10 的只读 Recovery 曾完成后置复核，不能把该历史证据外推为 Autopilot 写动作后已自动复核。
+
+下一阶段只有在独立受控触发、幂等 receipt、审批控制面、预算熔断、低基数观测与隔离 E2E 都齐备后，才应灰度启用单租户、单任务的低风险恢复；在此之前产品界面应展示明确的审批或人工关注状态，而不是显示“系统已修复”。
+
 ## 2026-07-05 追加落地进展：Keycloak PostgreSQL-backed 身份存储闭环
 - 本阶段没有新增登录产品线，也没有回退到自研账号密码体系，而是把既有 OIDC/Keycloak 路线的底层持久化补齐为更接近商用部署的形态：Keycloak 的 realm、client、用户、角色、服务账号、mapper、密码哈希和密钥轮换历史进入 PostgreSQL 独立 `keycloak` database，不再依赖开发态容器文件卷。
 - 已落地能力：
@@ -16227,8 +16243,9 @@ push 边界如何消费 5.29 的 task runtime event 契约。当前仍不接受�
   工具白名单调度 specialist；低敏 handoff 进入 `DATA_SYNC_AGENT` 的 Java ToolPlan bridge，Java 控制面继续
   负责权限、审批、outbox、worker receipt 和执行反馈。成功反馈后再由 `PRECHECK_AGENT` 与 `MONITOR_AGENT`
   对真实 task/execution 做后置复核。
-- `KNOWLEDGE_AGENT` 为 Recovery 提供受范围控制的 RAG/历史案例证据；`RECOVERY_AGENT` 只能生成待审批恢复
-  方案，不自动批准或执行。每个 turn 通过 Agent Runtime `V5__specialist_agent_turn_facts.sql` 记录低敏
+- 这是 2026-08-06 的历史交付候选记录：`KNOWLEDGE_AGENT` 为 Recovery 提供受范围控制的 RAG/历史案例证据；当时
+  `RECOVERY_AGENT` 只生成待审批恢复方案，不自动批准或执行。当前 Autopilot 现状以本文开头的 2026-08-12 勘误为准。
+  每个 turn 通过 Agent Runtime `V5__specialist_agent_turn_facts.sql` 记录低敏
   durable fact，按 session/run 保留角色、状态、范围、checkpoint 和 handoff/bridge 引用；permission-admin
   `V48__specialist_agent_turn_fact_route_policy.sql` 提供对应访问策略，事实不保存 prompt、SQL、工具参数、凭据、样本或模型原文。
 - Compose overlay 已补齐 specialist fact fail-closed、datasource-management/data-sync 服务寻址和启动依赖。

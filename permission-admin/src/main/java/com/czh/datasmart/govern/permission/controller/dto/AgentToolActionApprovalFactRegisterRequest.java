@@ -72,6 +72,15 @@ public class AgentToolActionApprovalFactRegisterRequest {
     /** 工具编码，例如 datasource.metadata.read；后续可按工具维度做审批策略和审计查询。 */
     private String toolCode;
 
+    /**
+     * Compatibility-only input retained while older upstream clients migrate.
+     *
+     * <p>This value can be produced by a model or caller, so permission-admin
+     * never persists or trusts it for authorization. The service calculates the
+     * durable fingerprint from the validated approval fact and action binding.</p>
+     */
+    private String actionFingerprint;
+
     /** 审批事实覆盖的策略版本；task-management 会与入箱时策略版本做一致性复核。 */
     private String policyVersion;
 

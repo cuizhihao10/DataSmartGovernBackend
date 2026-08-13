@@ -141,5 +141,7 @@ public class SyncTaskCreateWizardDraftSaveRequest {
     private String customSqlConfig;
     private String partitionConfig;
     private String retryPolicy;
+    /** Server-created low-sensitive authorization snapshot for unattended recovery. */
+    private String autopilotPolicy;
     private String timeoutPolicy;
 }

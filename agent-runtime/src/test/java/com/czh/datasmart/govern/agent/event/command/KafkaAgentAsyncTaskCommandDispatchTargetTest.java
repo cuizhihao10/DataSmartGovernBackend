@@ -44,6 +44,12 @@ class KafkaAgentAsyncTaskCommandDispatchTargetTest {
                 RagAgentAsyncTaskCommandDispatchTarget.RAG_CONSUMER_SERVICE,
                 RagAgentAsyncTaskCommandDispatchTarget.RAG_CONSUMER_SERVICE
         )));
+        assertFalse(target.supports(record(
+                "datasmart.agent.workspace-text-search.commands",
+                WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.TOOL_CODE,
+                WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.CONSUMER_SERVICE,
+                WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.CONSUMER_SERVICE
+        )));
         assertTrue(target.supports(record(
                 "datasmart.agent.tool.async.commands",
                 "data-sync.execute",

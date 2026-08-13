@@ -198,12 +198,12 @@ runtime event attributes。查询仍经过 gateway Header 转换出的租户、�
 未启用时才 fallback 到通用 runtime event projection。Java 专用视图已经能读取
 `manifestBindingStatus/manifestSource/manifestFingerprint`，并按绑定状态与来源聚合返回窗口。
 
-当前专用索引已具备 `memory/mysql` 两种实现：
+当前专用索引已具备 `memory/postgresql|jdbc` 目标实现，`mysql` 只作为迁移期兼容别名：
 
 - `memory` 是默认实现，适合本地学习、单元测试和无数据库联调；
-- `mysql` 写入 `agent_skill_visibility_snapshot_index` 表，支持跨实例、跨重启、长期审计、Manifest 指纹灰度对比和 Skill Marketplace 统计。
+- `postgresql|jdbc` 写入 `agent_skill_visibility_snapshot_index` 表，支持跨实例、跨重启、长期审计、Manifest 指纹灰度对比和 Skill Marketplace 统计；历史 `mysql` 配置值应迁移到 PostgreSQL/JDBC，不应继续新增 MySQL 专属耦合。
 
-MySQL 表只保存低敏聚合事实和可治理索引字段，不保存 prompt、SQL、工具参数、连接密钥、样本数据、完整权限明细或长期记忆正文。
+该表只保存低敏聚合事实和可治理索引字段，不保存 prompt、SQL、工具参数、连接密钥、样本数据、完整权限明细或长期记忆正文。
 后续如果需要更高吞吐运营报表，可以在同一端口下继续扩展 ClickHouse/OpenSearch/审计中心实现。
 
 Java 控制面已为该索引补充诊断和低基数指标：
@@ -240,6 +240,12 @@ Prometheus 告警已经接入 `docker/prometheus/rules/agent-runtime-alerts.yml`
 这些告警的设计意图不是替代审计查询，而是把“能力目录版本事实是否可信、专用索引是否真的承接治理事实”
 变成运维可主动发现的问题。单个 run/session 的排障仍应进入 runtime event replay、诊断接口和结构化日志。
 告警表达式也不使用 `manifestFingerprint` 作为 Prometheus 标签，因为指纹会随着发布批次变化，放进标签会让时序持续增长。
+
+### 5.3 “平台开放工具”不等于自由执行
+
+Manifest 中的 `READY` 只表示该 Skill 可进入受治理的规划候选集，不是给模型、Python Runtime 或任意调用方发放直接执行权限。每个实际工具调用仍须由 Java 控制面和 bridge 确认：动作类型必须确定性映射到已注册 tool，tool 必须声明目标 service/endpoint、tenant/project 隔离和匹配的 `allowed_actions`，并继续通过当前会话可见性、参数 schema、风险等级、审批、预算、幂等和审计门禁。
+
+Recovery 只有一条刻意收窄的例外：当模型建议能够映射到注册表中已声明为只读、无需审批的最小诊断工具时，bridge 才可在既有委派前沿中补入该工具；它不能据此暴露整个恢复目录，也不能把高风险 retry/apply/replay/schema 动作委派给 Python。`READY`、模型的 `SEARCH/SKIP` 判断或一次 RAG 成功都不会绕过上述检查。
 
 ## 6. 与 MCP 最新规范的关系
 

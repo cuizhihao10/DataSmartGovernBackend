@@ -154,6 +154,10 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         request.put("objectMappingConfig", objectMappingConfig);
         request.put("customSqlConfig", customSqlConfig);
         request.put("scheduleConfig", scheduleConfig);
+        Object autopilotAuthorization = context.variables().get("autopilotAuthorization");
+        if (autopilotAuthorization instanceof Map<?, ?> policy) {
+            request.put("autopilotPolicy", serialize(Map.copyOf(policy)));
+        }
 
         Map<String, Object> response = post(context, "/sync-tasks/create-wizard/drafts", request);
         Map<String, Object> data = requireSuccessData(response, "同步任务草稿保存");

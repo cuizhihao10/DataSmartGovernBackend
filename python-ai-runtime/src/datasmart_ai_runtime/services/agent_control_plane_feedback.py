@@ -18,8 +18,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from typing import Any
+import time
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, ModelToolCall, ToolPlan
 from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import ModelToolExecutionFeedbackProvider
@@ -157,8 +158,41 @@ class AgentControlPlaneFeedbackCollector:
     和“如何给 API 展示反馈摘要”拆开，避免 API 层直接理解 session/run/audit 查询细节。
     """
 
-    def __init__(self, feedback_provider: ModelToolExecutionFeedbackProvider) -> None:
+    # Metadata reads are the only control-plane nodes that may be briefly in flight
+    # while the synchronous planning request is still open.  Write nodes, approvals,
+    # publish and run actions deliberately do not belong to this allow-list.
+    METADATA_TOOL_NAMES = frozenset({
+        "datasource.source.metadata.read",
+        "datasource.target.metadata.read",
+    })
+
+    def __init__(
+        self,
+        feedback_provider: ModelToolExecutionFeedbackProvider,
+        *,
+        metadata_wait_timeout_seconds: float = 0.0,
+        metadata_poll_interval_seconds: float = 0.25,
+        monotonic: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        """Create a feedback collector with an optional bounded metadata wait.
+
+        The normal ``collect`` operation remains a single read, which keeps old
+        callers and unit tests deterministic.  The API bootstrap can opt into
+        ``collect_with_bounded_metadata_wait`` for the short race immediately
+        after Java plan ingestion.  Clock and sleep are dependencies rather than
+        hard-coded calls so tests can prove the deadline without actually waiting.
+
+        The timeout is intentionally zero by default.  A deployment must opt in
+        through its bootstrap configuration; this prevents a library caller from
+        accidentally turning every feedback lookup into a blocking operation.
+        """
+
         self._feedback_provider = feedback_provider
+        self._metadata_wait_timeout_seconds = max(0.0, float(metadata_wait_timeout_seconds))
+        self._metadata_poll_interval_seconds = max(0.001, float(metadata_poll_interval_seconds))
+        self._monotonic = monotonic or time.monotonic
+        self._sleep = sleep or time.sleep
 
     def collect(self, plan: AgentPlan) -> AgentControlPlaneFeedbackSnapshot:
         """根据 AgentPlan 中的 ToolPlan 控制面引用收集反馈。
@@ -221,6 +255,183 @@ class AgentControlPlaneFeedbackCollector:
             ),
             auto_execution_summary=auto_execution_summary,
         )
+
+    def collect_with_bounded_metadata_wait(
+        self,
+        plan: AgentPlan,
+    ) -> AgentControlPlaneFeedbackSnapshot:
+        """Read feedback again for a short, read-only metadata completion window.
+
+        Java plan ingestion and the datasource worker are separate stages.  It is
+        therefore valid for the first result query to observe ``PLANNED`` or
+        ``EXECUTING`` even though the metadata adapter is about to finish.  The
+        DATA_SYNC Specialist needs the final Java audit output, not a Python-side
+        guess, so this method performs a bounded re-query and returns the newest
+        snapshot.
+
+        Only the two source/target metadata tools are eligible for this wait.  A
+        failed, rejected, or approval-gated metadata node stops the loop at once;
+        so does a deadline.  No endpoint that creates, publishes, runs, retries,
+        or approves a task is called here.  The feedback provider may internally
+        ask Java to auto-execute a policy-approved read, but that remains subject
+        to Java's server-side policy and idempotency checks.
+        """
+
+        snapshot = self.collect(plan)
+        if self._metadata_wait_timeout_seconds <= 0 or not self._metadata_waitable(snapshot):
+            return snapshot
+
+        # The first full-plan query may ask Java to auto-execute every
+        # policy-approved read and therefore owns the authoritative execution
+        # summary for this request.  A later metadata-only query clears the
+        # Provider's per-call summary, so keep the first non-empty value and
+        # merge it back into the final full-plan snapshot.
+        auto_execution_summary = snapshot.auto_execution_summary
+
+        deadline = self._monotonic() + self._metadata_wait_timeout_seconds
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                return snapshot
+
+            # Sleeping happens before the next read because the first snapshot
+            # has already been queried.  ``min`` keeps the final sleep inside the
+            # declared deadline even when the interval is larger than the budget.
+            self._sleep(min(self._metadata_poll_interval_seconds, remaining))
+            pending_metadata_plan = self._pending_metadata_plan(plan, snapshot)
+            if pending_metadata_plan is None:
+                return snapshot
+
+            refreshed_metadata = self.collect(pending_metadata_plan)
+            if not auto_execution_summary and refreshed_metadata.auto_execution_summary:
+                auto_execution_summary = refreshed_metadata.auto_execution_summary
+            snapshot = self._merge_metadata_refresh(
+                snapshot,
+                refreshed_metadata,
+                auto_execution_summary=auto_execution_summary,
+            )
+            if not self._metadata_waitable(snapshot):
+                return snapshot
+
+    @classmethod
+    def _pending_metadata_plan(
+        cls,
+        plan: AgentPlan,
+        snapshot: AgentControlPlaneFeedbackSnapshot,
+    ) -> AgentPlan | None:
+        """Build the smallest read-only plan needed by the next poll.
+
+        The initial collection deliberately covers the complete ingested plan so
+        callers receive one coherent snapshot.  Subsequent polls are different:
+        they exist only to close the short source/target metadata race.  Passing
+        draft, precheck, publish, run, retry, approval, or any other node back to
+        the Provider would broaden the polling side effect unnecessarily because
+        the Java Provider evaluates synchronous auto-execution before reading
+        feedback.  This method therefore selects only metadata calls that the
+        previous authoritative snapshot explicitly reported as ``PENDING``.
+
+        ``dataclasses.replace`` retains the request route, diagnostics, memory
+        plan, and other immutable AgentPlan context while changing only the tool
+        list consumed by the feedback Provider.
+        """
+
+        pending_call_ids = {
+            item.model_tool_call_id
+            for item in snapshot.feedback_items
+            if item.tool_name in cls.METADATA_TOOL_NAMES
+            and item.status is ToolExecutionFeedbackStatus.PENDING
+        }
+        if not pending_call_ids:
+            return None
+
+        pending_tool_plans = tuple(
+            tool_plan
+            for tool_plan in plan.tool_plans
+            if tool_plan.tool_name in cls.METADATA_TOOL_NAMES
+            and cls._model_tool_call_id(tool_plan) in pending_call_ids
+        )
+        if not pending_tool_plans:
+            return None
+        return replace(plan, tool_plans=pending_tool_plans)
+
+    @classmethod
+    def _merge_metadata_refresh(
+        cls,
+        snapshot: AgentControlPlaneFeedbackSnapshot,
+        refreshed_metadata: AgentControlPlaneFeedbackSnapshot,
+        *,
+        auto_execution_summary: dict[str, Any] | None,
+    ) -> AgentControlPlaneFeedbackSnapshot:
+        """Merge refreshed metadata facts into the original full-plan snapshot.
+
+        A metadata-only query naturally reports a smaller expected count.  It
+        must never erase draft/publish/run feedback, make missing full-plan facts
+        disappear, or make the complete plan look eligible for a second model
+        turn.  Items returned by Java replace their matching prior item by stable
+        model tool-call ID; an omitted refresh item leaves the prior ``PENDING``
+        fact intact so a transient read failure cannot masquerade as completion.
+        All aggregate fields are then recomputed over the complete snapshot.
+        """
+
+        refreshed_by_call_id = {
+            item.model_tool_call_id: item
+            for item in refreshed_metadata.feedback_items
+        }
+        merged_items = tuple(
+            refreshed_by_call_id.get(item.model_tool_call_id, item)
+            for item in snapshot.feedback_items
+        )
+        status_counts = cls._status_counts(merged_items)
+        second_turn_eligible = cls._second_turn_eligible(
+            expected_tool_call_count=snapshot.expected_tool_call_count,
+            missing_tool_call_ids=snapshot.missing_tool_call_ids,
+            status_counts=status_counts,
+        )
+        return AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=snapshot.expected_tool_call_count,
+            feedback_items=merged_items,
+            missing_tool_call_ids=snapshot.missing_tool_call_ids,
+            status_counts=status_counts,
+            second_turn_eligible=second_turn_eligible,
+            recommended_actions=cls._recommended_actions(
+                expected_count=snapshot.expected_tool_call_count,
+                missing_ids=snapshot.missing_tool_call_ids,
+                status_counts=status_counts,
+                second_turn_eligible=second_turn_eligible,
+            ),
+            auto_execution_summary=auto_execution_summary,
+        )
+
+    @classmethod
+    def _metadata_waitable(cls, snapshot: AgentControlPlaneFeedbackSnapshot) -> bool:
+        """Return whether another metadata-only read is justified.
+
+        Missing feedback is not treated as ``PENDING``: a missing audit result
+        can indicate an ingestion or authorization problem and must remain
+        visible as missing evidence.  Likewise, terminal failure, rejection and
+        approval states are returned immediately instead of being hidden by a
+        polling loop.  Only an explicitly returned ``PENDING`` metadata result
+        is transient enough for this short wait.
+        """
+
+        metadata_items = tuple(
+            item
+            for item in snapshot.feedback_items
+            if item.tool_name in cls.METADATA_TOOL_NAMES
+        )
+        if not metadata_items:
+            return False
+        if any(
+            item.status in {
+                ToolExecutionFeedbackStatus.FAILED,
+                ToolExecutionFeedbackStatus.REJECTED,
+                ToolExecutionFeedbackStatus.WAITING_APPROVAL,
+                ToolExecutionFeedbackStatus.SKIPPED,
+            }
+            for item in metadata_items
+        ):
+            return False
+        return any(item.status is ToolExecutionFeedbackStatus.PENDING for item in metadata_items)
 
     def _auto_execution_summary_from_provider(self) -> dict[str, Any] | None:
         """从反馈 Provider 读取最近一次 Java 同步自动执行摘要。

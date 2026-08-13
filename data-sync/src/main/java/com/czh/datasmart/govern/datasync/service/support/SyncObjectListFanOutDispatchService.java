@@ -424,6 +424,7 @@ public class SyncObjectListFanOutDispatchService {
         child.setFilterConfig(definition.getFilterConfig());
         child.setPartitionConfig(null);
         child.setRetryPolicy(definition.getRetryPolicy());
+        child.setAutopilotPolicy(definition.getAutopilotPolicy());
         child.setTimeoutPolicy(definition.getTimeoutPolicy());
         child.setEnabled(definition.getEnabled());
         child.setCreatedBy(definition.getCreatedBy());

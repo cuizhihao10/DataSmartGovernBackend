@@ -20,8 +20,9 @@ public interface AgentToolActionApprovalFactStore {
     /**
      * Performs an atomic idempotent write for one approval fact.
      *
-     * <p>Implementations must validate the complete dual-subject scope and
-     * policy version in the same write that advances the lifecycle. A caller
+     * <p>Implementations must validate the complete dual-subject scope,
+     * server-derived action fingerprint, and policy version in the same write that
+     * advances the lifecycle. A caller
      * must not perform a read-then-write check. Scope/version conflicts must
      * fail closed without changing the stored row, and a delayed PENDING write
      * must never replace an APPROVED or REJECTED row.</p>

@@ -22,7 +22,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 受控工具动作任务 payload 解析器。
@@ -44,6 +46,8 @@ public class AgentToolActionControlledPayloadResolver {
     private static final String EXPECTED_REFERENCE_TYPE = "AGENT_PAYLOAD";
     private static final int MAX_EVIDENCE_ITEMS = 30;
     private static final int MAX_EVIDENCE_LENGTH = 512;
+    private static final Pattern SAFE_SCOPE_ID_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,160}");
+    private static final Pattern SAFE_ACTION_FINGERPRINT_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,256}");
 
     private final ObjectMapper objectMapper;
 
@@ -80,13 +84,31 @@ public class AgentToolActionControlledPayloadResolver {
             throw new IllegalArgumentException("sensitiveArgumentNames 必须是 argumentNames 的子集");
         }
         List<String> delegationEvidence = evidenceList(params.get("delegationEvidence"), "delegationEvidence");
+        Long tenantId = requiredPositive(task.getTenantId(), "task.tenantId");
+        Long projectId = requiredPositive(task.getProjectId(), "task.projectId");
+        Long snapshotTenantId = requiredPositiveLong(params, "tenantId");
+        Long applicationId = requiredPositiveLong(params, "applicationId");
+        Long snapshotProjectId = requiredPositiveLong(params, "projectId");
+        if (!Objects.equals(tenantId, snapshotTenantId) || !Objects.equals(projectId, snapshotProjectId)) {
+            throw new IllegalArgumentException("受控工具动作 task 行与 params 的 tenantId/projectId 范围不一致");
+        }
+        String userId = requiredSafeScopeText(params, "userId");
+        String actorId = requiredSafeScopeText(params, "actorId");
+        String agentId = requiredSafeScopeText(params, "agentId");
+        String delegationId = requiredSafeScopeText(params, "delegationId");
+        String actionFingerprint = requiredSafeActionFingerprint(params);
         return new AgentToolActionControlledTaskPayload(
                 task.getId(),
                 task.getStatus(),
                 task.getType(),
-                task.getTenantId(),
-                task.getProjectId(),
-                optionalText(params.get("actorId")),
+                tenantId,
+                applicationId,
+                projectId,
+                userId,
+                actorId,
+                agentId,
+                delegationId,
+                actionFingerprint,
                 requiredText(params, "commandId"),
                 requiredText(params, "commandType"),
                 requiredText(params, "commandKind"),
@@ -224,12 +246,40 @@ public class AgentToolActionControlledPayloadResolver {
         }
     }
 
+    private Long requiredPositiveLong(Map<String, Object> params, String fieldName) {
+        Long value = optionalLong(params.get(fieldName), fieldName);
+        return requiredPositive(value, fieldName);
+    }
+
+    private Long requiredPositive(Long value, String fieldName) {
+        if (value == null || value <= 0) {
+            throw new IllegalArgumentException(fieldName + " 必须大于 0");
+        }
+        return value;
+    }
+
     private String requiredText(Map<String, Object> params, String fieldName) {
         String text = optionalText(params.get(fieldName));
         if (text == null) {
             throw new IllegalArgumentException("受控工具动作任务 params 缺少 " + fieldName);
         }
         return text;
+    }
+
+    private String requiredSafeScopeText(Map<String, Object> params, String fieldName) {
+        String value = requiredText(params, fieldName);
+        if (!SAFE_SCOPE_ID_PATTERN.matcher(value).matches() || looksLikeSensitivePayload(value)) {
+            throw new IllegalArgumentException(fieldName + " 必须是安全的低敏范围 ID");
+        }
+        return value;
+    }
+
+    private String requiredSafeActionFingerprint(Map<String, Object> params) {
+        String value = requiredText(params, "actionFingerprint");
+        if (!SAFE_ACTION_FINGERPRINT_PATTERN.matcher(value).matches() || looksLikeSensitivePayload(value)) {
+            throw new IllegalArgumentException("actionFingerprint 必须是安全的低敏动作指纹");
+        }
+        return value;
     }
 
     private String optionalText(Object value) {

@@ -7,7 +7,9 @@
 package com.czh.datasmart.govern.agent.service.session;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * Agent 会话聚合仓储端口。
@@ -28,6 +30,28 @@ public interface AgentSessionStore {
     void save(AgentSessionRecord session);
 
     /**
+     * Loads and changes one existing session inside the store's strongest available concurrency boundary.
+     *
+     * <p>This method is the safe entry point for changes that legitimately span several children, such as adding a
+     * Run together with new tool bindings and conversation messages. A normal read followed by
+     * {@link #save(AgentSessionRecord)} is unsafe in a multi-instance deployment: another Runtime may append a Run,
+     * confirmation fact, or message between those two calls, after which the older aggregate snapshot would delete
+     * the new fact during replacement.</p>
+     *
+     * <p>The PostgreSQL implementation locks the session parent and every existing aggregate child row, reloads the
+     * current aggregate on that same connection, invokes {@code mutation}, and persists the result in one transaction.
+     * The memory implementation serializes the callback on the current map entry. The callback must be synchronous,
+     * deterministic, and return a non-null result; it must not perform remote network calls while the database lock is
+     * held. Same-database stores may participate through the shared JDBC connection manager.</p>
+     *
+     * @param sessionId stable ID of an existing session
+     * @param mutation validated domain change to apply to the freshly loaded aggregate
+     * @param <T> non-null result returned to the service layer after persistence succeeds
+     * @return mutation result, or empty when the session no longer exists
+     */
+    <T> Optional<T> mutateAtomically(String sessionId, Function<AgentSessionRecord, T> mutation);
+
+    /**
      * 原子追加一条用户可见会话消息，而不覆盖同一会话中已经由其他调用链写入的 Run 或工具事实。
      *
      * <p>Agent 的确认后续跑存在一个重要并发边界：Java 先把当前 Run 终态交给 Python，Python 随后会回调
@@ -43,6 +67,137 @@ public interface AgentSessionStore {
      * @return 成功写入或幂等确认消息已存在时返回 true；会话不存在或参数无效时返回 false
      */
     boolean appendConversationMessage(String sessionId, AgentConversationMessageRecord message);
+
+    /**
+     * Binds the trusted product-application scope without replacing the session aggregate.
+     *
+     * <p>Confirmation can race with Python continuation or another Agent Runtime instance that appends Runs and
+     * messages to the same session. Persisting a newly observed {@code applicationId} through {@link #save} would
+     * replace all child collections from an older in-memory snapshot. Implementations must therefore update only
+     * the session column and accept the operation only when the durable value is absent or already equal.</p>
+     *
+     * <p>The method grants no permission. It records the Gateway-authenticated application boundary before any
+     * approval or tool side effect, and fails closed when another application already owns the session.</p>
+     *
+     * @param sessionId existing Agent session identifier
+     * @param applicationId positive trusted application identifier
+     * @return {@code true} when the session exists and is now bound to the requested application
+     */
+    boolean bindApplicationIdIfAbsent(String sessionId, Long applicationId);
+
+    /**
+     * Refreshes the trusted delegated-user snapshot without replacing the session aggregate.
+     *
+     * <p>The confirmation endpoint receives a fresh role snapshot from Gateway immediately before it crosses the
+     * approval and tool side-effect boundary. Persisting that snapshot with {@link #save(AgentSessionRecord)} is
+     * unsafe in a multi-instance Runtime because the caller may have loaded the session before another instance
+     * appended a continuation Run or conversation message. Implementations must therefore update only the three
+     * delegated-identity columns and the parent activity timestamp.</p>
+     *
+     * <p>This method does not evaluate roles and cannot grant a tool permission by itself. The service layer must
+     * validate the supplied identity first, while every downstream business service still performs its own object
+     * authorization. A {@code false} result means the parent session no longer exists and callers must stop before
+     * approving or executing a tool.</p>
+     *
+     * @param sessionId existing Agent session identifier
+     * @param actorRole current Gateway-authenticated platform role
+     * @param actorType current authenticated principal type
+     * @param authorizedProjectRoles current project-role fact snapshot
+     * @return {@code true} when the narrow parent-row update was applied
+     */
+    boolean refreshDelegatedIdentity(String sessionId,
+                                     String actorRole,
+                                     String actorType,
+                                     String authorizedProjectRoles);
+
+    /**
+     * Persists one Run's terminal lifecycle fields without replacing sibling session children.
+     *
+     * <p>A confirmed tool batch mutates only the source Run's state, message, next actions and finish timestamps.
+     * Python continuation may create the next Run as soon as Java reports that terminal batch, so an aggregate
+     * {@link #save(AgentSessionRecord)} would be able to delete that new child from an older snapshot. This method
+     * deliberately excludes Run variables, delegation, bindings and messages; immutable confirmation receipts and
+     * AUTOPILOT authorization facts remain owned by the conditional variable-write methods above.</p>
+     *
+     * <p>Implementations must reject a different existing terminal state. For example, a Run cancelled while a
+     * downstream call was completing must not later be rewritten to SUCCEEDED. Repeating the same terminal state is
+     * allowed so an idempotent delivery can converge after a transport retry.</p>
+     *
+     * @param sessionId parent session that owns the Run
+     * @param run terminal in-memory Run snapshot produced by the governed execution service
+     * @return {@code true} when the lifecycle was persisted or idempotently reconfirmed
+     */
+    boolean updateRunLifecycle(String sessionId, AgentRunRecord run);
+
+    /**
+     * Persists the Run state produced by one governed approval or rejection decision.
+     *
+     * <p>Approval reconciliation starts from {@code WAITING_HUMAN}. Depending on the remaining tool audits, the Run
+     * either stays there, resumes {@code PLANNING}, or closes as {@code REJECTED}. A whole-session save is unsafe
+     * because a different Runtime instance may already have appended another Run or message. Implementations must
+     * therefore update only this Run's lifecycle columns and the parent activity timestamp.</p>
+     *
+     * <p>The durable predicate must accept only {@code WAITING_HUMAN} or an idempotent repeat of the target state.
+     * That rule prevents a delayed approval callback from moving a Run backwards after model/tool execution has
+     * already advanced it. This method does not change a tool audit; the approval service owns that fact.</p>
+     *
+     * @param sessionId parent session that owns the Run
+     * @param run Run after approval reconciliation
+     * @return {@code true} when the guarded lifecycle update succeeded
+     */
+    boolean updateRunAfterToolDecision(String sessionId, AgentRunRecord run);
+
+    /**
+     * 只在目标 Run 尚未包含守卫变量时，原子合并一组服务器拥有的运行变量。
+     *
+     * <p>该增量接口用于确认 claim、Autopilot 授权和最终确认 receipt。它与整聚合 {@link #save} 的区别是
+     * 写集合只包含一个 Run 的 {@code variables/updateTime}：Python continuation 可能已经创建了下一个 Run，
+     * 所以后确认阶段绝不能用旧会话快照替换全部子记录。生产实现必须把“检查守卫”和“写入全部变量”放在
+     * 同一条 SQL 或同一事务锁内，不能使用容易发生并发穿透的先查后写。</p>
+     *
+     * <p>{@code false} 同时表示 Run 不存在、守卫已存在或待写键与旧事实冲突。调用方应重新读取持久状态，
+     * 只有匹配相同请求摘要的完整 receipt 才能回放；其他情况必须失败关闭。方法不授予权限，也不执行工具。</p>
+     *
+     * @param sessionId 目标会话 ID
+     * @param runId 目标 Run ID
+     * @param guardVariable 一次性写入的守卫变量名
+     * @param values 要整体合并的低敏 JSONB 兼容值，必须包含守卫变量
+     * @return 首次完整写入返回 true；未写入返回 false
+     */
+    boolean putRunVariablesIfAbsent(String sessionId,
+                                    String runId,
+                                    String guardVariable,
+                                    Map<String, Object> values);
+
+    /**
+     * Atomically writes immutable facts to one Run only when a session-wide fact has not yet been established.
+     *
+     * <p>This is the durable boundary for the first AUTOPILOT authorization. A Run-local conditional write is
+     * sufficient for ordinary confirmation idempotency, but it cannot protect two different Runs in the same
+     * session: both Runs would otherwise observe that their own variables are empty and both could authorize
+     * unattended work. Implementations must therefore check the target Run facts, check every Run in the
+     * session for {@code sessionUniqueVariable}, and write {@code values} in one atomic concurrency boundary.
+     * The operation must finish before callers approve or execute any tool.</p>
+     *
+     * <p>The method is deliberately generic because the store owns concurrency and persistence semantics, not
+     * AUTOPILOT policy interpretation. The confirmation service supplies {@code confirmedExecutionClaim} as
+     * the Run guard and {@code autopilotAuthorization} as the session-wide unique fact. A false result means
+     * that the session or Run no longer exists, the target Run already has a conflicting immutable fact, or a
+     * different Run has already established the session-wide fact. Callers must reload durable state and either
+     * replay the same Run receipt or fail closed; they must never execute tools after a false result.</p>
+     *
+     * @param sessionId stable session identifier containing all competing Runs
+     * @param runId target Run that will own the newly established facts
+     * @param guardVariable target Run's one-time write guard; it must be included in {@code values}
+     * @param sessionUniqueVariable variable that may appear in at most one Run in the session
+     * @param values immutable low-sensitive facts to write as one unit; they must include both guard variables
+     * @return {@code true} only when this call wrote the complete fact set; otherwise {@code false}
+     */
+    boolean putRunVariablesIfAbsentAndSessionVariableAbsent(String sessionId,
+                                                             String runId,
+                                                             String guardVariable,
+                                                             String sessionUniqueVariable,
+                                                             Map<String, Object> values);
 
     /**
      * 按稳定 ID 重建完整会话聚合。

@@ -29,6 +29,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 /**
  * 同步任务创建向导草稿保存支撑组件。
@@ -249,6 +250,20 @@ public class SyncTaskCreateWizardDraftSupport {
         definition.setPrimaryKeyField(null);
         definition.setPartitionConfig(partitionConfig.partitionConfig());
         definition.setRetryPolicy(querySupport.trimToNull(request.getRetryPolicy()));
+        String requestedAutopilotPolicy = querySupport.trimToNull(request.getAutopilotPolicy());
+        if (requestedAutopilotPolicy != null && requestedAutopilotPolicy.length() > 16_384) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "Autopilot policy snapshot exceeds the low-sensitive size limit");
+        }
+        if (existing == null) {
+            definition.setAutopilotPolicy(requestedAutopilotPolicy);
+        } else if (requestedAutopilotPolicy != null
+                && !Objects.equals(existing.getAutopilotPolicy(), requestedAutopilotPolicy)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "Autopilot policy is immutable after initial authorization");
+        } else {
+            definition.setAutopilotPolicy(existing.getAutopilotPolicy());
+        }
         definition.setTimeoutPolicy(querySupport.trimToNull(request.getTimeoutPolicy()));
         definition.setEnabled(true);
         if (existing == null) {
@@ -349,6 +364,7 @@ public class SyncTaskCreateWizardDraftSupport {
                 .set(SyncTaskDefinition::getCustomSqlConfig, definition.getCustomSqlConfig())
                 .set(SyncTaskDefinition::getPartitionConfig, definition.getPartitionConfig())
                 .set(SyncTaskDefinition::getRetryPolicy, definition.getRetryPolicy())
+                .set(SyncTaskDefinition::getAutopilotPolicy, definition.getAutopilotPolicy())
                 .set(SyncTaskDefinition::getTimeoutPolicy, definition.getTimeoutPolicy())
                 .set(SyncTaskDefinition::getEnabled, definition.getEnabled())
                 .set(SyncTaskDefinition::getUpdatedBy, definition.getUpdatedBy())

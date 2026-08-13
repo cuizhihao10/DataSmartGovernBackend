@@ -160,11 +160,16 @@ class RagPersistenceTest(unittest.TestCase):
         self.assertEqual(RagChunkSourceType.RULE, chunks[0].source_type)
         self.assertEqual({"version": 1}, chunks[0].metadata)
 
-        select_sql = next(sql for sql, _ in connection.statements if sql.lstrip().upper().startswith("SELECT"))
-        self.assertIn("tenant_id IN ('*', %s)", select_sql)
-        self.assertIn("project_id IN ('*', %s)", select_sql)
-        self.assertIn("workspace_key IN ('*', %s)", select_sql)
-        self.assertIn("<=> CAST(%s AS vector)", select_sql)
+        select_statements = [
+            sql for sql, _ in connection.statements if sql.lstrip().upper().startswith("SELECT")
+        ]
+        self.assertTrue(any("websearch_to_tsquery('simple', %s)" in sql for sql in select_statements))
+        self.assertTrue(any("content_search_vector @@ query.tsq" in sql for sql in select_statements))
+        self.assertTrue(any("<=> CAST(%s AS vector)" in sql for sql in select_statements))
+        for select_sql in select_statements:
+            self.assertIn("tenant_id IN ('*', %s)", select_sql)
+            self.assertIn("project_id IN ('*', %s)", select_sql)
+            self.assertIn("workspace_key IN ('*', %s)", select_sql)
 
         diagnostics = knowledge_base.diagnostics()
         self.assertTrue(diagnostics["persistent"])

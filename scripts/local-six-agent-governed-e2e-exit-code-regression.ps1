@@ -144,6 +144,9 @@ try {
     $aggregation = Invoke-E2EChildProcess -ScriptPath $e2eScriptPath -Arguments @('-RunSpecialistStatusAggregationRegressionTest') -CredentialSentinel $credentialSentinel
     Assert-E2EExitCase -Name 'Specialist status aggregation regression' -Result $aggregation -CredentialSentinel $credentialSentinel -ExpectSuccess
 
+    $autopilotPublicContract = Invoke-E2EChildProcess -ScriptPath $e2eScriptPath -Arguments @('-RunAutopilotPublicContractRegressionTest') -CredentialSentinel $credentialSentinel
+    Assert-E2EExitCase -Name 'Autopilot public recovery contract regression' -Result $autopilotPublicContract -CredentialSentinel $credentialSentinel -ExpectSuccess
+
     $requestContract = Invoke-E2EChildProcess -ScriptPath $e2eScriptPath -Arguments @(
         '-RunRequestContractRegressionTest',
         '-SourceDatasourceName', 'source datasource with spaces',
@@ -158,6 +161,11 @@ try {
     # This fails before Keycloak access because the modes are mutually exclusive.
     $intentionalFailure = Invoke-E2EChildProcess -ScriptPath $e2eScriptPath -Arguments @('-Execute', '-PlanOnly') -CredentialSentinel $credentialSentinel
     Assert-E2EExitCase -Name 'Intentional local validation failure' -Result $intentionalFailure -CredentialSentinel $credentialSentinel -ExpectFailMarker
+
+    # AUTOPILOT is a continuation authority created only by the first explicit Success confirmation.
+    # This offline case proves a caller cannot add it to a plan-only invocation or a later Recovery request.
+    $autopilotWithoutConfirmation = Invoke-E2EChildProcess -ScriptPath $e2eScriptPath -Arguments @('-EnableAutopilot') -CredentialSentinel $credentialSentinel
+    Assert-E2EExitCase -Name 'AUTOPILOT requires initial explicit confirmation' -Result $autopilotWithoutConfirmation -CredentialSentinel $credentialSentinel -ExpectFailMarker
 
     Write-Host '[PASS] local-six-agent-governed-e2e exit-code contract regression completed.' -ForegroundColor Green
     exit 0

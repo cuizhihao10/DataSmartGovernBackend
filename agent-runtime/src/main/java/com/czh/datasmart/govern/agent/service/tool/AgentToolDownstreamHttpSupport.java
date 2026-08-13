@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.agent.service.tool;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
+import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -89,35 +91,69 @@ public class AgentToolDownstreamHttpSupport {
      * Agent 代表哪个用户执行了哪次动作”。这些 Header 只增加可追溯性，不会让下游跳过自己的 RBAC 和资源归属校验。</p>
      */
     public void applyUserDelegationHeaders(HttpHeaders headers, AgentToolExecutionContext context) {
-        headers.set(PlatformContextHeaders.TENANT_ID, String.valueOf(context.session().getTenantId()));
-        if (context.session().getApplicationId() != null) {
+        applyUserDelegationHeaders(
+                headers,
+                context.session(),
+                context.run(),
+                context.traceId() == null ? context.audit().getTraceId() : context.traceId());
+    }
+
+    /**
+     * 为不经过通用 ToolPlan 的受治理后台流程附加同一套双主体 Header。
+     *
+     * <p>Autopilot Recovery 在用户首次授权后由 Kafka 唤醒，没有当前 HTTP 请求对应的
+     * {@link AgentToolExecutionContext}，但它仍必须代表原用户而不是伪装成服务账号。调用方先从
+     * {@link com.czh.datasmart.govern.agent.service.session.AgentSessionStore} 重新加载 session/run，
+     * 再使用本方法透传用户、Agent、delegation 和项目范围。下游 data-sync 仍会执行自己的 RBAC、
+     * 资源归属与 Autopilot 策略复核。</p>
+     *
+     * @param headers 将被发送给下游服务的 HTTP Header
+     * @param session 已从持久仓储恢复并完成范围校验的根会话
+     * @param run 首次用户确认所绑定的根 Run
+     * @param traceId 当前 Kafka 恢复轮次的稳定链路 ID
+     */
+    public void applyUserDelegationHeaders(HttpHeaders headers,
+                                           AgentSessionRecord session,
+                                           AgentRunRecord run,
+                                           String traceId) {
+        if (headers == null || session == null || run == null || session.getDelegation() == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Agent 下游调用缺少可信 session、run 或 delegation");
+        }
+        headers.set(PlatformContextHeaders.TENANT_ID, String.valueOf(session.getTenantId()));
+        if (session.getApplicationId() != null) {
             headers.set(PlatformContextHeaders.APPLICATION_ID,
-                    String.valueOf(context.session().getApplicationId()));
+                    String.valueOf(session.getApplicationId()));
         }
-        if (context.session().getProjectId() != null) {
-            headers.set(PlatformContextHeaders.PROJECT_ID, String.valueOf(context.session().getProjectId()));
-            headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, String.valueOf(context.session().getProjectId()));
+        if (session.getProjectId() != null) {
+            headers.set(PlatformContextHeaders.PROJECT_ID, String.valueOf(session.getProjectId()));
+            headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, String.valueOf(session.getProjectId()));
         }
-        if (context.session().getWorkspaceKey() != null && !context.session().getWorkspaceKey().isBlank()) {
-            headers.set(PlatformContextHeaders.WORKSPACE_ID, context.session().getWorkspaceKey());
+        if (session.getWorkspaceKey() != null && !session.getWorkspaceKey().isBlank()) {
+            headers.set(PlatformContextHeaders.WORKSPACE_ID, session.getWorkspaceKey());
         }
-        headers.set(PlatformContextHeaders.ACTOR_ID, context.session().getActorId());
-        headers.set(PlatformContextHeaders.ACTOR_ROLE, delegatedActorRole(context));
+        headers.set(PlatformContextHeaders.ACTOR_ID, session.getActorId());
+        if (session.getActorRole() == null || session.getActorRole().isBlank()) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Agent 下游调用缺少真实用户角色，拒绝降级为服务账号");
+        }
+        headers.set(PlatformContextHeaders.ACTOR_ROLE, session.getActorRole().trim());
         headers.set(PlatformContextHeaders.ACTOR_TYPE,
-                defaultText(context.session().getActorType(), "USER"));
-        if (context.session().getAuthorizedProjectRoles() != null) {
+                defaultText(session.getActorType(), "USER"));
+        if (session.getAuthorizedProjectRoles() != null) {
             headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES,
-                    context.session().getAuthorizedProjectRoles());
+                    session.getAuthorizedProjectRoles());
         }
         headers.set(PlatformContextHeaders.SOURCE_SERVICE, "agent-runtime");
-        headers.set(PlatformContextHeaders.AGENT_ID, context.session().getAgentId());
-        headers.set(PlatformContextHeaders.AGENT_SESSION_ID, context.session().getSessionId());
-        headers.set(PlatformContextHeaders.AGENT_RUN_ID, context.run().getRunId());
+        headers.set(PlatformContextHeaders.AGENT_ID, session.getAgentId());
+        headers.set(PlatformContextHeaders.AGENT_SESSION_ID, session.getSessionId());
+        headers.set(PlatformContextHeaders.AGENT_RUN_ID, run.getRunId());
         headers.set(PlatformContextHeaders.AGENT_DELEGATION_ID,
-                context.session().getDelegation().getDelegationId());
+                session.getDelegation().getDelegationId());
         headers.set(PlatformContextHeaders.DATA_SCOPE_LEVEL, "PROJECT");
-        headers.set(PlatformContextHeaders.TRACE_ID,
-                context.traceId() == null ? context.audit().getTraceId() : context.traceId());
+        if (traceId != null && !traceId.isBlank()) {
+            headers.set(PlatformContextHeaders.TRACE_ID, traceId.trim());
+        }
     }
 
     /**
@@ -127,6 +163,17 @@ public class AgentToolDownstreamHttpSupport {
      * Python 专用入口上显式调用本方法。未配置时不伪造任何值，让 Python Runtime 继续 fail-closed。</p>
      */
     public void applyPythonRuntimeInternalServiceToken(HttpHeaders headers) {
+        applyInternalServiceToken(headers);
+    }
+
+    /**
+     * 为受保护的 Java/Python 或 Java/Java 内部控制面调用附加最小服务令牌。
+     *
+     * <p>Autopilot 会同时调用 Python 规划入口和 data-sync 内部 case API，两者复用同一个部署级
+     * ``DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN``。方法只写固定 Header，不记录或返回令牌；
+     * 普通浏览器业务 API 不应调用本方法。</p>
+     */
+    public void applyInternalServiceToken(HttpHeaders headers) {
         String token = System.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN");
         if (token != null && !token.isBlank()) {
             headers.set(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, token);

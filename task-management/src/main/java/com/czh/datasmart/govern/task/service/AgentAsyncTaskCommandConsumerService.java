@@ -94,6 +94,8 @@ public class AgentAsyncTaskCommandConsumerService {
      * 但它仍必须是短 ID，不允许 URL、SQL、JSON、换行或密钥片段。</p>
      */
     private static final Pattern SAFE_FACT_ID_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,160}");
+    private static final Pattern SAFE_SCOPE_ID_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,160}");
+    private static final Pattern SAFE_ACTION_FINGERPRINT_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,256}");
 
     private static final int MAX_ARGUMENT_NAMES = 200;
     private static final int MAX_EVIDENCE_ITEMS = 20;
@@ -234,7 +236,21 @@ public class AgentAsyncTaskCommandConsumerService {
                 request.getTargetEndpoint()
         ));
         params.put("workspaceId", request.getWorkspaceId());
-        params.put("actorId", request.getActorId());
+        params.put("actorId", request.getActorId().trim());
+        if (CommandKind.TOOL_ACTION_CONTROLLED.equals(commandKind)) {
+            /*
+             * Keep an immutable, low-sensitivity copy of every scope locator
+             * beside the task-row tenant/project columns. The resolver compares
+             * both copies before it can ask permission-admin to evaluate a fact.
+             */
+            params.put("tenantId", request.getTenantId());
+            params.put("applicationId", request.getApplicationId());
+            params.put("projectId", request.getProjectId());
+            params.put("userId", normalizeOptionalText(request.getUserId()));
+            params.put("agentId", normalizeOptionalText(request.getAgentId()));
+            params.put("delegationId", normalizeOptionalText(request.getDelegationId()));
+            params.put("actionFingerprint", normalizeOptionalText(request.getActionFingerprint()));
+        }
         params.put("payloadReference", request.getPayloadReference());
         params.put("payloadReferenceType", AgentAsyncTaskCommandContractSupport.payloadReferenceType(commandKind));
         /*
@@ -319,6 +335,7 @@ public class AgentAsyncTaskCommandConsumerService {
         } else if (request.getWorkspaceId() != null) {
             requirePositive(request.getWorkspaceId(), "workspaceId");
         }
+        validateControlledApprovalScope(request, commandKind);
         AgentAsyncTaskCommandContractSupport.validatePayloadReference(
                 commandKind,
                 request.getPayloadReference(),
@@ -358,6 +375,24 @@ public class AgentAsyncTaskCommandConsumerService {
         }
         normalizeEvidenceList(request.getPolicyVersions(), "policyVersions");
         normalizeEvidenceList(request.getDelegationEvidence(), "delegationEvidence");
+    }
+
+    /**
+     * Controlled actions represent a human user through a separately verified
+     * Agent. All dual-subject locators must therefore be complete before the
+     * command is allowed into the inbox; a later approval fact cannot repair a
+     * missing or unsafe scope snapshot.
+     */
+    private void validateControlledApprovalScope(AgentAsyncTaskCommandRequest request, CommandKind commandKind) {
+        if (!CommandKind.TOOL_ACTION_CONTROLLED.equals(commandKind)) {
+            return;
+        }
+        requirePositive(request.getApplicationId(), "applicationId");
+        requireSafeScopeText(request.getUserId(), "userId");
+        requireSafeScopeText(request.getActorId(), "actorId");
+        requireSafeScopeText(request.getAgentId(), "agentId");
+        requireSafeScopeText(request.getDelegationId(), "delegationId");
+        requireSafeActionFingerprint(request.getActionFingerprint());
     }
 
     /**
@@ -452,6 +487,28 @@ public class AgentAsyncTaskCommandConsumerService {
             throw new IllegalArgumentException(fieldName + " 不能为空");
         }
         return value;
+    }
+
+    private String requireSafeScopeText(String value, String fieldName) {
+        String normalized = normalizeOptionalText(value);
+        if (normalized == null) {
+            throw new IllegalArgumentException(fieldName + " 不能为空");
+        }
+        if (!SAFE_SCOPE_ID_PATTERN.matcher(normalized).matches() || looksLikeSensitivePayload(normalized)) {
+            throw new IllegalArgumentException(fieldName + " 必须是安全的低敏范围 ID");
+        }
+        return normalized;
+    }
+
+    private String requireSafeActionFingerprint(String value) {
+        String normalized = normalizeOptionalText(value);
+        if (normalized == null) {
+            throw new IllegalArgumentException("actionFingerprint 不能为空");
+        }
+        if (!SAFE_ACTION_FINGERPRINT_PATTERN.matcher(normalized).matches() || looksLikeSensitivePayload(normalized)) {
+            throw new IllegalArgumentException("actionFingerprint 必须是安全的低敏动作指纹");
+        }
+        return normalized;
     }
 
     private void requirePositive(Long value, String fieldName) {

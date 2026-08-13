@@ -47,6 +47,11 @@ public class AgentToolActionControlledDryRunDispatcherService {
     private static final String OUTCOME_DEFERRED_READY_FOR_EXECUTOR = "DEFERRED_READY_FOR_EXECUTOR";
     private static final String OUTCOME_FAILED_PRECHECK = "FAILED_PRECHECK";
     private static final String ERROR_CODE_PRECHECK_REJECTED = "AGENT_TOOL_ACTION_CONTROLLED_PRECHECK_REJECTED";
+    private static final List<String> APPROVED_EVIDENCE_CODES = List.of(
+            "APPROVAL_FACT_FOUND",
+            "APPROVAL_FACT_SCOPE_VERIFIED",
+            "APPROVAL_FACT_STATUS_APPROVED"
+    );
 
     private final TaskService taskService;
     private final AgentToolActionControlledPayloadResolver payloadResolver;
@@ -192,7 +197,47 @@ public class AgentToolActionControlledDryRunDispatcherService {
         if (payload.policyVersions().isEmpty()) {
             throw new IllegalStateException("缺少 policyVersions，无法把 dry-run 与控制面策略版本关联");
         }
+        if (!properties.isControlledActionApprovalCheckEnabled()) {
+            diagnostics.put("approvalCheck", "disabled_by_config");
+            return new DryRunDecision(
+                    OUTCOME_DEFERRED_WAITING_APPROVAL_FACT,
+                    "受控工具动作必须回查 permission-admin 审批事实；当前配置关闭了该检查，因此任务不会继续执行。",
+                    false,
+                    false,
+                    diagnostics,
+                    List.of("开启 controlled-action-approval-check-enabled 后重新调度该任务。")
+            );
+        }
+        if (payload.confirmationId() == null || payload.confirmationId().isBlank()) {
+            diagnostics.put("approvalCheck", "missing_approval_fact_id");
+            return new DryRunDecision(
+                    OUTCOME_DEFERRED_WAITING_APPROVAL_FACT,
+                    "受控工具动作缺少 approvalFactId，客户端提供的空审批信息不能放行执行。",
+                    false,
+                    false,
+                    diagnostics,
+                    List.of("在 permission-admin 登记并完成与当前双主体范围绑定的审批事实。")
+            );
+        }
         ApprovalGate approvalGate = validateApprovalFact(payload, diagnostics, actorContext);
+        if ("temporarily_unavailable_or_rejected".equals(diagnostics.get("approvalCheck"))) {
+            if (diagnostics.get("approvalDecision") != null) {
+                throw new IllegalStateException(
+                        "permission-admin 审批事实拒绝受控工具动作，且 fail-open 不可覆盖该决定"
+                );
+            }
+            if (properties.isControlledActionApprovalCheckFailOpenOnError()) {
+                diagnostics.put("approvalCheckFailOpenSuppressed", true);
+            }
+            return new DryRunDecision(
+                    OUTCOME_DEFERRED_WAITING_APPROVAL_FACT,
+                    "permission-admin 审批事实尚未获得可验证的授权结果，任务不会因 fail-open 自动放行。",
+                    false,
+                    false,
+                    diagnostics,
+                    List.of("恢复 permission-admin 审批事实评估后重新调度该任务。")
+            );
+        }
         if (!approvalGate.approved()) {
             return new DryRunDecision(
                     OUTCOME_DEFERRED_WAITING_APPROVAL_FACT,
@@ -284,17 +329,23 @@ public class AgentToolActionControlledDryRunDispatcherService {
         AgentToolActionControlledApprovalEvaluationRequest request = new AgentToolActionControlledApprovalEvaluationRequest(
                 payload.confirmationId(),
                 payload.tenantId(),
+                payload.applicationId(),
                 payload.projectId(),
+                payload.userId(),
                 payload.actorId(),
+                payload.agentId(),
                 payload.sessionId(),
                 payload.runId(),
+                payload.delegationId(),
                 payload.commandId(),
                 payload.toolCode(),
+                payload.actionFingerprint(),
                 firstText(payload.policyVersions()),
                 actorContext == null ? null : actorContext.traceId()
         );
         try {
             AgentToolActionControlledApprovalEvaluationResult result = approvalClient.evaluate(request);
+            validateApprovalEvaluationResult(request, result);
             diagnostics.put("approvalCheck", "evaluated");
             diagnostics.put("approvalDecision", result.decision());
             diagnostics.put("approvalApproved", Boolean.TRUE.equals(result.approved()));
@@ -317,6 +368,15 @@ public class AgentToolActionControlledDryRunDispatcherService {
             }
             throw new IllegalStateException("permission-admin 审批事实拒绝受控工具动作，decision="
                     + result.decision() + "，reason=" + safeText(result.reason(), "审批事实未批准"));
+        } catch (IllegalArgumentException exception) {
+            /*
+             * Request/response contract violations are scope mismatches, not
+             * transient availability events. They must never use the optional
+             * fail-open path below.
+             */
+            diagnostics.put("approvalCheck", "contract_violation");
+            diagnostics.put("approvalCheckError", safeMessage(exception));
+            throw exception;
         } catch (RuntimeException exception) {
             diagnostics.put("approvalCheck", "temporarily_unavailable_or_rejected");
             diagnostics.put("approvalCheckError", safeMessage(exception));
@@ -331,6 +391,31 @@ public class AgentToolActionControlledDryRunDispatcherService {
                     "permission-admin 审批事实评估暂时不可用，任务已延迟等待权限中心恢复。",
                     List.of("检查 permission-admin 可用性、审批事实登记状态和服务账号调用链路。")
             );
+        }
+    }
+
+    /**
+     * The dispatcher repeats the response checks even though the HTTP client
+     * performs them too. Unit-test doubles and future client replacements must
+     * not be able to turn a mismatched approval fact into an execution permit.
+     */
+    private void validateApprovalEvaluationResult(AgentToolActionControlledApprovalEvaluationRequest request,
+                                                  AgentToolActionControlledApprovalEvaluationResult result) {
+        if (result == null) {
+            throw new IllegalArgumentException("permission-admin 返回空审批事实结果");
+        }
+        if (!sameText(request.approvalFactId(), result.approvalFactId())) {
+            throw new IllegalArgumentException("permission-admin 返回的 approvalFactId 与请求不一致");
+        }
+        if (!Boolean.TRUE.equals(result.approved())) {
+            return;
+        }
+        if (Boolean.TRUE.equals(result.retryable())
+                || !"APPROVED".equals(result.decision())
+                || !"APPROVED".equals(result.status())
+                || !sameText(request.requestedPolicyVersion(), result.policyVersion())
+                || !result.evidenceCodes().containsAll(APPROVED_EVIDENCE_CODES)) {
+            throw new IllegalArgumentException("permission-admin 的 APPROVED 审批结果缺少一致的范围或策略证据");
         }
     }
 
@@ -431,6 +516,12 @@ public class AgentToolActionControlledDryRunDispatcherService {
             }
         }
         return null;
+    }
+
+    private boolean sameText(String left, String right) {
+        String normalizedLeft = left == null || left.isBlank() ? null : left.trim();
+        String normalizedRight = right == null || right.isBlank() ? null : right.trim();
+        return normalizedLeft != null && normalizedLeft.equals(normalizedRight);
     }
 
     private record DryRunDecision(

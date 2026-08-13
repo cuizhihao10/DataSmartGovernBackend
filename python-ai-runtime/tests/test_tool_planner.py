@@ -20,6 +20,10 @@ from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis,
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan, AgentSkillSelection
 from datasmart_ai_runtime.services.context_builder import DefaultContextBuilder
 from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyzer
+from datasmart_ai_runtime.services.model_gateway.model_tool_schema import (
+    ModelToolSchemaExposurePolicy,
+    OpenAICompatibleToolSchemaBuilder,
+)
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
@@ -882,6 +886,45 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertTrue(plan.parameter_validation.can_execute)
         self.assertEqual((), plan.parameter_validation.issues)
 
+    def test_workspace_text_search_is_model_visible_without_forcing_a_plan(self) -> None:
+        """本地精确搜索仅作为 native tool_call 候选，规则规划不会每轮自动扫描 workspace。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="Search workspace codebase for the retry policy implementation.",
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+        planner = ToolPlanner(default_tool_registry())
+
+        plans = planner.plan(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
+        visible_tools = planner.model_visible_tools(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
+        tool = next(tool for tool in visible_tools if tool.name == "workspace.text.search")
+        schema = OpenAICompatibleToolSchemaBuilder().build(
+            (tool,),
+            ModelToolSchemaExposurePolicy(strict=True),
+        )[0]["function"]
+
+        self.assertIn("workspace.text.search", intent_analysis.candidate_tools)
+        self.assertNotIn("workspace.text.search", {plan.tool_name for plan in plans})
+        self.assertTrue(tool.read_only)
+        self.assertEqual(ToolExecutionMode.ASYNC_TASK, tool.execution_mode)
+        self.assertEqual("agent:repository-text:search", tool.required_permissions[0])
+        self.assertEqual("workspace_text_search", schema["name"])
+        self.assertIn("query", schema["parameters"]["properties"])
+        self.assertNotIn("workspaceReference", schema["parameters"]["properties"])
+        self.assertNotIn("repositoryReference", schema["parameters"]["properties"])
+
     def test_workspace_file_write_plan_requires_approval_and_hides_content(self) -> None:
         """文件写入计划必须进入审批，并且只携带 contentRef，不携带正文。"""
 
@@ -960,8 +1003,14 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertNotIn(raw_query, serialized)
         self.assertNotIn("最新资料", serialized)
 
-    def test_governance_rag_plan_uses_query_ref_and_evidence_policy(self) -> None:
-        """治理 RAG 计划只能携带 queryRef 和证据策略，不能携带原始问题。"""
+    def test_governance_rag_intent_only_exposes_model_tool_without_forcing_plan(self) -> None:
+        """RAG 意图只开放 native tool，最终 SEARCH/SKIP 必须由模型决定。
+
+        ``candidate_tools`` 和 ``useRag`` 是控制面的能力准入信号，不是一次真实检索决定。如果规则
+        Planner 在模型响应前就生成 ``knowledge.rag.query``，模型即使判断结构化事实已经足够并选择
+        SKIP，合并阶段仍会把 RAG 补回，最终表现成“每次都强制检索”。这里固定 Codex 类 Agent 的
+        两阶段语义：规则层决定工具是否可见，模型通过 native tool call 决定是否实际使用。
+        """
 
         raw_question = "质量规则为什么需要先读取元数据证据"
         request = AgentRequest(
@@ -979,22 +1028,18 @@ class ToolPlannerTest(unittest.TestCase):
             confidence=0.88,
         )
 
-        plans = ToolPlanner(default_tool_registry()).plan(request=request, intent_analysis=intent_analysis)
+        planner = ToolPlanner(default_tool_registry())
+        plans = planner.plan(request=request, intent_analysis=intent_analysis)
+        visible_tools = planner.model_visible_tools(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
 
-        plan = next(plan for plan in plans if plan.tool_name == "knowledge.rag.query")
-        serialized = str(plan.arguments)
-        self.assertEqual(ToolExecutionMode.SYNC, plan.execution_mode)
-        self.assertFalse(plan.requires_human_approval)
-        self.assertTrue(plan.parameter_validation.can_execute)
-        self.assertEqual("LOW_SENSITIVE_RAG_QUERY_REFERENCE_ONLY", plan.arguments["payloadPolicy"])
-        self.assertIn("queryRef", plan.arguments)
-        self.assertIn("scopePolicy", plan.arguments)
-        self.assertIn("evidencePolicy", plan.arguments)
-        self.assertEqual("ragEvidence", plan.governance_hints["resultAlias"])
-        self.assertTrue(plan.arguments["evidencePolicy"]["failClosedWhenNoEvidence"])
-        self.assertTrue(plan.arguments["evidencePolicy"]["langGraphCheckpointRequired"])
-        self.assertNotIn(raw_question, serialized)
-        self.assertNotIn("元数据证据", serialized)
+        self.assertNotIn("knowledge.rag.query", {plan.tool_name for plan in plans})
+        rag_tool = next(tool for tool in visible_tools if tool.name == "knowledge.rag.query")
+        self.assertEqual(ToolExecutionMode.SYNC, rag_tool.execution_mode)
+        self.assertFalse(rag_tool.requires_approval)
+        self.assertNotIn(raw_question, str(rag_tool))
 
     def test_task_plan_carries_high_risk_intent_tags(self) -> None:
         request = AgentRequest(

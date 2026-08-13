@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -142,6 +143,46 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         AgentAsyncTaskCommandOutboxRecord current = store.findByCommandId("async-command-stale").orElseThrow();
         assertEquals(AgentAsyncTaskCommandOutboxStatus.PUBLISHED, current.status());
         assertEquals(2, current.attemptCount());
+    }
+
+    /**
+     * 验证生产灰度白名单同时限制“领取新命令”和“恢复卡住命令”。
+     *
+     * <p>测试故意让未开放工具排在允许工具之前。如果过滤发生在 LIMIT 之后，允许工具会被饿死；如果恢复逻辑
+     * 没有复用白名单，另一个 PUBLISHING 命令会被悄悄改成 FAILED。两种行为都会突破首次授权后的受控执行边界。</p>
+     */
+    @Test
+    void dispatcherShouldOnlyTouchExplicitlyAllowedToolCodes() {
+        AgentAsyncTaskCommandOutboxProperties properties = properties();
+        properties.setDispatcherBatchSize(1);
+        properties.setDispatcherAllowedToolCodes(List.of("workspace.text.search"));
+        properties.setDispatcherPublishingTimeoutSeconds(60);
+        InMemoryAgentAsyncTaskCommandOutboxStore store = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
+        store.append(record("legacy-pending", "data-sync.execute",
+                AgentAsyncTaskCommandOutboxStatus.PENDING, 0, null, Instant.now()));
+        store.append(record("search-pending", "workspace.text.search",
+                AgentAsyncTaskCommandOutboxStatus.PENDING, 0, null, Instant.now()));
+        store.append(record("legacy-stale", "data-sync.execute",
+                AgentAsyncTaskCommandOutboxStatus.PUBLISHING, 1, null, Instant.now().minusSeconds(120)));
+        CollectingTarget target = new CollectingTarget();
+        AgentAsyncTaskCommandOutboxDispatcher dispatcher = new AgentAsyncTaskCommandOutboxDispatcher(
+                properties,
+                store,
+                List.of(target)
+        );
+
+        AgentAsyncTaskCommandOutboxDispatcher.AgentAsyncTaskCommandOutboxDispatchSummary summary =
+                dispatcher.dispatchOnce();
+
+        assertEquals(1, summary.scanned());
+        assertEquals(1, summary.published());
+        assertEquals(0, summary.recovered());
+        assertEquals(List.of("search-pending"), target.commandIds);
+        assertEquals(AgentAsyncTaskCommandOutboxStatus.PENDING,
+                store.findByCommandId("legacy-pending").orElseThrow().status());
+        assertEquals(AgentAsyncTaskCommandOutboxStatus.PUBLISHING,
+                store.findByCommandId("legacy-stale").orElseThrow().status());
+        assertFalse(target.commandIds.contains("legacy-pending"));
     }
 
     @Test
@@ -283,6 +324,15 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
                                                      int attemptCount,
                                                      Instant nextRetryAt,
                                                      Instant updatedAt) {
+        return record(commandId, "data-sync.execute", status, attemptCount, nextRetryAt, updatedAt);
+    }
+
+    private AgentAsyncTaskCommandOutboxRecord record(String commandId,
+                                                     String toolCode,
+                                                     AgentAsyncTaskCommandOutboxStatus status,
+                                                     int attemptCount,
+                                                     Instant nextRetryAt,
+                                                     Instant updatedAt) {
         Instant now = Instant.now();
         return new AgentAsyncTaskCommandOutboxRecord(
                 "async-command-outbox:" + commandId,
@@ -296,7 +346,7 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
                 "session-dispatch-command",
                 "run-dispatch-command",
                 "audit-dispatch-command",
-                "data-sync.execute",
+                toolCode,
                 "data-sync",
                 "/sync-tasks",
                 10L,

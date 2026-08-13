@@ -53,6 +53,29 @@ public interface AgentAsyncTaskCommandOutboxStore {
 
     List<AgentAsyncTaskCommandOutboxRecord> listPublishable(int limit, Instant now);
 
+    /**
+     * 按工具白名单查询当前可被 dispatcher 领取的记录。
+     *
+     * <p>默认实现用于兼容测试替身和较早的 Store 扩展；正式内存/JDBC Store 会在存储层先过滤再分页，
+     * 防止大量未开放工具排在队首时饿死已经获准自动派发的命令。空白名单表示保持历史行为并查询所有工具。</p>
+     *
+     * @param allowedToolCodes 允许自动派发的工具码；空集合表示不限制
+     * @param limit            单轮最大记录数
+     * @param now              判断重试时间是否到期的参考时间
+     * @return 同时满足状态、到期时间和工具白名单的记录
+     */
+    default List<AgentAsyncTaskCommandOutboxRecord> listPublishableByToolCodes(
+            Collection<String> allowedToolCodes,
+            int limit,
+            Instant now) {
+        if (allowedToolCodes == null || allowedToolCodes.isEmpty()) {
+            return listPublishable(limit, now);
+        }
+        return listPublishable(limit, now).stream()
+                .filter(record -> allowedToolCodes.contains(record.toolCode()))
+                .toList();
+    }
+
     Optional<AgentAsyncTaskCommandOutboxRecord> markPublishing(String outboxId, Instant now);
 
     Optional<AgentAsyncTaskCommandOutboxRecord> markPublished(String outboxId, Instant now);
@@ -69,6 +92,22 @@ public interface AgentAsyncTaskCommandOutboxStore {
     int recoverStalePublishing(Instant staleBefore,
                                Instant now,
                                String error);
+
+    /**
+     * 只恢复工具白名单范围内长时间停留在 PUBLISHING 的记录。
+     *
+     * <p>开启一个灰度 worker 时，恢复动作也必须受同一白名单约束；否则 dispatcher 虽然不会主动领取旧工具，
+     * 却可能先把它们从 PUBLISHING 改回 FAILED，造成额外状态扰动。空集合表示保持历史全量恢复行为。</p>
+     */
+    default int recoverStalePublishingByToolCodes(Collection<String> allowedToolCodes,
+                                                   Instant staleBefore,
+                                                   Instant now,
+                                                   String error) {
+        if (allowedToolCodes == null || allowedToolCodes.isEmpty()) {
+            return recoverStalePublishing(staleBefore, now, error);
+        }
+        return 0;
+    }
 
     AgentAsyncTaskCommandOutboxDiagnostics diagnostics();
 }

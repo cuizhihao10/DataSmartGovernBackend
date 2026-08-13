@@ -74,6 +74,12 @@ public class KafkaAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskC
                         || "knowledge.rag.query".equalsIgnoreCase(trim(record.toolCode()))
                         || "python-ai-runtime-rag".equalsIgnoreCase(record.targetService())
                         || "python-ai-runtime-rag".equalsIgnoreCase(record.consumerService())
+                        || WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.TOOL_CODE
+                        .equalsIgnoreCase(trim(record.toolCode()))
+                        || WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.CONSUMER_SERVICE
+                        .equalsIgnoreCase(record.targetService())
+                        || WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.CONSUMER_SERVICE
+                        .equalsIgnoreCase(record.consumerService())
         );
     }
 

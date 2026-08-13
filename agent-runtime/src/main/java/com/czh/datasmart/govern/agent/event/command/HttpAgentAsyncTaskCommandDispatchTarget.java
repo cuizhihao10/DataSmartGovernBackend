@@ -44,7 +44,7 @@ public class HttpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCo
      */
     @Override
     public boolean supports(AgentAsyncTaskCommandOutboxRecord record) {
-        return !isMcpCommand(record) && !isRagCommand(record);
+        return !isMcpCommand(record) && !isRagCommand(record) && !isWorkspaceTextSearchCommand(record);
     }
 
     @Override
@@ -78,6 +78,17 @@ public class HttpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCo
                 "knowledge.rag.query".equalsIgnoreCase(trim(record.toolCode()))
                         || "python-ai-runtime-rag".equalsIgnoreCase(record.targetService())
                         || "python-ai-runtime-rag".equalsIgnoreCase(record.consumerService())
+        );
+    }
+
+    /** Exclude exact-text search commands because they have a dedicated Python worker and receipt contract. */
+    private boolean isWorkspaceTextSearchCommand(AgentAsyncTaskCommandOutboxRecord record) {
+        return record != null && (
+                WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.TOOL_CODE.equalsIgnoreCase(trim(record.toolCode()))
+                        || WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.CONSUMER_SERVICE
+                        .equalsIgnoreCase(record.targetService())
+                        || WorkspaceTextSearchAgentAsyncTaskCommandDispatchTarget.CONSUMER_SERVICE
+                        .equalsIgnoreCase(record.consumerService())
         );
     }
 

@@ -11,9 +11,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /**
  * Agent 会话内存仓储。
@@ -44,6 +47,32 @@ public class AgentSessionMemoryStore implements AgentSessionStore {
     @Override
     public void save(AgentSessionRecord session) {
         sessions.put(session.getSessionId(), session);
+    }
+
+    /**
+     * Applies a compound change to the current map entry without replacing it with a caller-owned stale snapshot.
+     *
+     * <p>{@code computeIfPresent} serializes changes to the map slot and the session monitor protects its mutable
+     * child lists. The callback therefore observes all changes previously committed in this process. Memory mode is
+     * still intentionally development-only and cannot provide cross-process rollback; production uses PostgreSQL.</p>
+     */
+    @Override
+    public <T> Optional<T> mutateAtomically(String sessionId, Function<AgentSessionRecord, T> mutation) {
+        if (sessionId == null || sessionId.isBlank() || mutation == null) {
+            return Optional.empty();
+        }
+        AtomicReference<T> result = new AtomicReference<>();
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                T changed = mutation.apply(currentSession);
+                if (changed == null) {
+                    throw new IllegalStateException("Agent session atomic mutation must return a non-null result");
+                }
+                result.set(changed);
+                return currentSession;
+            }
+        });
+        return Optional.ofNullable(result.get());
     }
 
     /**
@@ -78,7 +107,197 @@ public class AgentSessionMemoryStore implements AgentSessionStore {
         return appended[0];
     }
 
+    /**
+     * Applies the process-local application-scope binding without replacing Runs, messages, tools, or delegation.
+     *
+     * <p>The session monitor makes the absent-or-equal check atomic with the optional assignment. Returning
+     * {@code false} for a different existing value mirrors the JDBC conditional update and prevents a caller from
+     * reusing one session across product applications. This memory profile remains suitable only for local
+     * development; production uses the database implementation for cross-instance arbitration.</p>
+     */
+    @Override
+    public boolean bindApplicationIdIfAbsent(String sessionId, Long applicationId) {
+        if (sessionId == null || sessionId.isBlank() || applicationId == null || applicationId <= 0) {
+            return false;
+        }
+        boolean[] bound = {false};
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                Long currentApplicationId = currentSession.getApplicationId();
+                if (currentApplicationId == null) {
+                    currentSession.bindApplicationId(applicationId);
+                    bound[0] = true;
+                } else {
+                    bound[0] = currentApplicationId.equals(applicationId);
+                }
+                return currentSession;
+            }
+        });
+        return bound[0];
+    }
+
+    /**
+     * Updates only the delegated identity fields on the currently stored session object.
+     *
+     * <p>The map-slot computation and session monitor make the parent update atomic for the local development
+     * profile. No caller-owned session snapshot is inserted into the map, so Runs and messages concurrently added
+     * to the current object remain present.</p>
+     */
+    @Override
+    public boolean refreshDelegatedIdentity(String sessionId,
+                                            String actorRole,
+                                            String actorType,
+                                            String authorizedProjectRoles) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return false;
+        }
+        boolean[] refreshed = {false};
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                currentSession.refreshDelegatedIdentity(actorRole, actorType, authorizedProjectRoles);
+                refreshed[0] = true;
+                return currentSession;
+            }
+        });
+        return refreshed[0];
+    }
+
+    /**
+     * Persists one terminal Run lifecycle in memory without replacing any session child collection.
+     *
+     * <p>The current Run object usually is the same instance as {@code run}; delegating to the domain method also
+     * handles reloaded snapshots and enforces the same different-terminal-state rejection used by PostgreSQL.</p>
+     */
+    @Override
+    public boolean updateRunLifecycle(String sessionId, AgentRunRecord run) {
+        if (sessionId == null || sessionId.isBlank() || run == null || run.getRunId() == null
+                || run.getRunId().isBlank() || run.getState() == null || !run.getState().isTerminal()) {
+            return false;
+        }
+        boolean[] updated = {false};
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                currentSession.getRuns().stream()
+                        .filter(currentRun -> run.getRunId().equals(currentRun.getRunId()))
+                        .findFirst()
+                        .ifPresent(currentRun -> updated[0] = currentRun.applyTerminalLifecycleSnapshot(run));
+                return currentSession;
+            }
+        });
+        return updated[0];
+    }
+
+    /**
+     * Applies one approval-reconciliation result to the current in-memory Run without replacing the session slot.
+     *
+     * <p>The domain method enforces the WAITING_HUMAN-or-same-target predicate, while the session monitor keeps the
+     * check and mutation atomic for the local profile.</p>
+     */
+    @Override
+    public boolean updateRunAfterToolDecision(String sessionId, AgentRunRecord run) {
+        if (sessionId == null || sessionId.isBlank() || run == null || run.getRunId() == null
+                || run.getRunId().isBlank()) {
+            return false;
+        }
+        boolean[] updated = {false};
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                currentSession.getRuns().stream()
+                        .filter(currentRun -> run.getRunId().equals(currentRun.getRunId()))
+                        .findFirst()
+                        .ifPresent(currentRun -> updated[0] = currentRun.applyToolDecisionLifecycleSnapshot(run));
+                return currentSession;
+            }
+        });
+        return updated[0];
+    }
+
+    /**
+     * 在 memory profile 中对一个 Run 执行与 PostgreSQL JSONB 条件更新等价的原子合并。
+     *
+     * <p>外层 {@link ConcurrentMap#computeIfPresent} 固定 session 槽位，内层同步会话对象以保护普通 List；
+     * 最终由 {@link AgentRunRecord#putVariablesIfGuardAbsent(String, Map)} 一次检查并写入所有变量。
+     * 因而两个并发确认最多只有一个返回 true，失败方随后只能读取 receipt 或报告确认仍在处理中。</p>
+     *
+     * @param sessionId 目标会话 ID
+     * @param runId 目标 Run ID
+     * @param guardVariable 服务器控制的一次性守卫变量
+     * @param values 要整体写入的变量
+     * @return 找到目标且首次写入成功时返回 true
+     */
+    @Override
+    public boolean putRunVariablesIfAbsent(String sessionId,
+                                           String runId,
+                                           String guardVariable,
+                                           Map<String, Object> values) {
+        if (sessionId == null || sessionId.isBlank() || runId == null || runId.isBlank()) {
+            return false;
+        }
+        boolean[] inserted = {false};
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                currentSession.getRuns().stream()
+                        .filter(run -> runId.trim().equals(run.getRunId()))
+                        .findFirst()
+                        .ifPresent(run -> inserted[0] = run.putVariablesIfGuardAbsent(guardVariable, values));
+                return currentSession;
+            }
+        });
+        return inserted[0];
+    }
+
     /** 按业务会话编号读取当前进程中的聚合；服务重启或请求落到其他实例时可能不存在。 */
+    /**
+     * Performs the in-memory equivalent of the durable first-AUTOPILOT authorization claim.
+     *
+     * <p>{@link ConcurrentMap#computeIfPresent(Object, java.util.function.BiFunction)} selects one stable
+     * session slot and the nested monitor protects the session's mutable Run list. The operation first checks
+     * every Run for the session-wide authorization fact, then delegates the target Run write to
+     * {@link AgentRunRecord#putVariablesIfGuardAbsent(String, Map)}. Consequently, two local threads that
+     * confirm different Runs cannot both return {@code true}. This profile is still process-local and is only
+     * suitable for development and tests; the JDBC implementation provides the cross-instance database lock
+     * used in production.</p>
+     *
+     * @param sessionId session that owns both competing Runs
+     * @param runId target Run receiving the claim and authorization facts
+     * @param guardVariable target Run's one-time confirmation claim key
+     * @param sessionUniqueVariable session-wide authorization key, normally {@code autopilotAuthorization}
+     * @param values complete immutable values to write to the target Run
+     * @return {@code true} for the single winning first claim, otherwise {@code false}
+     */
+    @Override
+    public boolean putRunVariablesIfAbsentAndSessionVariableAbsent(String sessionId,
+                                                                    String runId,
+                                                                    String guardVariable,
+                                                                    String sessionUniqueVariable,
+                                                                    Map<String, Object> values) {
+        if (sessionId == null || sessionId.isBlank() || runId == null || runId.isBlank()
+                || guardVariable == null || guardVariable.isBlank()
+                || sessionUniqueVariable == null || sessionUniqueVariable.isBlank()
+                || values == null || values.isEmpty()
+                || !values.containsKey(guardVariable)
+                || !values.containsKey(sessionUniqueVariable)) {
+            return false;
+        }
+        boolean[] inserted = {false};
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                boolean authorizationAlreadyEstablished = currentSession.getRuns().stream()
+                        .map(AgentRunRecord::getVariables)
+                        .anyMatch(variables -> variables.containsKey(sessionUniqueVariable));
+                if (authorizationAlreadyEstablished) {
+                    return currentSession;
+                }
+                currentSession.getRuns().stream()
+                        .filter(run -> runId.trim().equals(run.getRunId()))
+                        .findFirst()
+                        .ifPresent(run -> inserted[0] = run.putVariablesIfGuardAbsent(guardVariable, values));
+                return currentSession;
+            }
+        });
+        return inserted[0];
+    }
+
     @Override
     public Optional<AgentSessionRecord> findById(String sessionId) {
         return Optional.ofNullable(sessions.get(sessionId));

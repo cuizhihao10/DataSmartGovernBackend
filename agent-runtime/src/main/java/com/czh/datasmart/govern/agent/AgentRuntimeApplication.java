@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.agent.config.AgentArtifactObjectStoreMinioProper
 import com.czh.datasmart.govern.agent.config.AgentMcpDurableWorkerClientProperties;
 import com.czh.datasmart.govern.agent.config.AgentPostConfirmContinuationProperties;
 import com.czh.datasmart.govern.agent.config.AgentRagCommandWorkerClientProperties;
+import com.czh.datasmart.govern.agent.config.AgentWorkspaceTextSearchWorkerProperties;
 import com.czh.datasmart.govern.agent.config.AgentCommandSafetyPrecheckProperties;
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeEventConsumerProperties;
@@ -27,6 +28,7 @@ import com.czh.datasmart.govern.agent.config.AgentToolRuntimeProtectionPropertie
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.kafka.annotation.EnableKafkaRetryTopic;
 
 /**
  * 智能体运行时控制面启动类。
@@ -38,6 +40,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * 4. 与 Python AI 服务通过 HTTP/gRPC/Kafka 解耦，避免 Java 业务模块直接依赖某个模型框架。
  */
 @SpringBootApplication
+@EnableKafkaRetryTopic
 @EnableConfigurationProperties({
         AgentRuntimeProperties.class,
         AgentRuntimePersistenceProperties.class,
@@ -56,7 +59,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         AgentArtifactObjectStoreMinioProperties.class,
         AgentMcpDurableWorkerClientProperties.class,
         AgentPostConfirmContinuationProperties.class,
-        AgentRagCommandWorkerClientProperties.class
+        AgentRagCommandWorkerClientProperties.class,
+        AgentWorkspaceTextSearchWorkerProperties.class
 })
 public class AgentRuntimeApplication {
 

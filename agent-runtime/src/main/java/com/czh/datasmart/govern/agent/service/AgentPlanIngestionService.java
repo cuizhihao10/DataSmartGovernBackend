@@ -108,27 +108,71 @@ public class AgentPlanIngestionService {
         if (replay.isPresent()) {
             return replay.get();
         }
-        AgentSessionRecord session = resolveSession(request, applicationId);
         List<AgentPlanToolSnapshot> toolSnapshots = normalizeToolPlans(request);
-        synchronized (session) {
-            ensureRunCapacityOrSupersedePendingPlan(session);
-            bindMissingTools(session, toolSnapshots);
-            AgentRunRecord run = createRun(session, request, toolSnapshots);
-            session.addRun(run);
-            appendConversationMessages(session, run, request);
+        IngestedAgentPlanView view;
+        if (request.sessionId() == null || request.sessionId().isBlank()) {
+            AgentSessionRecord session = createSession(request, applicationId);
+            AgentRunRecord run = applyPlanToSession(session, request, toolSnapshots);
             sessionMemoryStore.save(session);
-            AgentSessionView sessionView = toSessionView(session);
-            AgentRunView runView = toRunView(run);
-            List<AgentToolExecutionAuditView> audits = auditService.createPlanAuditsFromSnapshots(
-                    sessionView,
-                    runView,
-                    toolSnapshots,
-                    traceId
-            );
-            IngestedAgentPlanView view = new IngestedAgentPlanView(sessionView, runView, audits, controlPlaneNotes(run, audits));
-            idempotencySupport.remember(request, view);
-            return view;
+            view = createGovernedView(session, run, toolSnapshots, traceId);
+        } else {
+            view = sessionMemoryStore.mutateAtomically(request.sessionId(), session -> {
+                ensureSameBoundary(session, request, applicationId);
+                AgentRunRecord run = applyPlanToSession(session, request, toolSnapshots);
+                return createGovernedView(session, run, toolSnapshots, traceId);
+            }).orElseThrow(() -> new PlatformBusinessException(
+                    PlatformErrorCode.NOT_FOUND,
+                    "Agent 会话不存在，无法接入 Python AgentPlan，sessionId=" + request.sessionId()));
         }
+        idempotencySupport.remember(request, view);
+        return view;
+    }
+
+    /**
+     * Applies one Python plan to the supplied current session before audit facts are materialized.
+     *
+     * <p>For an existing session this method runs inside {@link AgentSessionStore#mutateAtomically(String,
+     * java.util.function.Function)}. Capacity checks, superseding old pending plans, extending delegation, appending
+     * the new Run/messages, and the later audit/outbox creation therefore share the database transaction. This
+     * method itself changes only the session aggregate and performs no remote model or business-service call;
+     * actual tools remain behind later confirmation/execution gates.</p>
+     *
+     * @param session fresh new session or store-locked existing session
+     * @param request governed Python plan contract
+     * @param toolSnapshots Java-validated tool plan snapshots
+     * @return newly appended Run, used to create audit facts and the public response
+     */
+    private AgentRunRecord applyPlanToSession(AgentSessionRecord session,
+                                              IngestAgentPlanRequest request,
+                                              List<AgentPlanToolSnapshot> toolSnapshots) {
+        ensureRunCapacityOrSupersedePendingPlan(session);
+        bindMissingTools(session, toolSnapshots);
+        AgentRunRecord run = createRun(session, request, toolSnapshots);
+        session.addRun(run);
+        appendConversationMessages(session, run, request);
+        return run;
+    }
+
+    /**
+     * Creates the governed audit/outbox facts and public response for a Run already present in its session.
+     *
+     * <p>Existing-session callers invoke this method while the session store transaction is active, so JDBC audit
+     * and outbox stores reuse the same connection. New-session callers first persist the parent aggregate and only
+     * then create audits, preserving foreign-key readiness and the historical fail-safe ordering.</p>
+     */
+    private IngestedAgentPlanView createGovernedView(AgentSessionRecord session,
+                                                     AgentRunRecord run,
+                                                     List<AgentPlanToolSnapshot> toolSnapshots,
+                                                     String traceId) {
+        AgentSessionView sessionView = toSessionView(session);
+        AgentRunView runView = toRunView(run);
+        List<AgentToolExecutionAuditView> audits = auditService.createPlanAuditsFromSnapshots(
+                sessionView,
+                runView,
+                toolSnapshots,
+                traceId
+        );
+        return new IngestedAgentPlanView(sessionView, runView, audits, controlPlaneNotes(run, audits));
     }
 
     /**
@@ -158,19 +202,6 @@ public class AgentPlanIngestionService {
                     "agm_" + UUID.randomUUID().toString().replace("-", ""),
                     run.getRunId(), "AGENT", preview(request.responseSummary(), 20000), now.plusNanos(1)));
         }
-    }
-
-    private AgentSessionRecord resolveSession(IngestAgentPlanRequest request, Long applicationId) {
-        if (request.sessionId() == null || request.sessionId().isBlank()) {
-            AgentSessionRecord session = createSession(request, applicationId);
-            sessionMemoryStore.save(session);
-            return session;
-        }
-        AgentSessionRecord session = sessionMemoryStore.findById(request.sessionId())
-                .orElseThrow(() -> new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
-                        "Agent 会话不存在，无法接入 Python AgentPlan，sessionId=" + request.sessionId()));
-        ensureSameBoundary(session, request, applicationId);
-        return session;
     }
 
     private AgentSessionRecord createSession(IngestAgentPlanRequest request, Long applicationId) {

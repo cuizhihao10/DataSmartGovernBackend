@@ -17,6 +17,7 @@ Redis 会话表或网关集群共享状态时，外层协议不需要推翻。
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
@@ -233,18 +234,40 @@ class RuntimeEventSessionManager:
         self,
         subscription_id: str,
         after_sequence: int | None = None,
+        source_cursors: Mapping[str, object] | None = None,
     ) -> RuntimeEventSessionSnapshot:
-        """让已有订阅会话重新进入 ACTIVE，并按续传起点生成 replay envelope。
+        """让已有订阅会话重新进入 ACTIVE，并按两类游标生成 replay envelope。
 
-        重连时服务端优先使用调用方显式传入的 afterSequence；如果没有传入，就使用本会话记录的
-        `last_ack_sequence`。这样前端既可以完全信任本地保存的最后处理序号，也可以让服务端根据最近
-        一次 ack 自动续传。
+        输入的 `after_sequence` 是前端 envelope 的全局展示序号：它决定本次事件流从哪个 sequence 之后
+        回放。未提供时沿用会话的 `last_ack_sequence`，保持原有的 WebSocket 断线续传合同。
+
+        `source_cursors` 则是 Java runtime-event 投影、Redis Stream、Kafka 等外部 source 自己的稳定
+        读取位置。它不能替代 `after_sequence`，因为不同 source 的序号未必和 envelope sequence 位于同一
+        坐标系。有效 source cursor 会合并进 `plan.request.source_cursors`，使紧随其后的 REST/external
+        replay 从正确源级位置继续读取，避免重复扫描旧事件。
+
+        输出是更新后的不可变会话快照，副作用是把 ACTIVE 状态、可信游标和 replay envelope 持久化到
+        checkpoint。合并按 source 独立 fail-closed：本次控制帧只接受本会话已装配 source 的正整数游标，
+        未知、非整数、布尔值和非正值都不会写入状态；每个 source 只取旧值和新值中的较大者，因此网络
+        重试或乱序控制帧不能让外部 replay 回退。已存在 checkpoint 的合法历史游标会保留，以支持跨实例
+        恢复。
+
+        这里刻意不调用外部 ack sink。ACK/heartbeat 的“确认客户端已消费”语义仍由各自的方法负责；
+        reconnect 只改变下一次读取的请求参数，并继续通过既有 replay builder 保持可见性和脱敏边界。
         """
 
         record = self._require_open_record(subscription_id, allow_stale=True)
         snapshot = record.snapshot
         replay_from = snapshot.last_ack_sequence if after_sequence is None else max(0, after_sequence)
-        request = replace(snapshot.plan.request, after_sequence=replay_from)
+        merged_source_cursors = self._merge_reconnect_source_cursors(
+            snapshot.plan.request.source_cursors,
+            source_cursors,
+        )
+        request = replace(
+            snapshot.plan.request,
+            after_sequence=replay_from,
+            source_cursors=merged_source_cursors,
+        )
         plan = replace(snapshot.plan, request=request)
         now = self._now()
         record.snapshot = replace(
@@ -328,6 +351,16 @@ class RuntimeEventSessionManager:
     def _build_replay_envelope(self, plan: RuntimeEventSubscriptionPlan) -> RuntimeEventEnvelope:
         """根据订阅计划构建 replay envelope。
 
+        输入 `plan.request.after_sequence` 是 envelope 级筛选条件；`plan.request.source_cursors` 是每个
+        外部 source 的独立筛选条件。先由本地 store 和外部 replay coordinator 按这些条件收集候选事件，
+        再由 transport builder 统一执行订阅范围、角色可见性和字段脱敏，最后输出可发送给 WebSocket 的
+        replay envelope。
+
+        输出中的 `attributes.sourceCursors` 是本轮外部 source 实际读取到的低敏位置回执，前端可在下一次
+        reconnect 原样带回；它不包含原始事件 payload、认证信息、SQL 或外部连接细节。外部 source 失败
+        时仍会以既有的低敏错误摘要留在 envelope attributes，订阅不会因单个 Java/Redis/Kafka source
+        不可用而被关闭。
+
         如果尚未配置事件存储，则返回空 replay envelope。这样 WebSocket handler 不需要区分“没有历史
         事件”和“暂时没有接入 store”，协议上都表现为一个合法的 replay 响应。
         """
@@ -351,6 +384,98 @@ class RuntimeEventSessionManager:
             return envelope
         return replace(envelope, attributes=envelope_attributes)
 
+    def _merge_reconnect_source_cursors(
+        self,
+        persisted_source_cursors: Mapping[str, object],
+        reconnect_source_cursors: Mapping[str, object] | None,
+    ) -> dict[str, int]:
+        """合并一次 reconnect 可使用的外部 source cursor，且不允许状态倒退。
+
+        `persisted_source_cursors` 来自当前会话/checkpoint，是上次成功订阅或重连保存的状态；
+        `reconnect_source_cursors` 来自当前 WebSocket 控制帧。二者都可能经过旧版本、跨实例恢复或直接
+        服务调用到达这里，因此本方法再次执行防御性校验，不能只依赖控制层解析。
+
+        返回一个新的 `{sourceName: positiveInt}` 字典。先保留形态合法的历史值，即使该 source 因滚动部署、
+        暂时禁用或跨实例恢复而未在当前进程装配，checkpoint 也不会丢失它的续传位置；再逐项处理本次控制帧
+        的新值并取 `max(old, new)`。这使重复帧、乱序帧和旧浏览器缓存都无法让 Java/Redis/Kafka 的读取
+        位置回退。新输入若指向未配置 source，或包含空名称、布尔值、非整数和小于等于零的值，都会被
+        fail-closed 丢弃，既不会新增会话状态，也不会覆盖可信游标。
+
+        本方法是纯状态转换，没有网络或 ack 副作用。真正的外部读取仍由随后的 `_build_replay_envelope(...)`
+        执行，真正的外部消费确认仍只发生在 ack/heartbeat 路径。
+        """
+
+        configured_source_names = frozenset(self._replay_coordinator.external_source_names)
+        merged: dict[str, int] = {}
+        for source_name, cursor in persisted_source_cursors.items():
+            normalized = self._validated_persisted_source_cursor(source_name, cursor)
+            if normalized is not None:
+                normalized_source_name, normalized_cursor = normalized
+                merged[normalized_source_name] = normalized_cursor
+
+        if not isinstance(reconnect_source_cursors, Mapping):
+            return merged
+        for source_name, cursor in reconnect_source_cursors.items():
+            normalized = self._validated_reconnect_source_cursor(
+                source_name,
+                cursor,
+                configured_source_names,
+            )
+            if normalized is None:
+                continue
+            normalized_source_name, normalized_cursor = normalized
+            merged[normalized_source_name] = max(merged.get(normalized_source_name, 0), normalized_cursor)
+        return merged
+
+    @staticmethod
+    def _validated_persisted_source_cursor(source_name: object, cursor: object) -> tuple[str, int] | None:
+        """验证 checkpoint 中已有的 source cursor，且不依赖当前进程的 source 装配结果。
+
+        输入来自本会话已保存的请求或恢复后的 checkpoint。输出为规范化的 `(sourceName, cursor)`，只有
+        非空字符串名称和非布尔正整数会被保留。与本次 WebSocket 控制帧不同，这里不要求 source 目前已
+        配置，因为滚动发布或多实例接管期间，短暂缺少某个 Java/Redis/Kafka adapter 不应丢失已经确认的
+        续传位置；等 source 重新装配后，它仍可继续从该位置读取。
+
+        该方法没有副作用，也不会把新的客户端值引入状态。新输入的白名单校验仍由
+        `_validated_reconnect_source_cursor(...)` 执行。
+        """
+
+        if not isinstance(source_name, str):
+            return None
+        normalized_source_name = source_name.strip()
+        if not normalized_source_name:
+            return None
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor <= 0:
+            return None
+        return normalized_source_name, cursor
+
+    @staticmethod
+    def _validated_reconnect_source_cursor(
+        source_name: object,
+        cursor: object,
+        configured_source_names: frozenset[str],
+    ) -> tuple[str, int] | None:
+        """验证一个 source cursor 是否能安全进入 reconnect 的持久化 replay 状态。
+
+        输入是一个可能来自 JSON、checkpoint 或直接服务调用的 source 名称和游标值，以及本会话实际装配
+        的 source 白名单。输出为规范化的 `(sourceName, cursor)`；任何不符合合同的输入返回 `None`，由
+        调用方保持已有状态而不是猜测默认值或重置 cursor。
+
+        source 名称必须是非空字符串并精确匹配当前已配置 replay source。cursor 必须是正整数，特别拒绝
+        `bool`，因为 Python 中 `bool` 是 `int` 的子类，若不单独检查会把 `True` 错当成 cursor 1。已经
+        保存在 checkpoint 的历史游标不走这条白名单规则，以支持跨实例恢复；该 fail-closed 校验只保护
+        本次重连新增的读取位置，不影响 ack/heartbeat 向外部 ack sink 回写游标的现有语义。
+        """
+
+        if not isinstance(source_name, str):
+            return None
+        normalized_source_name = source_name.strip()
+        if not normalized_source_name or normalized_source_name not in configured_source_names:
+            return None
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor <= 0:
+            return None
+        return normalized_source_name, cursor
+
     def _plan_with_external_ack_attributes(
         self,
         plan: RuntimeEventSubscriptionPlan,
@@ -360,6 +485,11 @@ class RuntimeEventSessionManager:
 
         订阅属性是控制响应里已经存在的扩展位置。这里会清理上一次 ack 的结果，避免一次失败诊断在
         后续成功 ack 后继续残留，误导前端或运维工具。
+
+        这条路径故意不改写 `plan.request.source_cursors`：ack/heartbeat 的 source cursor 表示“客户端已
+        消费并请求外部确认到哪里”，所以只交给 `RuntimeEventAckSink` 并保留低敏结果摘要。reconnect 的
+        source cursor 则表示“下一次外部 replay 从哪里读取”，由 `_merge_reconnect_source_cursors(...)`
+        单独保存。拆开这两个副作用，避免 ACK/heartbeat 语义因本次重连修复而改变。
         """
 
         reserved_keys = {"externalAckResults", "externalAckErrors"}

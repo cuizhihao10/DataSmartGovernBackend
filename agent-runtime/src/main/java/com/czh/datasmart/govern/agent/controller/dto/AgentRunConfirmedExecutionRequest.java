@@ -28,10 +28,18 @@ public record AgentRunConfirmedExecutionRequest(
          * never reopen or execute a completed Run.
          */
         @Size(max = 128, message = "幂等键不能超过 128 个字符")
-        String idempotencyKey) {
+        String idempotencyKey,
+
+        /** 首次确认可选的受限无人值守恢复授权；后续 Run 不能用该字段扩权。 */
+        AgentAutopilotPolicyRequest autopilotPolicy) {
 
     /** Backward-compatible constructor for older internal callers. */
     public AgentRunConfirmedExecutionRequest(Boolean confirmed, String comment) {
-        this(confirmed, comment, null);
+        this(confirmed, comment, null, null);
+    }
+
+    /** Backward-compatible constructor used by callers that already supplied an idempotency key. */
+    public AgentRunConfirmedExecutionRequest(Boolean confirmed, String comment, String idempotencyKey) {
+        this(confirmed, comment, idempotencyKey, null);
     }
 }

@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
+import com.czh.datasmart.govern.datasync.entity.SyncCallbackIdempotency;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
@@ -153,19 +154,94 @@ class SyncObjectExecutionOperationSupportTest {
         verify(fixture.objectExecutionMapper(), never()).selectByExecutionId(org.mockito.ArgumentMatchers.any());
     }
 
+    /**
+     * 验证 Autopilot 在服务端已经提交、但首次 HTTP 响应丢失后，可以用相同 eventId 回放首次结果。
+     *
+     * <p>第一次调用仍会重置对象并重新排队 execution；测试随后把幂等组件保存的请求摘要和响应摘要
+     * 作为 durable record 返回。第二次调用必须直接反序列化该结果，不能再次更新对象、execution、
+     * task 或审计。这个回归保护的是“至少一次 HTTP 调用 + 至多一次控制面副作用”的核心边界。</p>
+     */
+    @Test
+    void retryWithSameIdempotencyKeyShouldReplayFirstSuccessfulResultWithoutRepeatingSideEffects() {
+        Fixture fixture = fixture();
+        SyncObjectRetryRequest request = new SyncObjectRetryRequest();
+        request.setIdempotencyKey("autopilot-trigger:" + "a".repeat(64));
+        SyncObjectExecution failed = objectRow(10L, 0, SyncObjectExecutionState.FAILED, 3, 3);
+        when(fixture.objectExecutionMapper().selectByExecutionId(88L)).thenReturn(List.of(failed));
+        when(fixture.executionMapper().requeueTerminalObjectLevelRetry(eq(88L), contains("OBJECT_LEVEL_RETRY")))
+                .thenReturn(1);
+        when(fixture.taskMapper().markLifecycleState(
+                1L, SyncTaskState.RETRYING.name(), SyncTriggerType.MANUAL.name(), 88L)).thenReturn(1);
+        when(fixture.idempotencySupport().isDuplicate(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(false);
+
+        SyncObjectRetryResult first = fixture.support().retryFailedObjects(
+                task(), execution(SyncExecutionState.PARTIALLY_SUCCEEDED), request, actor());
+
+        ArgumentCaptor<String> digestCaptor = ArgumentCaptor.forClass(String.class);
+        verify(fixture.idempotencySupport()).isDuplicate(
+                eq(7L), eq(1L), eq(88L), eq("RETRY_FAILED_OBJECT_EXECUTIONS"),
+                eq("task:1:execution:88"), eq(request.getIdempotencyKey()), eq("1001"), digestCaptor.capture());
+        ArgumentCaptor<String> responseCaptor = ArgumentCaptor.forClass(String.class);
+        verify(fixture.idempotencySupport()).markSucceeded(
+                eq(7L), eq("RETRY_FAILED_OBJECT_EXECUTIONS"), eq("task:1:execution:88"),
+                eq(request.getIdempotencyKey()), responseCaptor.capture());
+
+        SyncCallbackIdempotency persisted = new SyncCallbackIdempotency();
+        persisted.setRequestDigest(digestCaptor.getValue());
+        persisted.setResponseSummary(responseCaptor.getValue());
+        when(fixture.idempotencySupport().isDuplicate(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(true);
+        when(fixture.idempotencySupport().findRecord(
+                7L, "RETRY_FAILED_OBJECT_EXECUTIONS", "task:1:execution:88", request.getIdempotencyKey()))
+                .thenReturn(persisted);
+
+        SyncObjectRetryResult replay = fixture.support().retryFailedObjects(
+                task(), execution(SyncExecutionState.QUEUED), request, actor());
+
+        assertThat(replay).isEqualTo(first);
+        verify(fixture.objectExecutionMapper(), times(1)).updateById(
+                org.mockito.ArgumentMatchers.any(SyncObjectExecution.class));
+        verify(fixture.executionMapper(), times(1)).requeueTerminalObjectLevelRetry(
+                eq(88L), contains("OBJECT_LEVEL_RETRY"));
+        verify(fixture.auditSupport(), times(1)).saveAudit(
+                eq(7L), eq(1L), eq(88L), eq(SyncAuditActionType.RETRY_OBJECT_EXECUTIONS),
+                eq(actor()), org.mockito.ArgumentMatchers.anyString());
+    }
+
     private Fixture fixture() {
         SyncObjectExecutionMapper objectExecutionMapper = mock(SyncObjectExecutionMapper.class);
         SyncExecutionMapper executionMapper = mock(SyncExecutionMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
+        SyncCallbackIdempotencySupport idempotencySupport = mock(SyncCallbackIdempotencySupport.class);
         SyncObjectExecutionOperationSupport support = new SyncObjectExecutionOperationSupport(
                 objectExecutionMapper,
                 executionMapper,
                 taskMapper,
                 new SyncQuerySupport(),
-                auditSupport
+                auditSupport,
+                idempotencySupport,
+                new com.fasterxml.jackson.databind.ObjectMapper()
         );
-        return new Fixture(support, objectExecutionMapper, executionMapper, taskMapper, auditSupport);
+        return new Fixture(support, objectExecutionMapper, executionMapper, taskMapper,
+                auditSupport, idempotencySupport);
     }
 
     private SyncTask task() {
@@ -241,6 +317,7 @@ class SyncObjectExecutionOperationSupportTest {
                            SyncObjectExecutionMapper objectExecutionMapper,
                            SyncExecutionMapper executionMapper,
                            SyncTaskMapper taskMapper,
-                           SyncAuditSupport auditSupport) {
+                           SyncAuditSupport auditSupport,
+                           SyncCallbackIdempotencySupport idempotencySupport) {
     }
 }

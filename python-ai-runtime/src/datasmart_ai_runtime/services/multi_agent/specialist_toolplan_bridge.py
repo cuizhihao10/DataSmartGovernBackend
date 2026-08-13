@@ -75,6 +75,7 @@ _JAVA_OUTPUT_SESSION_PATTERN = re.compile(
 # 下面的映射表只允许少量已经在平台注册、并且与业务语义一一对应的工具；未知动作没有
 # “通用 recovery.execute” 兜底，防止新增模型动作意外获得写权限。
 RECOVERY_ACTION_TOOL_MAP: dict[str, str] = {
+    "SEARCH_RECOVERY_KNOWLEDGE": "sync.execution.rag.lookup",
     "RETRY_FAILED_OBJECTS": "sync.execution.failed-objects.retry",
     "RETRY_FAILED_OBJECT": "sync.execution.failed-objects.retry",
     "RERUN_FAILED_OBJECTS": "sync.execution.failed-objects.retry",
@@ -110,6 +111,7 @@ RECOVERY_ACTION_TOOL_NAMES = frozenset(RECOVERY_ACTION_TOOL_MAP.values())
 # 以子委派的形式把它们补入当前 turn。这里故意不包含 retry、replay、apply 或建表 apply；
 # 它们即使在注册表中存在，也只能沿用主 Agent 已计划的可见性和 Java 审批链路。
 RECOVERY_MINIMAL_READ_ONLY_DELEGATION_TOOL_NAMES = frozenset({
+    "sync.execution.rag.lookup",
     "sync.dirty-record.quarantine.preview",
     "datasource.schema.repair.preview",
 })
@@ -117,6 +119,7 @@ RECOVERY_MINIMAL_READ_ONLY_DELEGATION_TOOL_NAMES = frozenset({
 # 工具名存在并不等于动作语义正确。这个二次映射把 Recovery 的动作类型和平台
 # 注册表中的 allowed_actions 绑定起来，防止错误配置的同名工具成为权限绕过入口。
 RECOVERY_TOOL_REQUIRED_ACTION: dict[str, str] = {
+    "sync.execution.rag.lookup": "RETRIEVE_RECOVERY_EVIDENCE",
     "sync.execution.failed-objects.retry": "RETRY_FAILED_OBJECTS",
     "sync.dirty-record.quarantine.apply": "APPLY_QUARANTINE",
     "sync.dirty-record.quarantine.preview": "PREVIEW_QUARANTINE",

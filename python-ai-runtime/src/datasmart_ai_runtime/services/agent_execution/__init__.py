@@ -15,6 +15,11 @@ from datasmart_ai_runtime.services.agent_execution.agent_execution_closure impor
     AgentExecutionClosureReport,
     AgentExecutionClosureService,
 )
+from datasmart_ai_runtime.services.agent_execution.autopilot_recovery import (
+    AutopilotRecoveryCoordinator,
+    AutopilotRecoveryRequest,
+    AutopilotRecoveryResult,
+)
 from datasmart_ai_runtime.services.agent_execution.durable_agent_loop import (
     DurableAgentLoopCheckpoint,
     DurableAgentLoopPhase,
@@ -63,6 +68,9 @@ from datasmart_ai_runtime.services.agent_execution.post_confirm_continuation imp
 __all__ = (
     "AgentExecutionClosureReport",
     "AgentExecutionClosureService",
+    "AutopilotRecoveryCoordinator",
+    "AutopilotRecoveryRequest",
+    "AutopilotRecoveryResult",
     "DurableAgentLoopCheckpoint",
     "DurableAgentLoopPhase",
     "DurableAgentLoopResumeAction",

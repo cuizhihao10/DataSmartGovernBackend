@@ -64,6 +64,46 @@ class ModelToolCallPlannerTest(unittest.TestCase):
             report.accepted_tool_plans[0].governance_hints["modelToolFunctionName"],
         )
 
+    def test_workspace_text_search_native_tool_call_is_accepted_only_when_visible(self) -> None:
+        """模型可自主发起本地 literal 检索，但系统 workspace 范围仍由后续执行器注入。"""
+
+        tools = default_tool_registry()
+        search_tool = next(tool for tool in tools if tool.name == "workspace.text.search")
+        report = ModelToolCallPlanner().plan(
+            tool_calls=(
+                ModelToolCall(
+                    call_id="call_workspace_search",
+                    name="workspace_text_search",
+                    arguments=(
+                        '{"query":"retry policy","relativePathPrefix":"src",'
+                        '"caseSensitive":true,"maxResults":3}'
+                    ),
+                    raw_call={
+                        "type": "function",
+                        "id": "call_workspace_search",
+                        "function": {"name": "workspace_text_search"},
+                    },
+                ),
+            ),
+            registered_tools=tools,
+            visible_tools=(search_tool,),
+        )
+
+        self.assertEqual(1, len(report.accepted_tool_plans))
+        plan = report.accepted_tool_plans[0]
+        self.assertEqual("workspace.text.search", plan.tool_name)
+        self.assertEqual("retry policy", plan.arguments["query"])
+        self.assertEqual("src", plan.arguments["relativePathPrefix"])
+        self.assertNotIn("workspaceReference", plan.arguments)
+        self.assertNotIn("repositoryReference", plan.arguments)
+        self.assertEqual("workspace_text_search", plan.governance_hints["modelToolFunctionName"])
+        # repositoryReference is intentionally absent: Java rebuilds it from the
+        # authenticated session and server configuration immediately before dispatch.
+        # A model-selected search must therefore remain executable without asking the
+        # user to provide a control-plane value that the user is not allowed to choose.
+        self.assertTrue(plan.parameter_validation.can_execute)
+        self.assertEqual((), plan.parameter_validation.issues)
+
     def test_unknown_tool_is_rejected(self) -> None:
         """未知工具必须拒绝，避免模型幻觉工具进入执行链路。"""
 

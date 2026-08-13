@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.agent.config;
 
+import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
+import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
@@ -54,8 +56,47 @@ class AgentRuntimeConfigurationBindingTest {
                         "sync.task.publish",
                         "sync.task.run",
                         "sync.execution.status",
+                        "workspace.text.search",
                         "knowledge.rag.query"
                 );
+        AgentRuntimeProperties.ToolDefinitionProperties repositorySearch =
+                properties.getToolRegistry().get("workspace.text.search");
+        assertThat(repositorySearch.getToolCode()).isEqualTo("workspace.text.search");
+        assertThat(repositorySearch.getExecutionMode()).isEqualTo(AgentToolExecutionMode.ASYNC_TASK);
+        assertThat(repositorySearch.getRiskLevel()).isEqualTo(AgentToolRiskLevel.MEDIUM);
+        assertThat(repositorySearch.getReadOnly()).isTrue();
+        assertThat(repositorySearch.getIdempotent()).isTrue();
+        assertThat(repositorySearch.getRequiresApproval()).isFalse();
+        assertThat(repositorySearch.getTenantScoped()).isTrue();
+        assertThat(repositorySearch.getProjectScoped()).isTrue();
+        assertThat(repositorySearch.getAllowedActions()).containsExactly("SEARCH_TEXT_LITERAL");
+        assertThat(repositorySearch.getInputSchema())
+                .extracting(AgentRuntimeProperties.ToolInputFieldProperties::getName)
+                .containsExactly(
+                        "repositoryReference",
+                        "query",
+                        "relativePathPrefix",
+                        "caseSensitive",
+                        "searchMode",
+                        "maxResults"
+                );
+        AgentAsyncTaskCommandOutboxProperties outboxProperties = Binder.get(environment)
+                .bind(
+                        "datasmart.agent-runtime.async-task-commands.outbox",
+                        Bindable.of(AgentAsyncTaskCommandOutboxProperties.class)
+                )
+                .orElseThrow(() -> new IllegalStateException("async command outbox properties were not bound"));
+        assertThat(outboxProperties.getDispatcherAllowedToolCodes()).isEmpty();
+        AgentWorkspaceTextSearchWorkerProperties workerProperties = Binder.get(environment)
+                .bind(
+                        "datasmart.agent-runtime.workspace-text-search-worker",
+                        Bindable.of(AgentWorkspaceTextSearchWorkerProperties.class)
+                )
+                .orElseThrow(() -> new IllegalStateException("workspace text search worker properties were not bound"));
+        assertThat(workerProperties.isEnabled()).isFalse();
+        assertThat(workerProperties.getRepositoryRoot()).isEmpty();
+        assertThat(workerProperties.getRunPath())
+                .isEqualTo("/internal/agent/workspace-text/command-worker/run");
         AgentSkillRegistryProperties skillProperties = Binder.get(environment)
                 .bind("datasmart.agent-runtime", Bindable.of(AgentSkillRegistryProperties.class))
                 .orElseThrow(() -> new IllegalStateException("agent skill properties were not bound"));

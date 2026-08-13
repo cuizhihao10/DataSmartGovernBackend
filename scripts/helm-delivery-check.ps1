@@ -103,6 +103,21 @@ function Test-CommandAvailable {
     return $null -ne (Get-Command $CommandName -ErrorAction SilentlyContinue)
 }
 
+function Test-RenderedText {
+    param(
+        [string]$RenderedManifest,
+        [string]$ExpectedText,
+        [string]$Purpose
+    )
+
+    if ($RenderedManifest.Contains($ExpectedText)) {
+        Write-CheckResult -Level "PASS" -Name "helm rendered contract" -Detail $Purpose
+    }
+    else {
+        Write-CheckResult -Level "FAIL" -Name "helm rendered contract" -Detail "missing '$ExpectedText': $Purpose"
+    }
+}
+
 function Invoke-HelmCommand {
     param(
         [string[]]$Arguments,
@@ -138,6 +153,22 @@ try {
     Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText 'DATASMART_TASK_AGENT_ASYNC_WORKER_ENABLED: "false"' -Purpose "task worker must remain disabled by default"
     Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText 'DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_ENABLED: "false"' -Purpose "agent outbox dispatcher must remain disabled by default"
     Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL" -Purpose "model provider is configured as replaceable external endpoint"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_AGENT_RUNTIME_SESSION_STORE: postgresql" -Purpose "agent sessions must use the PostgreSQL durable store"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_DATA_SYNC" -Purpose "agent tools must reach the data-sync control plane by service DNS"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_GROUP_ID" -Purpose "Autopilot Kafka consumer group must be configurable"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText 'DATASMART_AGENT_RUNTIME_CONTROL_PLANE_INGRESS_ENABLED: "true"' -Purpose "Agent Runtime ingress must require the trusted gateway boundary"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_DATASOURCE_MANAGEMENT_BASE_URL" -Purpose "Python specialists must reach the datasource control plane"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_DATA_SYNC_BASE_URL" -Purpose "Python specialists must reach the data-sync control plane"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText 'DATASMART_AGENT_RUNTIME_SPECIALIST_TURN_FACT_FAIL_CLOSED: "true"' -Purpose "specialist durable facts must fail closed"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_AGENT_RUNTIME_PLAN_INGESTION_ENABLED" -Purpose "business plans must enter the Java control plane"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_ENABLED" -Purpose "confirmed tool batches must be able to continue through the protected Python route"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_ENABLED" -Purpose "MCP durable worker client must be production-configurable"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_LANGGRAPH_CHECKPOINT_STORE: postgresql" -Purpose "LangGraph checkpoints must be durable"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "DATASMART_RAG_KNOWLEDGE_BASE: postgresql" -Purpose "RAG must use a durable production store"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "agent-runtime-internal-service-token" -Purpose "internal control-plane token must be a Secret reference"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values.yaml" -ExpectedText "ai-memory-postgresql-dsn" -Purpose "Python durable DSNs must be Secret references"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values-production.example.yaml" -ExpectedText 'DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED: "true"' -Purpose "production example explicitly enables the reviewed Autopilot listener"
+    Test-RequiredText -RelativePath "helm/datasmart-govern/values-production.example.yaml" -ExpectedText "persistentVolumeClaim" -Purpose "production example mounts only explicit read-only workspace claims"
     Test-RequiredText -RelativePath "helm/datasmart-govern/templates/application-services.yaml" -ExpectedText "secretKeyRef" -Purpose "sensitive values must be injected from Kubernetes Secret"
     Test-RequiredText -RelativePath "helm/datasmart-govern/templates/application-services.yaml" -ExpectedText "readinessProbe" -Purpose "application services must expose readiness probes"
     Test-RequiredText -RelativePath "helm/datasmart-govern/templates/application-services.yaml" -ExpectedText "RollingUpdate" -Purpose "application services should support rolling upgrades"
@@ -158,6 +189,19 @@ try {
             "--values",
             (Join-Path $chartPath "values-production.example.yaml")
         )
+
+        $renderedManifest = & helm template datasmart-govern $chartPath --values (Join-Path $chartPath "values-production.example.yaml") | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "name: DATASMART_AGENT_RUNTIME_SESSION_STORE" -Purpose "Agent Runtime PostgreSQL session store is rendered"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText 'value: "postgresql"' -Purpose "durable PostgreSQL mode is rendered"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "name: DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED" -Purpose "Autopilot Kafka listener setting is rendered"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "name: DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_ENABLED" -Purpose "MCP durable worker setting is rendered"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "name: DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN" -Purpose "internal control-plane token is rendered"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "key: agent-runtime-internal-service-token" -Purpose "internal control-plane token comes from a Secret"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "name: DATASMART_AI_MEMORY_POSTGRESQL_DSN" -Purpose "Python durable memory DSN is rendered"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "key: ai-memory-postgresql-dsn" -Purpose "Python durable DSN comes from a Secret"
+            Test-RenderedText -RenderedManifest $renderedManifest -ExpectedText "name: backend-workspace" -Purpose "production workspace PVC is rendered"
+        }
 
         if ($WriteRenderedManifests) {
             $resolvedOutputDirectory = Join-Path $repositoryRoot $OutputDirectory

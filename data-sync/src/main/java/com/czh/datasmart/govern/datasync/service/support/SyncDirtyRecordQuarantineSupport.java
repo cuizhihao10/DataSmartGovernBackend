@@ -46,6 +46,9 @@ import java.util.Objects;
 @RequiredArgsConstructor
 public class SyncDirtyRecordQuarantineSupport {
 
+    /** Fixed reason included in both preview and apply digests for unattended recovery. */
+    public static final String AUTOPILOT_QUARANTINE_REASON = "AUTOPILOT_PREAUTHORIZED_DIRTY_RECORD_QUARANTINE";
+
     private static final int MAX_SAMPLE_COUNT = 500;
     private static final String OPEN = "OPEN";
     private static final String QUARANTINED = "QUARANTINED";
@@ -80,6 +83,49 @@ public class SyncDirtyRecordQuarantineSupport {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
                     "应用脏数据隔离必须显式确认 confirmed=true");
         }
+        return applyVerifiedSelection(task, request, actorContext);
+    }
+
+    /**
+     * Applies quarantine from the dedicated Autopilot recovery boundary after initial user authorization.
+     *
+     * <p>This method bypasses only the browser interaction flag {@code confirmed=true}. It fixes the reason on
+     * the server and then reuses the same authoritative selection, digest comparison, conditional row updates,
+     * and audit write as the manual path. Callers therefore cannot use Autopilot to select all rows, change the
+     * reason bound into the preview, accept a range selector, or mutate source data.</p>
+     *
+     * @param task authoritative task scope reconstructed by the governed recovery service
+     * @param request digest-bound sample IDs and execution from the Java preview receipt
+     * @param actorContext represented user and Agent trace facts for the audit record
+     * @return applied quarantine result with the recomputed digest and affected count
+     * @throws PlatformBusinessException when reason, selector, state, scope, or digest changed after preview
+     */
+    @Transactional
+    public SyncDirtyRecordQuarantineResult applyAutonomous(SyncTask task,
+                                                           SyncDirtyRecordQuarantineRequest request,
+                                                           SyncActorContext actorContext) {
+        if (request == null || !Objects.equals(AUTOPILOT_QUARANTINE_REASON, normalize(request.getReason()))) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "Autopilot quarantine must use the server-defined reason");
+        }
+        if (Boolean.TRUE.equals(request.getQuarantineAllRetryableInExecution())) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "Autopilot quarantine requires the exact previewed sample IDs");
+        }
+        return applyVerifiedSelection(task, request, actorContext);
+    }
+
+    /**
+     * Executes the shared safety-critical part of manual and autonomous quarantine.
+     *
+     * <p>The method reloads eligible OPEN rows from persistence and accepts only exact primary-key selectors.
+     * It recomputes the preview digest immediately before conditional updates, so a stale model proposal or a
+     * row changed by another operator cannot be applied. The transaction rolls back all sample updates when any
+     * selected row no longer matches, and the audit record is written only after the complete set succeeds.</p>
+     */
+    private SyncDirtyRecordQuarantineResult applyVerifiedSelection(SyncTask task,
+                                                                   SyncDirtyRecordQuarantineRequest request,
+                                                                   SyncActorContext actorContext) {
         Selection selection = select(task, request);
         if (selection.eligible().isEmpty() || selection.eligible().size() != selection.selected().size()) {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
