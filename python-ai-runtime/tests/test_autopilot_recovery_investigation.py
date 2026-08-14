@@ -145,7 +145,7 @@ class _FakeFeedbackCollector:
 
 def _autopilot_request(
     *,
-    event_id: str = "autopilot-trigger:investigation-test",
+    event_id: str = "autopilot-trigger:" + "a" * 64,
     cycle: int = 1,
 ) -> AutopilotRecoveryRequest:
     """构造 Java 已验证的低敏 Autopilot 请求。"""
@@ -245,8 +245,9 @@ def test_investigation_uses_two_governed_ingestion_stages_and_returns_receipt_ev
         ("sync.execution.diagnose",),
         ("sync.dirty-record.quarantine.preview",),
     ]
-    assert client.calls[0][0].endswith(":diagnosis")
-    assert client.calls[1][0].endswith(":preview:preview_quarantine")
+    assert all(len(item[0]) <= 128 for item in client.calls)
+    assert client.calls[0][0].startswith("autopilot-recovery:investigation:v3:diagnosis:")
+    assert client.calls[1][0].startswith("autopilot-recovery:investigation:v3:preview:")
     assert result.evidence_summary["result"] == {
         "taskId": 31,
         "executionId": 41,

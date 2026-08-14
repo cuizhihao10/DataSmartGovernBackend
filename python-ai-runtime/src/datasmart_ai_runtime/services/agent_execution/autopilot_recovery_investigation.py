@@ -136,7 +136,16 @@ class AutopilotRecoveryInvestigationCollaborator:
         request_context = self._request_context(request, narrowed)
         parent_plan = self._parent_plan(request_context, expected_tool)
         diagnosis_result = self._diagnosis_specialist_result(request, narrowed, action_code)
-        preview_idempotency_prefix = self._preview_idempotency_prefix(request, narrowed)
+        diagnosis_idempotency_key = self._investigation_idempotency_key(
+            request,
+            stage="diagnosis",
+        )
+        preview_idempotency_key = self._investigation_idempotency_key(
+            request,
+            stage="preview",
+            action_type=action_code,
+            strategy_fingerprint=str(narrowed.structured_output.get("actionFingerprint") or ""),
+        )
 
         bootstrap = self._bridge.bridge_recovery(
             request=request_context,
@@ -152,7 +161,7 @@ class AutopilotRecoveryInvestigationCollaborator:
         diagnosis_plan = self._ingest(
             request_context,
             bootstrap.plan,
-            idempotency_key=f"{request.event_id}:investigation:v2:diagnosis",
+            idempotency_key=diagnosis_idempotency_key,
         )
         diagnosis_feedback = self._feedback_collector.collect(diagnosis_plan)
         self._require_java_success(diagnosis_feedback, "sync.execution.diagnose")
@@ -171,7 +180,7 @@ class AutopilotRecoveryInvestigationCollaborator:
         preview_plan = self._ingest(
             request_context,
             preview_bridge.plan,
-            idempotency_key=f"{preview_idempotency_prefix}:preview:{action_code.lower()}",
+            idempotency_key=preview_idempotency_key,
         )
         preview_feedback = self._feedback_collector.collect(preview_plan)
         receipt = self._require_java_success(preview_feedback, expected_tool)
@@ -492,23 +501,55 @@ class AutopilotRecoveryInvestigationCollaborator:
         raise ValueError("Recovery 调查参数包含非 JSON 类型")
 
     @staticmethod
-    def _preview_idempotency_prefix(
+    def _investigation_idempotency_key(
         request: Any,
-        result: SpecialistTurnResult,
+        *,
+        stage: str,
+        action_type: str = "",
+        strategy_fingerprint: str = "",
     ) -> str:
-        """生成可迁移、可回放且能区分真实策略变化的预览幂等前缀。
+        """生成不超过 Java 128 字符合同的确定性调查阶段幂等键。
 
-        ``v2`` 用于避开旧实现已经写入数据库的固定键；否则修复部署后重放历史 Kafka 事件时，新的稳定请求
-        仍可能撞上旧请求指纹。诊断阶段使用独立的事件级键；这里的 eventId 已包含 recovery cycle、execution
-        和错误指纹，动作指纹再绑定当前预览参数，所以同一事件同一策略稳定复用，不同循环或真实策略变化
-        则创建新的受治理预览 Run。
+        生产 ``eventId`` 本身包含固定前缀和 64 位摘要。如果继续把 eventId、动作摘要、阶段与动作名全部
+        明文拼接，preview 键会超过 Java ``IngestAgentPlanRequest.idempotencyKey`` 的 128 字符上限，并在
+        Controller Bean Validation 阶段被拒绝。这里把完整语义材料规范化后再做 SHA-256，只在键中保留固定
+        的 ``v3`` 与阶段前缀。原始 eventId 仍保留在 AgentPlan 请求、Recovery 事实和审计记录中，不依赖
+        幂等键承担业务展示职责。
+
+        diagnosis 只绑定事件身份，因此同一 Kafka 事件的策略重算仍复用首次诊断；preview 额外绑定动作类型
+        和稳定策略指纹，因此真实预览参数变化会创建新 Run。新的 recovery cycle 会生成不同 eventId，也会
+        自然获得新键。Java 的同键不同请求冲突保护保持不变。
         """
 
-        fingerprint = str(result.structured_output.get("actionFingerprint") or "")
-        digest = fingerprint.removeprefix("sha256:")
-        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-            raise ValueError("Recovery 调查缺少稳定动作指纹")
-        return f"{request.event_id}:investigation:v2:{digest}"
+        normalized_stage = str(stage).strip().lower()
+        if normalized_stage not in {"diagnosis", "preview"}:
+            raise ValueError("Recovery 调查阶段不受支持")
+        normalized_action = str(action_type).strip().upper()
+        normalized_fingerprint = str(strategy_fingerprint).strip()
+        if normalized_stage == "preview":
+            digest_value = normalized_fingerprint.removeprefix("sha256:")
+            if (
+                not normalized_action
+                or len(digest_value) != 64
+                or any(character not in "0123456789abcdef" for character in digest_value)
+            ):
+                raise ValueError("Recovery 调查缺少稳定动作身份或策略指纹")
+        material = json.dumps(
+            {
+                "eventId": str(request.event_id),
+                "stage": normalized_stage,
+                "actionType": normalized_action if normalized_stage == "preview" else "",
+                "strategyFingerprint": normalized_fingerprint if normalized_stage == "preview" else "",
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        key = f"autopilot-recovery:investigation:v3:{normalized_stage}:{digest}"
+        if len(key) > 128:
+            raise ValueError("Recovery 调查幂等键超过 Java 合同上限")
+        return key
 
     @staticmethod
     def _bridge_reason(result: Any, fallback: str) -> str:

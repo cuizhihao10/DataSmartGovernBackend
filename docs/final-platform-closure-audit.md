@@ -195,8 +195,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 task `107` 的运行证据补充了两个必须分开处理的问题。首先，首次 transport 故障后的 range-probe 重排、Kafka outbox 和 Recovery 消费均已发生；随后写入失败是因为任务定义缺少 `customer_name -> name` 映射，而目标表 `name` 为 `NOT NULL`，不是 transport retry 本身失效。其次，Kafka 重投会重新调用模型，同一业务策略可能生成不同 actionId、摘要、置信度或证据说明；旧实现把这些瞬态字段带入 AgentPlan，同时复用固定 diagnosis/preview 幂等键，触发 Java 正确的请求指纹冲突保护。
 
-当前实现通过“语义稳定化 + 分阶段版本化身份”修复该问题：同一 event/stage/strategy 的 ToolPlan 请求保持字节级语义一致，真实策略参数变化或新 recovery cycle 获得新身份；诊断阶段不再被预览参数污染，旧键通过 `investigation:v2` 隔离。Java `AgentPlanIngestionIdempotencySupport` 的冲突拒绝保持不变，Python 仍不能直接写 data-sync。聚焦测试覆盖同策略重放、策略变化、新 cycle、非法样本选择器以及 bridge 接入，investigation、coordinator、runtime adapter、bridge 四个测试文件合计 `73 passed`。
+当前实现通过“语义稳定化 + 分阶段版本化身份”修复该问题：同一 event/stage/strategy 的 ToolPlan 请求保持字节级语义一致，真实策略参数变化或新 recovery cycle 获得新身份；诊断阶段不再被预览参数污染，最终键通过 `investigation:v3` 固定阶段前缀和 SHA-256 摘要满足 Java 128 字符合同。Java `AgentPlanIngestionIdempotencySupport` 的冲突拒绝保持不变，Python 仍不能直接写 data-sync。聚焦测试覆盖同策略重放、策略变化、新 cycle、非法样本选择器以及 bridge 接入，investigation、coordinator、runtime adapter、bridge 四个测试文件合计 `73 passed`。
 
 最新全量审计结果：Java Reactor `1515 tests / 0 failures / 0 errors / 9 skipped`，Python `1171 passed, 1 skipped`；Frontend 六项合同脚本、lint、TypeScript 与 Vite build 全通过；三个最新运行时镜像健康，Kafka 四组 consumer 已就绪。新增和本轮修改的重要方法注释已统一为中文，文档增量也使用中文记录。
 
-黑盒结论仍保持未关闭。最新模型密钥已成功进入容器且指纹发生变化，但当前 Provider 的 `/models` 与 `/chat/completions` 都返回 HTTP `401`。三次真实规划在任务创建前均以 `MODEL_PROVIDER_ERROR / MODEL_PROVIDER_TRANSPORT` 结束，未产生新的 task/execution，不构成数据写入或恢复副作用。该结果应记录为外部 Provider 凭据/端点不匹配，不能记作代码失败，也不能用来宣称无人值守恢复已经完成。
+**历史结论（已由第 15 节更新）：** 当时 Provider 返回 HTTP `401`，三次真实规划在任务创建前均 fail-closed。它仍是外部鉴权失败不会产生数据副作用的证据，但不再是当前黑盒结论。
+
+## 15. 2026-08-14 Provider 恢复与真实自治恢复审计
+
+新的 OpenAI-compatible Provider 端点 `https://qa.dashun9527.com/v1` 已在容器内通过 `/models` 和 `/responses` HTTP `200` 验证，密钥仍只在运行时注入。task `108` 的第一轮真实演练发现 preview 幂等键超过 Java 128 字符限制；该事件最终进入 DLT 且没有 recovery case，证明 Bean Validation 与 Kafka 有界停止均按设计工作。Python 随后使用 `investigation:v3` 有界摘要键修复，生产长度 eventId 回归由失败转为通过，未修改 Java 限制或冲突保护。
+
+task `109` / execution `2775` 提供了最终黑盒证据：首轮 `PARTITION_RANGE_PROBE` transport failure、outbox `DELIVERED`、Recovery `SKIP / STRUCTURED_DIAGNOSTIC / evidence=0`、Java diagnosis/preview 成功、consumer `RECOVERY_STARTED`、data-sync 失败对象重排、case cycle `1/3` 为 `RECOVERED`、execution `SUCCEEDED`。最终 worker 统计为读 `20`、写 `20`、失败 `0`，对象账本成功，源目标四项聚合完全一致。全过程没有人工调用恢复写接口。
+
+Gateway 公开查询确认 execution、对象、运行日志、recovery 快照和 8 条 Specialist durable facts；后置 `PRECHECK_AGENT` 与 `MONITOR_AGENT` 在恢复后再次 `COMPLETED`。E2E 脚本最后一次 execution GET 曾因 permission-admin 瞬时不可用退出，但服务恢复后相同身份和项目范围的公开查询全部通过。脚本现已为只读 GET 增加最多 3 次瞬态重试，仅识别 502/503/504 和带固定低敏故障标记的权限中心不可用 403；POST 与普通权限拒绝不会重放。对应离线合同、AST 和退出码回归通过，审计结论更新为无人值守恢复主链路与验收脚本韧性均已收敛。

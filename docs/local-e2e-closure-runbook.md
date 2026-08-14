@@ -683,7 +683,7 @@ mvn -pl data-sync -am "-Dtest=SyncBatchRunOnceHttpContractE2ETest,SyncAutopilotR
 
 复验 task `107` 时，必须先保证完整字段映射。其目标表 `orders_platform_clean.name` 为非空列，因此源端 `customer_name` 必须显式映射到 `name`；缺少该映射会产生 20 条 dirty record，并把“字段规划错误”混入 transport Recovery 演练。更稳妥的隔离方式是使用源端同名四字段目标表，并在 objective 中明确 `id`、`customer_name`、`amount`、`region` 及主键和写策略。
 
-Kafka 重投的 diagnosis/preview AgentPlan 现已使用 `investigation:v2` 幂等身份。同一 event、阶段和真实策略会回放首次 Java audit；不同 recovery cycle 或真实预览参数会创建新受治理 Run。不要通过关闭 Java 指纹冲突检查、变更随机幂等键或让 Python 直连 data-sync 来“修复”重放，这些做法会破坏审批、审计和副作用边界。
+Kafka 重投的 diagnosis/preview AgentPlan 现已使用 `investigation:v3` 有界幂等身份。同一 event、阶段和真实策略会回放首次 Java audit；不同 recovery cycle 或真实预览参数会创建新受治理 Run。键只保留固定阶段前缀和 SHA-256 语义摘要，以满足 Java 128 字符合同；原始 eventId 仍保留在请求与审计事实中。不要通过关闭 Java 指纹冲突检查、变更随机幂等键或让 Python 直连 data-sync 来“修复”重放，这些做法会破坏审批、审计和副作用边界。
 
 本轮可重复门禁：
 
@@ -704,4 +704,12 @@ npm run build
 
 2026-08-14 实际结果为 Java `1515 tests / 9 skipped`、Python `1171 passed / 1 skipped`，前端全部脚本和构建通过。运行时镜像也已重建并健康，Kafka consumer 已就绪。
 
-当前唯一阻止继续执行黑盒故障演练的环境问题是模型 Provider 鉴权：最新密钥已仅注入 Python Runtime 容器，但当前 OpenAI-compatible Provider 的 `/models` 和 `/chat/completions` 都返回 HTTP `401`。脚本因此在 `DATA_SYNC_AGENT` 规划阶段 fail-closed，低敏 durable fact 为 `MODEL_PROVIDER_ERROR / MODEL_PROVIDER_TRANSPORT`，且没有创建新 task。恢复有效 Provider 后，应重新执行完整规划，再按“关闭 worker scheduler -> 创建并首次确认任务 -> 暂停 datasource-management -> 手动触发一次 worker -> 恢复 datasource-management 与 scheduler -> 只观察系统自治收敛”的顺序演练；人工不得调用 retry/quarantine 接口代替 Agent 决策。
+**历史阻塞（已由 8.7 节关闭）：** 当时模型 Provider 返回 HTTP `401`，规划在创建 task 前 fail-closed。该记录仍用于验证外部鉴权失败不会产生副作用。
+
+### 8.7 2026-08-14 真实 RECOVERED 演练结果
+
+Provider 切换到 `https://qa.dashun9527.com/v1` 并通过 `/models`、`/responses` HTTP `200` 后，task `108` / execution `2770` 首先复现了生产 eventId 导致 preview 幂等键超过 Java 128 字符限制的问题。诊断审计成功、preview 在 Bean Validation 阶段被拒绝，Kafka 有界重试后进入 DLT。修复方法是 `investigation:v3` 固定阶段前缀加 SHA-256 语义摘要，不是放宽 Java DTO 或绕过 ingestion。
+
+新镜像上的 task `109` / execution `2775` 按以下顺序完成：关闭 worker scheduler；通过 Gateway 规划、确认并建立 LOW 风险、3 轮、120 分钟授权盒；暂停 datasource-management；重新开启 worker 形成真实 range-probe transport failure；确认失败账本和 outbox `DELIVERED` 后恢复 datasource-management；之后不再进行人工操作。系统自主选择 `SKIP / STRUCTURED_DIAGNOSTIC`，完成 Java diagnosis/preview，返回 `RECOVERY_STARTED / AUTOPILOT_FAILED_OBJECTS_REQUEUED`，在 cycle `1/3` 自动将 case 收敛为 `RECOVERED`。
+
+最终 execution `2775` 为 `SUCCEEDED`，读 `20`、写 `20`、失败 `0`，单对象成功。源目标聚合一致：行数 `20`、唯一 ID `20`、ID 合计 `210`、金额合计 `2210.00`。Gateway 公开 API 复核 execution、对象、19 条日志、Recovery 快照和两个 session 的 8 条 durable facts 成功；恢复后 `PRECHECK_AGENT`、`MONITOR_AGENT` 再次完成。脚本末尾一次只读 execution 查询遇到 permission-admin 瞬时不可用并非零退出，服务恢复后相同公开查询全部成功。当前脚本只对 GET 的 502/503/504 以及明确“权限中心暂时不可用”的 403 最多重试 3 次；确认、重试、隔离等 POST 和普通权限拒绝仍立即失败，相关离线回归已通过。

@@ -1033,10 +1033,9 @@ function Invoke-AgentPlanStream {
         }
         return [pscustomobject]@{
             Result = $resultData
-            # Windows PowerShell 5.1 may throw "Argument types do not match"
-            # when a Generic.List[object] is wrapped directly with @(...).
-            # ToArray preserves every parsed frame and lets the caller continue
-            # with assertions after the final result frame.
+            # Windows PowerShell 5.1 直接用 @(...) 包装 Generic.List[object] 时可能抛出
+            # “参数类型不匹配”。先调用 ToArray 可以保留每个已解析帧，并让调用方在最终结果帧之后
+            # 继续执行合同断言。
             Frames = $frames.ToArray()
         }
     } catch {
@@ -1144,6 +1143,36 @@ function Get-GatewayResponseData {
     return $Response
 }
 
+function Test-TransientGatewayReadFailure {
+    <#
+    .SYNOPSIS
+        判断 Gateway 失败是否属于可以安全重试的只读瞬态故障。
+
+    .DESCRIPTION
+        E2E 最终验收会连续查询 execution、对象账本、Recovery 和 durable facts。Gateway 或权限中心短暂重启时，
+        这些 GET 可能返回 502/503/504；生产 fail-closed 权限链还会把“权限中心暂时不可用”返回为 403。GET 没有
+        数据副作用，因此可以在很小的预算内重试。POST 即使收到相同状态也必须立即失败，普通 403 同样不能被
+        当成瞬态故障，以免脚本掩盖真实越权或重复确认、重试、隔离等写操作。
+
+        函数只检查状态码和固定低敏故障标记，不记录响应正文，也不把服务端 message 带入成功摘要。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('GET', 'POST')][string]$Method,
+        [Parameter(Mandatory = $true)][int]$StatusCode,
+        [AllowNull()][string]$ResponseBody
+    )
+
+    if ($Method -ne 'GET') {
+        return $false
+    }
+    if ($StatusCode -in @(502, 503, 504)) {
+        return $true
+    }
+    return $StatusCode -eq 403 -and
+        -not [string]::IsNullOrWhiteSpace($ResponseBody) -and
+        $ResponseBody.Contains('权限中心暂时不可用')
+}
+
 function Invoke-GatewayJson {
     <#
     .SYNOPSIS
@@ -1169,33 +1198,61 @@ function Invoke-GatewayJson {
         $null
     }
     $client = New-HttpClient
-    $request = New-HttpRequestMessage -Method $Method -Uri $uri -AccessToken $AccessToken -JsonBody $jsonBody
+    $maxAttempts = if ($Method -eq 'GET') { 3 } else { 1 }
     try {
-        $response = $client.SendAsync(
-            $request,
-            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
-        ).GetAwaiter().GetResult()
-        $responseBody = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        if (-not $response.IsSuccessStatusCode) {
-            $detail = Get-SafeHttpErrorDetail -StatusCode ([int]$response.StatusCode) -Body $responseBody -Operation $Operation
-            Stop-E2E -Name $Operation -Detail "HTTP 调用失败：$(Format-SafeHttpDetail -Detail $detail) 建议：$($detail.Suggestions -join '；')"
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            # HttpRequestMessage 发送后不能再次使用，因此每轮都创建新请求；响应也必须及时释放，避免长轮询
+            # 在 Windows PowerShell 5.1 中耗尽连接池。AccessToken 和请求正文不会进入重试日志。
+            $request = New-HttpRequestMessage -Method $Method -Uri $uri -AccessToken $AccessToken -JsonBody $jsonBody
+            $response = $null
+            try {
+                try {
+                    $response = $client.SendAsync(
+                        $request,
+                        [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+                    ).GetAwaiter().GetResult()
+                } catch {
+                    if ($Method -eq 'GET' -and $attempt -lt $maxAttempts) {
+                        Start-Sleep -Milliseconds (250 * $attempt)
+                        continue
+                    }
+                    throw
+                }
+
+                $responseBody = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                if (-not $response.IsSuccessStatusCode) {
+                    $statusCode = [int]$response.StatusCode
+                    if ($attempt -lt $maxAttempts -and
+                        (Test-TransientGatewayReadFailure -Method $Method -StatusCode $statusCode -ResponseBody $responseBody)) {
+                        Start-Sleep -Milliseconds (250 * $attempt)
+                        continue
+                    }
+                    $detail = Get-SafeHttpErrorDetail -StatusCode $statusCode -Body $responseBody -Operation $Operation
+                    Stop-E2E -Name $Operation -Detail "HTTP 调用失败：$(Format-SafeHttpDetail -Detail $detail) 建议：$($detail.Suggestions -join '；')"
+                }
+                if ([string]::IsNullOrWhiteSpace($responseBody)) {
+                    return $null
+                }
+                try {
+                    $parsed = ConvertFrom-JsonSafe -Json $responseBody -Depth 100
+                } catch {
+                    Stop-E2E -Name $Operation -Detail '接口返回成功状态但不是合法 JSON；请检查 Gateway 路由和服务版本。'
+                }
+                return (Get-GatewayResponseData -Response $parsed -Operation $Operation)
+            } finally {
+                if ($null -ne $response) {
+                    $response.Dispose()
+                }
+                $request.Dispose()
+            }
         }
-        if ([string]::IsNullOrWhiteSpace($responseBody)) {
-            return $null
-        }
-        try {
-            $parsed = ConvertFrom-JsonSafe -Json $responseBody -Depth 100
-        } catch {
-            Stop-E2E -Name $Operation -Detail '接口返回成功状态但不是合法 JSON；请检查 Gateway 路由和服务版本。'
-        }
-        return (Get-GatewayResponseData -Response $parsed -Operation $Operation)
+        Stop-E2E -Name $Operation -Detail 'Gateway 只读查询已耗尽有界重试预算；请检查服务健康状态和 traceId。'
     } catch {
         if (Test-SafeE2EException -Exception $_.Exception) {
             throw
         }
         Stop-E2E -Name $Operation -Detail 'Gateway 调用失败；请检查服务健康状态、当前项目权限和 traceId。'
     } finally {
-        $request.Dispose()
         $client.Dispose()
     }
 }
@@ -1230,8 +1287,8 @@ function Get-LifecycleRunReference {
             continue
         }
 
-        # Durable summary normally exposes submittedToolNames. Accept the legacy object form as well, but never read
-        # arguments or serialize plans: confirmation selection only needs stable tool codes.
+        # Durable 摘要通常公开 submittedToolNames；这里同时兼容旧对象结构，但绝不读取 arguments 或
+        # 序列化完整计划，因为确认候选选择只需要稳定的工具代码。
         $submittedToolCodes = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($tool in (Get-Items (Get-FieldValue -Object $turns[$index] -Names @('submittedToolNames', 'submitted_tool_names', 'toolPlans', 'tool_plans')))) {
             $toolCode = if ($tool -is [string]) {
@@ -1860,8 +1917,8 @@ function Get-AutopilotRecoveryStatus {
     #>
     param([Parameter(Mandatory = $true)][object]$Snapshot)
 
-    # SyncAutopilotRecoveryStatusView is a flat public view. Do not invent a nested recovery-case object from
-    # source knowledge or an internal DTO: the E2E must consume precisely the Gateway response contract.
+    # SyncAutopilotRecoveryStatusView 是扁平公开视图。不能根据源码知识或内部 DTO 虚构嵌套 recovery-case
+    # 对象；E2E 必须严格消费 Gateway 实际返回的合同。
     return (Get-SafeStatusToken -Text (
             Get-FieldValue -Object $Snapshot -Names @('caseState')
         ) -Fallback 'UNKNOWN')
@@ -1879,8 +1936,8 @@ function Get-AutopilotRecoveryCase {
     #>
     param([Parameter(Mandatory = $true)][object]$Snapshot)
 
-    # The public view exposes caseId plus its scalar state/cycle fields at the root. Returning the root preserves
-    # the existing bounded numeric helper without pretending the API returned an unexposed nested receipt.
+    # 公开视图在根节点提供 caseId 及其状态、循环等标量字段。返回根节点既能复用已有有界数值帮助方法，
+    # 也不会假装 API 返回了并未公开的嵌套回执。
     $caseId = Get-FieldValue -Object $Snapshot -Names @('caseId')
     if ($null -eq $caseId -or [string]::IsNullOrWhiteSpace(([string]$caseId).Trim())) {
         return $null
@@ -1962,9 +2019,8 @@ function Test-AutopilotReceiptIdentifier {
     param([AllowNull()][object]$Value)
 
     $text = if ($null -eq $Value) { '' } else { ([string]$Value).Trim() }
-    # Receipt IDs can be UUIDs, numeric database IDs, or digest-prefixed tokens. Their field name already comes
-    # from an explicit public contract allowlist, so accepting a short numeric ID is safer than rejecting a valid
-    # receipt merely because a deployment uses compact identifiers.
+    # 回执 ID 可能是 UUID、数据库数字 ID 或带摘要前缀的 token。字段名已经来自公开合同白名单，因此应
+    # 接受较短的数字 ID，不能仅因某个部署使用紧凑标识就拒绝合法回执。
     return $text -match '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'
 }
 
@@ -2197,8 +2253,8 @@ function Assert-AutopilotRecoverySnapshot {
     $caseState = Get-AutopilotRecoveryStatus -Snapshot $Snapshot
     if ($null -eq $case) {
         if (Get-AutopilotAttentionRequiredStatus -Snapshot $Snapshot) {
-            # A callback-only bounded stop is still a public recovery result. Validate its flat SEARCH/SKIP
-            # projection before accepting the stop so this exceptional shape cannot bypass the retrieval contract.
+            # 只有 callback 的有界停止仍属于公开恢复结果。接受停止前必须校验扁平 SEARCH/SKIP 投影，
+            # 防止这种异常结构绕过检索合同。
             $decision = Assert-AutopilotModelEvidence -Snapshot $Snapshot
             $cycle = Get-AutopilotRecoveryCycleValue -Case $Snapshot -Names @('cycle') -Label 'cycle'
             $publicMaxCyclesRaw = Get-FieldValue -Object $Snapshot -Names @('maxCycles')
@@ -2404,7 +2460,7 @@ function Invoke-AutopilotSuccessRecoveryFlow {
         }
     }
     if ($recoverySummary.State -eq 'ATTENTION_REQUIRED') {
-        # This is intentionally not an AssertSucceeded call: bounded autonomous stop is not worker success.
+        # 此处有意不调用 AssertSucceeded：自治流程有界停止不等于 worker 执行成功。
         Add-Check -Name 'Autopilot 有界停止' -Status 'PASS' -Detail '恢复已停在 ATTENTION_REQUIRED；未将此状态计为 worker 成功。'
         return [pscustomobject]@{
             Outcome = 'ATTENTION_REQUIRED'
@@ -2547,10 +2603,10 @@ function Get-SpecialistFinalStatusEvidence {
             $previousSucceeded = Test-SpecialistCompletionStatus -Status $previous.Status
             $currentSucceeded = Test-SpecialistCompletionStatus -Status $record.Status
             if (-not $previousSucceeded -and $currentSucceeded) {
-                # A later success is a real recovery only when it belongs to the same role and follows a non-success result.
+                # 只有同一角色先出现非成功结果、随后成功，后一次成功才属于真实恢复。
                 $recoveredByRole[$record.Role] = "$($record.Role)=$($previous.Status)/$($previous.ErrorCode)=>$($record.Status)"
             } elseif (-not $currentSucceeded) {
-                # A later failure supersedes any earlier recovery; only the final role state may clear the warning.
+                # 后续失败会覆盖更早的恢复；只有角色最终状态才能决定是否清除警告。
                 $recoveredByRole.Remove($record.Role) | Out-Null
             }
         }
@@ -2575,8 +2631,8 @@ function Get-SpecialistFinalStatusEvidence {
     $verification = Get-FieldValue -Object $Response -Names @('specialistVerificationExecution')
     $initialBatchStatus = Get-SafeStatusToken -Text (Get-FieldValue -Object $specialist -Names @('status')) -Fallback 'NOT_RECORDED'
     $verificationBatchStatus = Get-SafeStatusToken -Text (Get-FieldValue -Object $verification -Names @('status')) -Fallback 'NOT_RECORDED'
-    # A failed batch is only recoverable when the response identifies at least one known failing role in that exact phase.
-    # Otherwise a failed unknown role or an incomplete payload would disappear behind unrelated successful role entries.
+    # 只有响应在准确阶段指出至少一个已知失败角色时，失败批次才可视为可恢复；否则未知角色失败或不完整
+    # 载荷会被无关角色的成功结果掩盖。
     $failedBatchWithoutRoleResult = $false
     foreach ($phaseBatch in @(
         [pscustomobject]@{ Name = 'INITIAL'; Status = $initialBatchStatus },
@@ -2867,7 +2923,7 @@ function Add-SpecialistSchedulingDiagnostics {
 
     $specialist = Get-FieldValue -Object $Response -Names @('specialistAgentExecution')
     $executedCount = [int](Get-FieldValue -Object $specialist -Names @('executedCount'))
-    # One aggregation is shared with role assertions so a recovered role cannot be PASS in one check and WARN in another.
+    # 角色断言共用同一份聚合结果，避免已恢复角色在一个检查中为 PASS、在另一个检查中却为 WARN。
     $roleEvidence = Get-RoleEvidence -Response $Response
     $skippedStates = @()
     $skipped = Get-FieldValue -Object $specialist -Names @('skippedRoles')
@@ -3014,8 +3070,8 @@ function Invoke-SpecialistStatusAggregationRegressionTest {
         $recoveredEvidence.Recovered -notcontains 'MONITOR_AGENT=FAILED/TRANSIENT_TIMEOUT=>COMPLETED') {
         throw '回归失败：同角色后置成功没有覆盖首轮瞬态失败，最终验收仍可能错误报告 PARTIALLY_FAILED。'
     }
-    # Exercise the visible diagnostic path as well as the pure aggregation result. A regression here would be user-visible
-    # even if Get-RoleEvidence itself remained correct, because the E2E summary derives its warning count from Add-Check.
+    # 除纯聚合结果外还要覆盖可见诊断路径。即使 Get-RoleEvidence 本身仍正确，这里的回归也会影响用户，
+    # 因为 E2E 摘要通过 Add-Check 计算警告数量。
     Add-SpecialistSchedulingDiagnostics -Response $recoveredResponse
     $recoveredDiagnostic = $script:Checks[$script:Checks.Count - 1]
     if ($recoveredDiagnostic.Status -ne 'PASS') {
@@ -3209,6 +3265,14 @@ function Invoke-AutopilotPublicContractRegressionTest {
         夹具拒绝伪装成此离线回归本身失败。
     #>
     param()
+
+    # 最终验收查询允许吸收短暂的只读依赖抖动，但不能把普通 403 或任何 POST 写请求变成透明重放。
+    if (-not (Test-TransientGatewayReadFailure -Method 'GET' -StatusCode 503 -ResponseBody '') -or
+        -not (Test-TransientGatewayReadFailure -Method 'GET' -StatusCode 403 -ResponseBody '{"message":"权限中心暂时不可用，网关已拒绝本次访问"}') -or
+        (Test-TransientGatewayReadFailure -Method 'GET' -StatusCode 403 -ResponseBody '{"message":"当前用户没有项目访问权限"}') -or
+        (Test-TransientGatewayReadFailure -Method 'POST' -StatusCode 503 -ResponseBody '')) {
+        throw 'Autopilot 公开合同回归失败：Gateway 只读瞬态重试边界不符合预期。'
+    }
 
     function Assert-ExpectedAutopilotEvidenceRejection {
         param(
@@ -3931,8 +3995,8 @@ function Assert-DurableFacts {
     }
     $facts = @(
         foreach ($sessionId in $sessionIds) {
-            # Each session is queried through Gateway so Java repeats tenant/project/object authorization.
-            # Only the returned low-sensitive fact views are merged in memory; no fact body is printed.
+            # 每个会话都通过 Gateway 查询，让 Java 重新执行租户、项目和对象授权。内存中只合并返回的
+            # 低敏事实视图，不打印任何事实正文。
             $factResponse = Invoke-DurableFactQuery -AccessToken $AccessToken -SessionId $sessionId
             $data = Get-FieldValue -Object $factResponse -Names @('data', 'items', 'facts')
             if ($null -eq $data) { $data = $factResponse }
@@ -3954,9 +4018,8 @@ function Assert-DurableFacts {
         if ($script:ExpectedRoles -contains $role -and @('COMPLETED', 'SUCCEEDED') -contains $status) {
             $factRoles.Add($role) | Out-Null
         } elseif ($Scenario -eq 'Recovery' -and $role -eq 'RECOVERY_AGENT' -and $status -eq 'WAITING_FOR_INPUT') {
-            # The response-level RAG and bridge assertions run before this query and prove why Recovery is
-            # waiting. The durable fact only has to prove that the governed turn itself was recorded; it must
-            # not relabel an approval/evidence wait as COMPLETED.
+            # 响应级 RAG 与 bridge 断言在本查询之前运行，用于证明 Recovery 等待原因。durable fact 只需
+            # 证明受治理 turn 已记录，不能把审批或证据等待重新标记为 COMPLETED。
             $waitingRoles.Add($role) | Out-Null
         }
     }
@@ -4031,13 +4094,13 @@ function Complete-E2EProcess {
         [int]$ExitCode
     )
 
-    # LASTEXITCODE is observable by callers that invoke this script from a shared PowerShell session.
+    # 共享 PowerShell 会话中的调用方可以观察 LASTEXITCODE，因此这里必须显式同步退出码。
     $global:LASTEXITCODE = $ExitCode
     exit $ExitCode
 }
 
-# Keep the aggregation regression independent from Keycloak/Gateway availability. The switch exits before request validation,
-# so CI can verify this narrow status rule even when it intentionally has no local runtime credentials or containers.
+# 状态聚合回归必须与 Keycloak/Gateway 可用性解耦。该开关在请求校验前退出，因此即使 CI 环境故意不提供
+# 本地运行凭据或容器，也能验证这条窄化的状态规则。
 if ($RunSpecialistStatusAggregationRegressionTest) {
     try {
         Invoke-SpecialistStatusAggregationRegressionTest
@@ -4227,6 +4290,6 @@ try {
     Write-Host '建议：先根据上一条人话错误检查 Keycloak/Gateway/Agent Runtime/Java 控制面，再用同一 RequestId 重试；本脚本未自动批准恢复动作。' -ForegroundColor Yellow
 }
 
-# A recorded FAIL and a thrown exception are both release failures. Do not let either path fall through with 0.
+# 已记录的 FAIL 和抛出的异常都属于发布失败，任何一条路径都不能以退出码 0 结束。
 $exitCode = if ($script:TerminalFailure -or $script:FailureCount -gt 0) { 1 } else { 0 }
 Complete-E2EProcess -ExitCode $exitCode

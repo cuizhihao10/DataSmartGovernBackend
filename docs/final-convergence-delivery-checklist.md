@@ -373,8 +373,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-dependency-r
 
 真实 task `107` / execution `2727` 已证明 range-probe transport failure 能写入 `PARTITION_RANGE_PROBE` 失败账本、投递 Kafka，并由 Recovery 模型自主选择 `SKIP` 与 `STRUCTURED_DIAGNOSTIC`。本次运行随后没有收敛为 `RECOVERED`，原因分为两层：任务字段映射漏掉了 `customer_name -> name`，而目标表 `name` 为非空列，最终 20 行全部写入失败；Kafka 重投时，同一 Recovery event 的瞬态模型摘要变化又使 diagnosis/preview AgentPlan 内容变化，但沿用旧的固定阶段幂等键，Java 因“同一键对应不同请求”正确拒绝了重放。
 
-当前修复保留 Java 冲突保护，不绕过控制面。Python 在接入前只保留动作类型和工具注册表允许的模型参数，剔除 actionId、自由文本说明、置信度、证据摘要等瞬态字段；同一 event、同一阶段、同一真实策略生成完全一致的 AgentPlan，不同 recovery cycle 或真实策略参数变化生成新的幂等身份。旧历史键使用 `investigation:v2` 版本隔离，避免部署后重放撞上旧请求指纹。非法样本选择器不会被静默规范为空集合，从而避免误扩大为“全部可重试样本”。
+当前修复保留 Java 冲突保护，不绕过控制面。Python 在接入前只保留动作类型和工具注册表允许的模型参数，剔除 actionId、自由文本说明、置信度、证据摘要等瞬态字段；同一 event、同一阶段、同一真实策略生成完全一致的 AgentPlan，不同 recovery cycle 或真实策略参数变化生成新的幂等身份。最终使用 `investigation:v3` 有界摘要键隔离旧历史键，并满足 Java 128 字符接入合同。非法样本选择器不会被静默规范为空集合，从而避免误扩大为“全部可重试样本”。
 
 本轮最新门禁为：Recovery investigation、coordinator、runtime adapter、bridge 聚焦回归 `73 passed`；Java 聚焦回归为 data-sync `21 tests` 加 agent-runtime `24 tests`，合计 `45 tests`；JDK 21 全 Reactor `1515 tests / 0 failures / 0 errors / 9 skipped`；Python 全量 `1171 passed, 1 skipped`；Frontend 六个 API/Agent/data-sync 合同脚本、lint、`tsc -b` 与 Vite build 全部通过。三个最新镜像构建成功并健康启动，Agent Runtime 的 Kafka 主 topic、两级 retry topic 和 DLT consumer 均重新加入 consumer group。
 
-真实黑盒最后一轮仍未关闭。新的模型密钥已仅注入运行时容器，未写入仓库或文档，但当前配置的 OpenAI-compatible Provider 对 `/models` 和 `/chat/completions` 均返回 HTTP `401`；三次规划都在创建 task 之前以低敏 `MODEL_PROVIDER_ERROR / MODEL_PROVIDER_TRANSPORT` fail-closed，数据库最大 task ID 仍为 `107`。这属于 Provider 凭据或端点归属阻塞，不是代码或 Kafka 失败。在有效 Provider 能完成 `DATA_SYNC_AGENT` 与 `RECOVERY_AGENT` 调用前，仍不得宣称真实 `FAILED -> Recovery -> retry -> SUCCEEDED -> RECOVERED` 已完成。
+**历史阻塞（已由第 14 节关闭）：** 当时配置的 OpenAI-compatible Provider 对模型接口返回 HTTP `401`，三次规划都在创建 task 前 fail-closed，数据库最大 task ID 为 `107`。该记录仍证明外部 Provider 失败不会越过治理边界，但不再代表当前运行状态。
+
+## 14. 2026-08-14 真实无人值守恢复最终验收
+
+Provider 切换到 `https://qa.dashun9527.com/v1` 后，容器内 `/models` 与 `/responses` 均返回 HTTP `200`，密钥只在运行时注入。第一次新演练 task `108` / execution `2770` 如期产生 `PARTITION_RANGE_PROBE` transport failure，但同时暴露真实合同缺陷：生产 eventId 为 82 字符，preview 幂等键继续拼接动作摘要和阶段后约 190 字符，超过 Java `IngestAgentPlanRequest.idempotencyKey` 的 128 字符上限。Java 在 Bean Validation 阶段正确拒绝，请求经 Kafka 有界重试后进入 DLT，未形成 recovery case。最小回归先用生产长度 eventId 复现失败，再把 diagnosis/preview 改成 `investigation:v3` 固定阶段前缀加 SHA-256 语义摘要；同事件重放、策略变化和新 cycle 语义保持不变，Java 冲突保护未放宽。
+
+修复镜像部署后的 task `109` / execution `2775` 完成真实闭环：首次范围探测在 datasource-management 暂停期间以 `DATASOURCE_PARTITION_RANGE_PROBE_TRANSPORT_UNAVAILABLE` 失败并写入持久对象账本；outbox 为 `DELIVERED`，Recovery 模型自主选择 `SKIP / STRUCTURED_DIAGNOSTIC`，evidence count 为 `0`；Java diagnosis 与 quarantine preview 审计均 `SUCCEEDED`；data-sync 返回 `RECOVERY_STARTED / AUTOPILOT_FAILED_OBJECTS_REQUEUED`，case `2` 在 cycle `1/3` 以 `RETRY_EXECUTION` 收敛为 `RECOVERED`。恢复期间没有人工调用 retry、quarantine 或 replay 接口。
+
+同一 execution 自动重排后最终 `SUCCEEDED`，`read=20/write=20/failed=0`，对象账本为 `SUCCEEDED`。MySQL 源端与 PostgreSQL 目标端聚合一致：行数 `20`、唯一 ID `20`、ID 合计 `210`、金额合计 `2210.00`。Gateway 公开 API 随后复核 execution、对象、19 条运行日志和 recovery 快照均成功；两个生命周期 session 共查询到 8 条 durable facts，覆盖 `DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`，全部为 `COMPLETED`。本轮模型选择 `SKIP`，因此没有机械执行 `KNOWLEDGE_AGENT`；task `106` 已保留真实 `SEARCH / EXACT_SEARCH / 2 evidence` 证据，两类分支共同证明检索由模型按证据自主决定。
+
+主 E2E 脚本在系统已经 `RECOVERED` 后遇到一次 Gateway 对 execution 只读查询的权限中心瞬时不可用并以非零退出，这是最终验证读取失败，不是恢复链路回滚。permission-admin 恢复健康后，使用同一 project-owner 身份重新通过 Gateway 查询上述 execution、对象、日志、Recovery 和 durable facts 均成功。因此真实 `FAILED -> Kafka -> Recovery -> retry -> SUCCEEDED -> RECOVERED -> PRECHECK/MONITOR` 门禁现已由运行证据关闭。脚本随后补充了只读 GET 的 3 次有界重试，只接受 502/503/504 和明确“权限中心暂时不可用”的 403；POST 与普通权限拒绝仍单次 fail-closed，离线合同和退出码回归均已通过。
