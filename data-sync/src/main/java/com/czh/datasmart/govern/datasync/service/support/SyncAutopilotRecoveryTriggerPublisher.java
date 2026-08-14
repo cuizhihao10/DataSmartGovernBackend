@@ -8,9 +8,11 @@ package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.entity.SyncAutopilotRecoveryCase;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncExecutionPolicy;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncAutopilotRecoveryCaseMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncExecutionPolicyMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryReceiptType;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -53,6 +55,7 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     private final SyncAutopilotRecoveryCaseMapper caseMapper;
     private final SyncAutopilotRecoveryCaseService caseService;
     private final SyncAutopilotRecoveryTriggerOutboxService outboxService;
+    private final SyncExecutionPolicyMapper executionPolicyMapper;
     private final ObjectMapper objectMapper;
     private final SyncAutopilotRecoveryMetrics metrics;
 
@@ -63,6 +66,7 @@ public class SyncAutopilotRecoveryTriggerPublisher {
      * @param caseMapper 查找当前 execution 对应的 active recovery case
      * @param caseService 通过 receipt 和乐观锁推进 recovery case
      * @param outboxService 原子写入并尝试投递 Kafka trigger
+     * @param executionPolicyMapper 在恢复成功后禁用临时任务级策略覆盖
      * @param objectMapper 解析并规范化持久授权快照
      * @param metrics 记录 trigger 与最终恢复结果，不承载业务 ID
      */
@@ -72,12 +76,14 @@ public class SyncAutopilotRecoveryTriggerPublisher {
             SyncAutopilotRecoveryCaseMapper caseMapper,
             SyncAutopilotRecoveryCaseService caseService,
             SyncAutopilotRecoveryTriggerOutboxService outboxService,
+            SyncExecutionPolicyMapper executionPolicyMapper,
             ObjectMapper objectMapper,
             SyncAutopilotRecoveryMetrics metrics) {
         this.definitionMapper = definitionMapper;
         this.caseMapper = caseMapper;
         this.caseService = caseService;
         this.outboxService = outboxService;
+        this.executionPolicyMapper = executionPolicyMapper;
         this.objectMapper = objectMapper;
         this.metrics = metrics;
     }
@@ -94,29 +100,25 @@ public class SyncAutopilotRecoveryTriggerPublisher {
             SyncAutopilotRecoveryCaseService caseService,
             SyncAutopilotRecoveryTriggerOutboxService outboxService,
             ObjectMapper objectMapper) {
-        this(definitionMapper, caseMapper, caseService, outboxService, objectMapper, null);
+        this(definitionMapper, caseMapper, caseService, outboxService, null, objectMapper, null);
     }
 
     /**
-     * Converts one persisted execution-failure fact into a governed, durable recovery trigger when authorized.
+     * 在持久授权有效时，把 execution 失败事实转换为受治理、可持久恢复触发器。
      *
-     * <p>The task and execution are authoritative data-sync entities; {@code errorCode} and {@code issueCodes}
-     * are sanitized into a stable fingerprint rather than transported as raw error text. In its independent
-     * transaction, the method reloads and whitelists the task's authorization snapshot, proves task/definition/
-     * execution tenant-project scope, calculates the bounded recovery cycle, and records a failed receipt for a
-     * prior active recovery case when appropriate. It then writes a low-sensitive event through the durable
-     * outbox; it does not call a model, retry a worker, or publish an arbitrary message directly.</p>
+     * <p>task 与 execution 是 data-sync 权威实体；{@code errorCode} 和 {@code issueCodes} 只会清洗后生成
+     * 稳定指纹，不传输原始错误正文。方法在独立事务内重新读取并白名单化授权快照，验证任务、定义和 execution
+     * 的租户/项目范围，计算有界恢复轮次，必要时为上一活动 case 记录失败回执，最后通过持久 outbox 写入低敏事件。
+     * 它不会调用模型、重试 worker 或直接发布任意消息。</p>
      *
-     * <p>Missing, expired, malformed, inactive, or out-of-scope authorization fails closed by returning without
-     * changing the already persisted sync failure. The derived event ID makes the same failure round idempotent
-     * at the outbox boundary. A prior recovery failure advances only through its own receipt, and loop guards
-     * stop exhausted cycles, repeated errors, and deadlines before another event is created. This preserves the
-     * security boundary that Agent Runtime must reauthorize before proposing any repair.</p>
+     * <p>授权缺失、过期、损坏、未激活或越界时直接安全返回，不改变已持久化同步失败。派生事件 ID 使同一失败轮次
+     * 在 outbox 边界幂等；上一轮恢复失败只能通过自身回执推进，循环耗尽、重复错误和 deadline 会在创建新事件前
+     * 阻断。Agent Runtime 仍必须重新验证授权后才能提出修复。</p>
      *
-     * @param task persisted task that owns the failed execution
-     * @param execution persisted failed execution belonging to {@code task}
-     * @param errorCode primary low-sensitive failure code; arbitrary prose is sanitized before use
-     * @param issueCodes optional secondary codes used only for a bounded fingerprint/diagnostic list
+     * @param task 拥有失败 execution 的持久任务
+     * @param execution 属于该任务的持久失败 execution
+     * @param errorCode 主要低敏失败码，任意正文会先被清洗
+     * @param issueCodes 可选次级原因码，只用于有界指纹和诊断列表
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void publishFailed(SyncTask task,
@@ -173,7 +175,7 @@ public class SyncAutopilotRecoveryTriggerPublisher {
                 authorization.expiresAt());
 
         if (active != null) {
-            recordFailedRecoveryAttempt(active, execution, cycle, fingerprint, repeatedErrorCount);
+            recordFailedRecoveryAttempt(active, task, execution, cycle, fingerprint, repeatedErrorCount);
         }
         if (cycle > authorization.maxRecoveryCycles()
                 || repeatedErrorCount >= authorization.maxRepeatedErrorCount()
@@ -217,21 +219,120 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Closes the active recovery case when the Autopilot-requeued execution has succeeded.
+     * 将一次确定性的“受治理修复未应用”结论转换为下一轮 Recovery 触发事件。
      *
-     * <p>The method accepts authoritative task/execution entities and first proves they are in the same scope.
-     * It finds only a {@code RECOVERY_STARTED} case for that tenant/task/current execution and records a
-     * {@code RECOVERY_SUCCEEDED} receipt through the case service. The independent transaction keeps a failed
-     * control-plane write from rolling back the worker's successful business transaction or task-management
-     * receipt.</p>
+     * <p>这与普通 execution 再次失败不同：修复动作可能尚未创建新的 execution，例如元数据刷新发现了
+     * 字段映射问题。若此处直接结束，模型就永远没有机会消费新发现的预检问题。本方法先使用
+     * {@code RECOVERY_FAILED} 回执把旧 case 收敛到 {@code ATTENTION_REQUIRED}，再把修复原因、上一动作和
+     * 问题码写入下一轮低敏事件。下一轮仍由 Python 模型自主选择其他受治理动作，data-sync 不替模型指定方案。</p>
      *
-     * <p>The fixed receipt ID uses case and execution IDs, so repeated success callbacks replay safely rather
-     * than incrementing the optimistic version twice. If no active case exists, the method is intentionally a
-     * no-op. It never marks an arbitrary case recovered and never exposes a bypass around case-service state
-     * and scope validation.</p>
+     * <p>调用方必须位于修复事务内。case 迁移、修复幂等回执和 outbox 因而原子提交；事务回滚时不会留下
+     * 孤立事件。循环次数、重复次数、授权有效期或 deadline 任一耗尽时，只收敛旧 case，不再产生事件。
+     * 重复调用会使用稳定的迁移回执和事件 ID，由 receipt/outbox 唯一约束安全重放。</p>
      *
-     * @param task persisted task that owns the completed execution
-     * @param execution execution whose success may complete an active recovery case
+     * @param task 当前失败 execution 所属的权威任务
+     * @param execution 尚未恢复成功的权威 execution
+     * @param activeCase 本轮已经自动批准、但修复前提不成立的 recovery case
+     * @param reasonCode data-sync 产生的固定低敏修复结论码
+     * @param issueCodes 修复动作新发现的固定低敏问题码
+     * @return 是否写入下一轮事件以及下一轮身份
+     */
+    @Transactional
+    public SyncAutopilotRecoveryRepairReplanResult publishRepairNotApplied(
+            SyncTask task,
+            SyncExecution execution,
+            SyncAutopilotRecoveryCase activeCase,
+            String reasonCode,
+            List<String> issueCodes) {
+        if (!validScopeInputs(task, execution) || activeCase == null
+                || activeCase.getCaseId() == null || activeCase.getVersion() == null
+                || !Objects.equals(activeCase.getTenantId(), task.getTenantId())
+                || !Objects.equals(activeCase.getProjectId(), task.getProjectId())
+                || !Objects.equals(activeCase.getSyncTaskId(), task.getId())
+                || !Objects.equals(activeCase.getCurrentExecutionId(), execution.getId())
+                || !"AUTO_APPROVED".equals(activeCase.getCaseState())) {
+            throw new IllegalArgumentException("Autopilot repair replan scope is invalid");
+        }
+
+        SyncTaskDefinition definition = definitionMapper.selectById(task.getId());
+        if (definition == null || definition.getAutopilotPolicy() == null
+                || definition.getAutopilotPolicy().isBlank()) {
+            throw new IllegalArgumentException("Autopilot repair replan authorization is missing");
+        }
+        ParsedAuthorization authorization = parseAuthorization(definition.getAutopilotPolicy());
+        if (!authorization.active() || !scopeMatches(task, execution, definition, authorization)) {
+            throw new IllegalArgumentException("Autopilot repair replan authorization scope is invalid");
+        }
+
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        // recovery case 使用 PostgreSQL timestamp 保存截止时间，数据库只保留微秒，纳秒值可能向上舍入。
+        // 因此即使 case 已有 deadline，也必须再次与原始授权 expiresAt 取较早瞬时：既不扩大授权，
+        // 也避免 100 纳秒级的持久化精度差让下一轮被 Agent Runtime 误判为授权过期。
+        OffsetDateTime persistedDeadline = activeCase.getDeadlineAt() == null
+                ? now.plusMinutes(authorization.maxTotalDurationMinutes())
+                : OffsetDateTime.of(activeCase.getDeadlineAt(), ZoneOffset.UTC);
+        OffsetDateTime deadlineAt = earliest(persistedDeadline, authorization.expiresAt());
+        int nextCycle = Math.max(1, activeCase.getCycle() == null ? 1 : activeCase.getCycle()) + 1;
+        int repeatedErrorCount = Math.max(0,
+                activeCase.getRepeatedErrorCount() == null ? 0 : activeCase.getRepeatedErrorCount()) + 1;
+
+        List<String> enrichedIssues = new ArrayList<>();
+        enrichedIssues.add("PREVIOUS_REPAIR_ACTION_" + safeCode(activeCase.getRecoveryAction()));
+        if (issueCodes != null) {
+            enrichedIssues.addAll(issueCodes);
+        }
+        List<String> safeIssues = safeIssueCodes(reasonCode, enrichedIssues);
+        String repairFailureFingerprint = errorFingerprint(reasonCode, safeIssues);
+        String transitionReceiptId = "autopilot-repair-not-applied:"
+                + SyncAutopilotDigestSupport.sha256(String.join("|",
+                String.valueOf(activeCase.getCaseId()), String.valueOf(activeCase.getVersion()),
+                repairFailureFingerprint));
+        caseService.recordTransition(new SyncAutopilotRecoveryTransitionCommand(
+                activeCase.getCaseId(), activeCase.getVersion(), transitionReceiptId,
+                SyncAutopilotRecoveryReceiptType.RECOVERY_FAILED, execution.getId(), nextCycle,
+                repairFailureFingerprint, repeatedErrorCount, safeIssues.getFirst()));
+        disableTemporaryPolicyOverride(task,
+                "Autopilot 受治理修复未满足应用前提，临时覆盖已禁用，等待下一轮重新规划");
+
+        int maximumCycles = Math.min(authorization.maxRecoveryCycles(),
+                activeCase.getMaxCycles() == null ? authorization.maxRecoveryCycles() : activeCase.getMaxCycles());
+        if (nextCycle > maximumCycles
+                || repeatedErrorCount >= authorization.maxRepeatedErrorCount()
+                || !isAfterInstant(authorization.expiresAt(), now)
+                || !isAfterInstant(deadlineAt, now)) {
+            recordTriggerRejected();
+            return new SyncAutopilotRecoveryRepairReplanResult(false, null, nextCycle);
+        }
+
+        String eventId = eventId(authorization, task.getId(), activeCase.getRootExecutionId(),
+                execution.getId(), nextCycle, repairFailureFingerprint);
+        SyncAutopilotRecoveryTriggerEvent event = new SyncAutopilotRecoveryTriggerEvent(
+                SCHEMA_VERSION, eventId, authorization.rootSessionId(), authorization.rootRunId(),
+                authorization.tenantId(), authorization.applicationId(), authorization.projectId(),
+                authorization.userId(), authorization.actorId(), authorization.agentId(),
+                authorization.delegationId(), task.getId(), activeCase.getRootExecutionId(), execution.getId(),
+                nextCycle, maximumCycles, deadlineAt.toString(), repairFailureFingerprint,
+                repeatedErrorCount, activeCase.getRepairFingerprint(), safeIssues,
+                authorization.snapshot(), authorization.snapshotDigest(), now.toString());
+        outboxService.enqueueAndDispatch(event);
+        if (metrics != null) {
+            metrics.recordTriggerAccepted();
+        }
+        return new SyncAutopilotRecoveryRepairReplanResult(true, eventId, nextCycle);
+    }
+
+    /**
+     * 当 Autopilot 重新入队的 execution 成功后，关闭对应的活动恢复 case。
+     *
+     * <p>方法接收权威任务和执行实体，首先证明二者处于同一范围；随后只查询该租户、任务和当前执行下
+     * 状态为 {@code RECOVERY_STARTED} 的 case，并通过 case 服务记录 {@code RECOVERY_SUCCEEDED} 回执。
+     * 独立事务可避免控制面写入失败回滚 worker 已成功提交的业务事务或 task-management 回执。</p>
+     *
+     * <p>固定回执 ID 同时包含 case 和 execution ID，重复成功回调会安全重放，不会重复递增乐观锁版本。
+     * 找不到活动 case 时保持无操作；方法不会把任意 case 标记为已恢复，也不会绕过 case 服务的状态与范围校验。</p>
+     *
+     * @param task 持有已完成 execution 的持久任务
+     * @param execution 可能完成活动恢复 case 的成功执行
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void publishSucceeded(SyncTask task, SyncExecution execution) {
@@ -254,30 +355,57 @@ public class SyncAutopilotRecoveryTriggerPublisher {
                 active.getRepeatedErrorCount(),
                 null
         ));
+        disableTemporaryPolicyOverride(task, "Autopilot 恢复成功，临时覆盖已自动禁用并保留审计");
         if (metrics != null) {
             metrics.recordRecoverySucceeded();
         }
     }
 
     /**
-     * Records that a previously started recovery attempt failed and therefore requires replanning attention.
+     * 在恢复 execution 成功后禁用 Autopilot 临时任务级策略覆盖。
      *
-     * <p>The active case and failed execution identify a stable {@code RECOVERY_FAILED} receipt. The delegated
-     * case service applies the only legal state transition with optimistic locking, updates the latest error
-     * facts, and persists the attention reason. This method itself performs no direct SQL or worker retry; its
-     * side effect is the receipt-backed case transition inside the surrounding independent transaction.</p>
+     * <p>ROLLBACK/TUNE 动作创建的覆盖只服务当前恢复循环。如果成功后继续启用，后续定时任务
+     * 会永久继承夜间故障处置参数。这里采用软禁用保留完整审计，重复成功回调也只会得到同一结果。
+     * 测试兼容构造器没有注入 mapper 时直接跳过，不改变既有 case 状态机测试。</p>
+     */
+    private void disableTemporaryPolicyOverride(SyncTask task, String reason) {
+        if (executionPolicyMapper == null || task == null || task.getId() == null) {
+            return;
+        }
+        SyncExecutionPolicy override = executionPolicyMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SyncExecutionPolicy>()
+                        .eq(SyncExecutionPolicy::getTenantId, task.getTenantId())
+                        .eq(SyncExecutionPolicy::getScopeType, "TASK")
+                        .eq(SyncExecutionPolicy::getScopeKey, "TASK:" + task.getId())
+                        .eq(SyncExecutionPolicy::getPolicyCode, SyncAutopilotRecoveryRepairService.POLICY_CODE)
+                        .last("LIMIT 1"));
+        if (override == null || !Boolean.TRUE.equals(override.getEnabled())) {
+            return;
+        }
+        override.setEnabled(Boolean.FALSE);
+        override.setDescription(reason);
+        override.setUpdateTime(LocalDateTime.now(ZoneOffset.UTC));
+        executionPolicyMapper.updateById(override);
+    }
+
+    /**
+     * 记录上一轮已启动恢复尝试失败，并将 case 转入需要重新规划的关注状态。
      *
-     * <p>Its receipt ID is deterministic for case/execution, making duplicate failure callbacks replay-safe.
-     * Once the old case reaches {@code ATTENTION_REQUIRED}, a later model proposal needs a distinct repair
-     * fingerprint to create a new case, so it cannot loop by reusing the failed repair plan.</p>
+     * <p>活动 case 与失败 execution 共同确定稳定的 {@code RECOVERY_FAILED} 回执。case 服务使用乐观锁执行
+     * 唯一合法的状态迁移，更新最新错误事实并持久化关注原因。本方法不直接执行 SQL 修复或 worker 重试，
+     * 唯一副作用是外围独立事务内、由回执支撑的 case 状态迁移。</p>
      *
-     * @param active active recovery case associated with the previous Autopilot attempt
-     * @param execution execution that failed during that attempt
-     * @param cycle next bounded recovery cycle to retain on the case
-     * @param errorFingerprint safe fingerprint of the failure facts
-     * @param repeatedErrorCount bounded count of repeated equivalent failures
+     * <p>回执 ID 由 case/execution 确定，重复失败回调可安全重放。旧 case 到达
+     * {@code ATTENTION_REQUIRED} 后，模型后续提案必须使用不同修复指纹创建新 case，不能复用失败方案死循环。</p>
+     *
+     * @param active 与上一轮 Autopilot 尝试关联的活动恢复 case
+     * @param execution 该尝试中失败的执行
+     * @param cycle 需要保留到 case 的下一受限恢复轮次
+     * @param errorFingerprint 失败事实的低敏安全指纹
+     * @param repeatedErrorCount 等价错误的有界重复次数
      */
     private void recordFailedRecoveryAttempt(SyncAutopilotRecoveryCase active,
+                                             SyncTask task,
                                              SyncExecution execution,
                                              int cycle,
                                              String errorFingerprint,
@@ -293,6 +421,13 @@ public class SyncAutopilotRecoveryTriggerPublisher {
                 repeatedErrorCount,
                 "RECOVERY_FAILED_REPLANNING"
         ));
+        /*
+         * 临时调参/回滚只允许服务上一轮恢复。该 execution 已再次失败后必须立即软禁用覆盖，
+         * 否则下一轮重新规划期间或后续定时运行仍可能继承已经证明无效的参数。新一轮若再次选择
+         * ROLLBACK/TUNE，会在新的 case/execution/截止时间绑定下重新启用并写入完整审计。
+         */
+        disableTemporaryPolicyOverride(task,
+                "Autopilot 恢复执行失败，临时覆盖已自动禁用，等待下一轮重新规划");
         if (metrics != null) {
             metrics.recordRecoveryFailed();
         }
@@ -311,21 +446,19 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Parses the persisted authorization snapshot into a whitelisted, transport-safe representation.
+     * 将持久化授权快照解析为白名单化、可安全传输的结构。
      *
-     * <p>Only explicit IDs, bounded budgets, action codes, timestamps, and lifecycle metadata are copied to a
-     * {@link LinkedHashMap}; unrecognized JSON fields such as passwords, SQL, URLs, checkpoints, model fields,
-     * or prompts are never retained in the result. The ordered whitelisted map is serialized and SHA-256 bound
-     * so Agent Runtime can detect a changed transport contract without receiving the original policy body.</p>
+     * <p>只把明确 ID、有界预算、动作码、时间戳和生命周期元数据复制到 {@link LinkedHashMap}；密码、SQL、
+     * URL、checkpoint、模型字段或提示词等未识别 JSON 字段绝不会进入结果。白名单 Map 保持顺序并序列化后
+     * 绑定 SHA-256，使 Agent Runtime 无需接收原始策略正文也能发现传输合同发生变化。</p>
      *
-     * <p>This parser has no database, Kafka, or worker side effect and is deterministic for equivalent JSON.
-     * It fails closed for malformed input, allowing {@link #publishFailed(SyncTask, SyncExecution, String, List)}
-     * to skip automation safely. The returned value is not execution authority: callers still compare its scope,
-     * active state, and expiry with local persistence before writing an outbox event.</p>
+     * <p>解析过程不访问数据库、Kafka 或 worker，对等价 JSON 具有确定性。格式错误时失败关闭，允许
+     * {@link #publishFailed(SyncTask, SyncExecution, String, List)} 安全跳过自动化。返回值本身不是执行权限；
+     * 写入 outbox 前，调用方仍需把其范围、激活状态和过期时间与本地持久事实逐项比较。</p>
      *
-     * @param policyJson persisted task definition authorization JSON
-     * @return sanitized authorization facts plus a stable digest of the whitelisted snapshot
-     * @throws IllegalArgumentException when the snapshot is malformed or cannot provide required safe fields
+     * @param policyJson 持久化在任务定义中的授权 JSON
+     * @return 已清洗授权事实及白名单快照的稳定摘要
+     * @throws IllegalArgumentException 快照格式错误或缺少安全必填字段时抛出
      */
     @SuppressWarnings("unchecked")
     private ParsedAuthorization parseAuthorization(String policyJson) {
@@ -409,17 +542,16 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Verifies that task, definition, execution, and parsed authorization share one tenant/project boundary.
+     * 校验任务、任务定义、执行记录和已解析授权是否共享同一租户/项目边界。
      *
-     * <p>This pure, idempotent predicate is evaluated before any recovery-trigger outbox write. It does not try
-     * to repair a mismatch or fall back to an omitted value: a false result causes the publisher to fail closed,
-     * preventing a persisted authorization from one scope from waking recovery work for another scope.</p>
+     * <p>该纯函数和幂等判断在任何恢复触发 outbox 写入前执行。范围不一致时不会尝试修补，也不会用缺失值
+     * 兜底，而是让发布器失败关闭，防止某一范围的持久授权唤醒另一范围的恢复工作。</p>
      *
-     * @param task authoritative sync task
-     * @param execution authoritative failed execution
-     * @param definition authoritative task definition holding the policy snapshot
-     * @param authorization sanitized authorization facts parsed from that snapshot
-     * @return {@code true} only when all durable scope values match exactly
+     * @param task 权威同步任务
+     * @param execution 权威失败执行
+     * @param definition 持有策略快照的权威任务定义
+     * @param authorization 从快照解析出的已清洗授权事实
+     * @return 仅所有持久范围值完全一致时返回 {@code true}
      */
     private boolean scopeMatches(SyncTask task,
                                  SyncExecution execution,
@@ -434,16 +566,15 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Performs an early structural ownership check on the entities passed to the publisher.
+     * 对传入发布器的实体执行早期结构化归属校验。
      *
-     * <p>The method proves the task/execution IDs exist, the execution belongs to the task, and tenant/project
-     * values agree before the publisher reads a policy or computes an event ID. It is pure and idempotent. A
-     * false result is a silent fail-closed outcome because publishing a trigger must never change business state
-     * merely to report a caller wiring error or bridge an unexpected tenant boundary.</p>
+     * <p>在读取策略或计算事件 ID 前，先证明 task/execution ID 存在、execution 属于该任务且租户/项目一致。
+     * 该判断纯函数且幂等；返回 false 时静默安全退出，因为发布触发器不能为报告调用接线错误或意外跨租户
+     * 而改变业务状态。</p>
      *
-     * @param task candidate owning task
-     * @param execution candidate failed/completed execution
-     * @return {@code true} only for a complete same-task, same-tenant, same-project pair
+     * @param task 候选归属任务
+     * @param execution 候选失败或完成 execution
+     * @return 仅当任务、租户和项目完整一致时返回 {@code true}
      */
     private boolean validScopeInputs(SyncTask task, SyncExecution execution) {
         return task != null && task.getId() != null && task.getTenantId() != null
@@ -454,17 +585,15 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Computes a stable, low-sensitive SHA-256 fingerprint for a primary error code and optional issue codes.
+     * 根据主错误码和可选问题码计算稳定、低敏的 SHA-256 指纹。
      *
-     * <p>Each input is normalized by {@link #safeCode(String)}, and secondary codes are sorted before hashing,
-     * so transport order and unsafe punctuation cannot change the identity of an equivalent failure. The method
-     * is pure and idempotent, has no persistence or logging side effect, and never hashes raw exception bodies,
-     * SQL, URLs, or logs. The fingerprint supports loop guards and case identity; it is not a diagnostic payload
-     * or evidence that can independently authorize a recovery.</p>
+     * <p>每个输入先经过 {@link #safeCode(String)} 规范化，次级问题码在摘要前排序，因此传输顺序和不安全
+     * 标点不会改变等价故障的身份。该方法纯函数且幂等，不执行持久化或日志写入，也绝不摘要原始异常正文、
+     * SQL、URL 或日志。指纹只支持循环门禁和 case 身份，不是可独立授权恢复的诊断载荷或证据。</p>
      *
-     * @param errorCode primary error code, normalized to {@code UNKNOWN} when absent
-     * @param issueCodes optional secondary codes; null is treated as an empty list
-     * @return lowercase SHA-256 digest of the canonical safe code list
+     * @param errorCode 主错误码，缺失时规范为 {@code UNKNOWN}
+     * @param issueCodes 可选次级问题码，空值按空列表处理
+     * @return 规范安全码列表对应的小写 SHA-256 摘要
      */
     public static String errorFingerprint(String errorCode, List<String> issueCodes) {
         List<String> normalized = new ArrayList<>();
@@ -510,16 +639,14 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Builds the bounded, sanitized issue-code list included in the trigger contract.
+     * 构造写入触发合同的有界、已清洗问题码列表。
      *
-     * <p>The primary code is always first, while secondary values are normalized, deduplicated, and capped so
-     * an error report cannot grow an outbox payload without bound. The result is immutable and has no side
-     * effect. It is deterministic for a fixed input order after normalization, but it is deliberately not a raw
-     * error export: arbitrary prose is replaced with safe enum-like code text.</p>
+     * <p>主问题码始终位于首位，次级值会规范化、去重并限制数量，避免错误报告无限放大 outbox 载荷。
+     * 结果不可变且无副作用；相同输入顺序会得到确定结果，但这不是原始错误导出，任意正文会被安全枚举码替代。</p>
      *
-     * @param errorCode primary code to retain even when secondary input is absent
-     * @param issueCodes optional secondary issue codes
-     * @return immutable safe list containing at most {@code MAX_ISSUE_CODES} entries
+     * @param errorCode 即使没有次级输入也必须保留的主问题码
+     * @param issueCodes 可选次级问题码
+     * @return 最多包含 {@code MAX_ISSUE_CODES} 项的不可变安全列表
      */
     private List<String> safeIssueCodes(String errorCode, List<String> issueCodes) {
         List<String> result = new ArrayList<>();
@@ -534,15 +661,14 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Normalizes arbitrary text into a bounded enum-like diagnostic code.
+     * 将任意文本规范成有界的枚举式诊断码。
      *
-     * <p>Blank input becomes {@code UNKNOWN}; all other text is uppercased, limited to a small ASCII character
-     * whitelist, and truncated. This pure helper is intentionally lossy and idempotent for an already normalized
-     * value. It is a data-minimization boundary used before hashing, logging, or sending issue codes, not a way
-     * to preserve detailed errors or to validate that a code has business meaning.</p>
+     * <p>空输入转换为 {@code UNKNOWN}；其他文本统一大写，仅保留小范围 ASCII 白名单字符并截断。该纯函数
+     * 有意丢失细节，对已规范值保持幂等；它是摘要、日志或问题码发送前的数据最小化边界，不负责保留详细错误，
+     * 也不证明某个代码具有业务含义。</p>
      *
-     * @param value untrusted diagnostic text
-     * @return safe bounded code text
+     * @param value 不可信诊断文本
+     * @return 安全且有界的代码文本
      */
     private static String safeCode(String value) {
         if (value == null || value.isBlank()) {
@@ -554,16 +680,15 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Reads a JSON action list into an immutable list of sanitized code strings.
+     * 把 JSON 动作数组读取成不可变的已清洗代码列表。
      *
-     * <p>A missing/non-array field means no actions; a present nontext element is rejected rather than coerced.
-     * Each textual value passes through {@link #safeCode(String)}, so the authorization snapshot cannot carry
-     * raw arbitrary text into Kafka. The method is pure and side-effect free; it does not decide whether an
-     * action is permitted, which remains the policy/case-service responsibility.</p>
+     * <p>字段缺失或不是数组代表没有动作；数组中出现非文本元素时直接拒绝，不做强制转换。每个文本值都经过
+     * {@link #safeCode(String)}，防止授权快照把任意原文带入 Kafka。方法纯函数且无副作用，不判断动作是否获准，
+     * 权限裁决仍属于策略和 case 服务。</p>
      *
-     * @param node JSON node expected to contain an action-code array
-     * @return immutable sanitized action list, or an empty list when the field is absent/non-array
-     * @throws IllegalArgumentException when an array contains a nontext element
+     * @param node 预期包含动作码数组的 JSON 节点
+     * @return 不可变的已清洗动作列表；字段缺失或非数组时返回空列表
+     * @throws IllegalArgumentException 数组包含非文本元素时抛出
      */
     private List<String> safeCodes(JsonNode node) {
         if (node == null || !node.isArray()) {
@@ -580,16 +705,14 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Returns the earlier of two authorization-relevant deadlines.
+     * 返回两个授权相关 deadline 中更早的一个。
      *
-     * <p>The publisher combines the per-recovery duration budget with the authorization expiry and must never
-     * use the later value, which could keep automation alive after consent expires. This pure, idempotent helper
-     * has no state side effect; its result is carried in the trigger so later components can stop an overdue
-     * cycle rather than infer a new deadline.</p>
+     * <p>发布器会组合单次恢复时长预算与授权过期时间，绝不能使用更晚值，否则自动化可能在授权失效后继续。
+     * 该辅助方法纯函数、幂等且无状态副作用；结果写入触发器，后续组件据此停止超期循环，而不是重新推测 deadline。</p>
      *
-     * @param first first nonnull deadline
-     * @param second second nonnull deadline
-     * @return whichever deadline occurs first
+     * @param first 第一个非空 deadline
+     * @param second 第二个非空 deadline
+     * @return 绝对时间更早的 deadline
      */
     private OffsetDateTime earliest(OffsetDateTime first, OffsetDateTime second) {
         return isAfterInstant(first, second)
@@ -598,34 +721,31 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Compares two offset-aware timestamps by their absolute instant rather than their local clock fields.
+     * 按绝对时间点比较两个带时区偏移的时间，而不是比较各自本地时钟字段。
      *
-     * <p>Authorization snapshots may be issued in a customer time zone while data-sync uses UTC for durable
-     * deadlines. Comparing local date-time fields would treat two different offsets as if they shared one wall
-     * clock and could keep expired automation alive. Converting both values to {@link java.time.Instant} makes
-     * expiry and bounded-loop checks independent of the offset supplied by the policy.</p>
+     * <p>授权快照可能按客户时区签发，而 data-sync 使用 UTC 持久化 deadline。直接比较本地日期时间会把不同
+     * 偏移误当成同一墙上时钟，可能让已过期自动化继续运行。统一转换为 {@link java.time.Instant} 后，过期与
+     * 有界循环校验不再受策略所带偏移影响。</p>
      *
-     * @param candidate timestamp that must occur after the reference instant
-     * @param reference current or competing timestamp
-     * @return {@code true} only when {@code candidate} is strictly later on the UTC timeline
+     * @param candidate 需要判断是否晚于参照时间的候选时间
+     * @param reference 当前或竞争参照时间
+     * @return 仅候选时间在 UTC 时间线上严格更晚时返回 {@code true}
      */
     private boolean isAfterInstant(OffsetDateTime candidate, OffsetDateTime reference) {
         return candidate.toInstant().isAfter(reference.toInstant());
     }
 
     /**
-     * Reads a required nonblank textual authorization field, with one documented compatibility alias.
+     * 读取必填非空授权文本，并支持一个有文档记录的兼容别名。
      *
-     * <p>This parser accepts only JSON text and trims it after validation; it does not coerce numbers, arrays,
-     * or objects into identifiers. The method is pure and idempotent. Required identifiers such as policy/session
-     * IDs fail closed when absent so a malformed persisted snapshot cannot silently use a broader default scope
-     * or emit a trigger with an ambiguous audit lineage.</p>
+     * <p>解析器只接受 JSON 文本并在校验后去空白，不把数字、数组或对象强制转换为标识。方法纯函数且幂等。
+     * policy/session ID 等必填标识缺失时失败关闭，避免损坏快照静默采用更宽默认范围或发出审计链路不明确的触发器。</p>
      *
-     * @param root parsed authorization object
-     * @param field preferred schema field name
-     * @param alias optional older schema field name
-     * @return trimmed text from the preferred field or alias
-     * @throws IllegalArgumentException when neither source has nonblank textual content
+     * @param root 已解析授权对象
+     * @param field 首选 schema 字段名
+     * @param alias 可选旧版 schema 字段名
+     * @return 首选字段或别名中去空白后的文本
+     * @throws IllegalArgumentException 两个来源均无非空文本时抛出
      */
     private String requiredText(JsonNode root, String field, String alias) {
         JsonNode value = root.get(field);
@@ -643,17 +763,16 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Reads optional text while returning a caller-chosen safe default for omitted or unusable values.
+     * 读取可选文本；字段缺失或不可用时返回调用方指定的安全默认值。
      *
-     * <p>This is used only for fields whose defaults are part of the fixed authorization contract, such as an
-     * inactive/active state label or a schema version. It is pure and idempotent, does not mutate the parsed
-     * tree, and never manufactures required identity/scope values. Callers must not use it for a security-bound
-     * identifier where absence should instead fail closed through {@link #requiredText(JsonNode, String)}.</p>
+     * <p>只用于默认值已经属于固定授权合同的字段，例如激活状态或 schema 版本。方法纯函数且幂等，不修改
+     * 解析树，也绝不伪造必填身份或范围值。安全边界标识缺失时应通过
+     * {@link #requiredText(JsonNode, String)} 失败关闭，不能调用本方法兜底。</p>
      *
-     * @param root parsed authorization object
-     * @param field optional schema field name
-     * @param fallback fixed contract default when the field is absent, nontext, or blank
-     * @return trimmed field text or {@code fallback}
+     * @param root 已解析授权对象
+     * @param field 可选 schema 字段名
+     * @param fallback 字段缺失、非文本或空白时使用的固定合同默认值
+     * @return 去空白后的字段文本或 {@code fallback}
      */
     private String optionalText(JsonNode root, String field, String fallback) {
         JsonNode value = root.get(field);
@@ -664,17 +783,15 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Reads a required integral authorization identifier without accepting text or fractional JSON values.
+     * 读取必填整数授权标识，不接受文本或小数 JSON 值。
      *
-     * <p>The method is pure, idempotent, and side-effect free. It preserves the distinction between an absent
-     * field and a present invalid value so a policy cannot accidentally bind recovery work to a fabricated
-     * tenant. Positive/range requirements that belong to a specific field are applied by the caller after this
-     * structural check.</p>
+     * <p>方法纯函数、幂等且无副作用，并保留“字段缺失”和“字段存在但无效”的区别，防止策略把恢复工作
+     * 误绑定到伪造租户。具体字段的正数和范围要求由调用方在结构校验后继续执行。</p>
      *
-     * @param root parsed authorization object
-     * @param field required integer field name
-     * @return parsed long identifier
-     * @throws IllegalArgumentException when the field is absent or not an integer
+     * @param root 已解析授权对象
+     * @param field 必填整数字段名
+     * @return 解析后的 long 标识
+     * @throws IllegalArgumentException 字段缺失或不是整数时抛出
      */
     private Long requiredLong(JsonNode root, String field) {
         Long value = nullableLong(root, field);
@@ -685,16 +802,15 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Reads an optional integral authorization field without widening invalid input to {@code null}.
+     * 读取可选整数授权字段，但不会把无效输入放宽为 {@code null}。
      *
-     * <p>Only an absent/null JSON field returns {@code null}; a present but nonintegral value is an invalid
-     * persisted authorization. The method is pure and idempotent, and lets the caller distinguish a deliberately
-     * optional project/application field from malformed scope data before publishing any trigger.</p>
+     * <p>只有 JSON 字段缺失或明确为 null 才返回 {@code null}；字段存在但不是整数代表持久授权无效。该方法
+     * 纯函数且幂等，使调用方在发布触发器前区分“明确可选的项目/应用字段”和“损坏的范围数据”。</p>
      *
-     * @param root parsed authorization object
-     * @param field optional integer field name
-     * @return parsed long value, or {@code null} only when the field is absent/null
-     * @throws IllegalArgumentException when a present field cannot be represented as a long
+     * @param root 已解析授权对象
+     * @param field 可选整数字段名
+     * @return 解析后的 long；仅字段缺失或为 null 时返回 {@code null}
+     * @throws IllegalArgumentException 字段存在但无法表示为 long 时抛出
      */
     private Long nullableLong(JsonNode root, String field) {
         JsonNode value = root.get(field);
@@ -708,19 +824,18 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Reads a bounded numeric recovery limit and applies a safe default only when omitted.
+     * 读取有界恢复数值限制，仅在字段缺失时应用安全默认值。
      *
-     * <p>Present values must be integral and fall within the caller's inclusive safety range. This prevents a
-     * corrupted policy from creating unbounded recovery cycles, duration, or repeated-error tolerance. The
-     * helper is pure and idempotent; it calculates no retry and changes no persistent state itself.</p>
+     * <p>显式值必须是整数并落在调用方给定的闭区间内，避免损坏策略产生无限恢复轮次、持续时间或重复错误
+     * 容忍度。该辅助方法纯函数且幂等，本身不计算重试，也不修改任何持久状态。</p>
      *
-     * @param root parsed authorization object
-     * @param field numeric field name
-     * @param fallback fixed safe default for an absent field
-     * @param min smallest accepted explicit value
-     * @param max largest accepted explicit value
-     * @return fallback or validated integer
-     * @throws IllegalArgumentException when a present value is invalid or outside the range
+     * @param root 已解析授权对象
+     * @param field 数值字段名
+     * @param fallback 字段缺失时使用的固定安全默认值
+     * @param min 可接受显式值下限
+     * @param max 可接受显式值上限
+     * @return 默认值或已验证整数
+     * @throws IllegalArgumentException 字段存在但无效或越界时抛出
      */
     private int boundedInt(JsonNode root, String field, int fallback, int min, int max) {
         JsonNode value = root.get(field);
@@ -738,15 +853,14 @@ public class SyncAutopilotRecoveryTriggerPublisher {
     }
 
     /**
-     * Parses an offset-aware authorization timestamp used for issued/expiry comparisons.
+     * 解析用于签发/过期比较的带时区偏移授权时间戳。
      *
-     * <p>The method has no clock, persistence, or transport side effect and is idempotent for the same ISO-8601
-     * text. It intentionally allows parsing errors to propagate to the authorization parser, which then skips
-     * automation rather than treating an unreadable expiry as valid indefinitely.</p>
+     * <p>该方法不访问时钟、持久层或传输层，对同一 ISO-8601 文本保持幂等。解析错误会继续传播给授权解析器，
+     * 使其跳过自动化，而不是把无法读取的过期时间当成永久有效。</p>
      *
-     * @param value required ISO-8601 timestamp text including an offset
-     * @return parsed timestamp with its original offset information
-     * @throws RuntimeException when the input cannot be parsed as an offset date-time
+     * @param value 包含时区偏移的必填 ISO-8601 时间文本
+     * @return 保留原始偏移信息的解析时间
+     * @throws RuntimeException 输入无法解析为带偏移日期时间时抛出
      */
     private OffsetDateTime parseDateTime(String value) {
         return OffsetDateTime.parse(value);

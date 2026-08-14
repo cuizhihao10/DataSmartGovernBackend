@@ -37,7 +37,11 @@ public record AgentAutopilotRecoveryPlanResponse(
         String checkpointThreadId,
         String payloadPolicy,
         Map<String, Object> quarantinePreview,
-        Map<String, Object> autopilotRecoveryFacts) {
+        Map<String, Object> autopilotRecoveryFacts,
+        Map<String, Object> repairParameters,
+        Map<String, Object> operatorHandoff,
+        String modelFailureReasonCode,
+        String modelFailureSource) {
 
     /**
      * 为 Python 返回的三个审计 Map 建立不可修改的第一层快照。
@@ -55,35 +59,73 @@ public record AgentAutopilotRecoveryPlanResponse(
         retrievalAudit = immutableMap(retrievalAudit);
         quarantinePreview = immutableMap(quarantinePreview);
         autopilotRecoveryFacts = immutableMap(autopilotRecoveryFacts);
+        repairParameters = immutableMap(repairParameters);
+        operatorHandoff = immutableMap(operatorHandoff);
     }
 
     /**
-     * Preserves the original recovery-candidate constructor for callers that do not propose quarantine.
+     * 保留新增模型故障分类字段之前的完整构造器，避免测试和模块内固定候选需要机械补空值。
      *
-     * <p>Older planner responses and ordinary retry candidates have no quarantine-specific preview. They retain the
-     * same immutable contract by receiving an empty preview map; an {@code APPLY_QUARANTINE} candidate is still
-     * rejected later unless the independent Java preview verifier receives every required field. This constructor
-     * does not perform I/O, authorization, or policy evaluation.</p>
+     * <p>正常候选、人工关注和普通业务失败没有模型传输故障分类，因此两个新字段明确设为 {@code null}。
+     * 只有 Python 反序列化的 {@code RECOVERY_PLANNING_MODEL_FAILED} 响应会填充它们；Java 后续仍按固定
+     * 白名单判定是否允许 Kafka 有界重投。</p>
+     */
+    public AgentAutopilotRecoveryPlanResponse(
+            String schemaVersion,
+            String eventId,
+            String status,
+            String reasonCode,
+            String action,
+            String riskLevel,
+            boolean idempotent,
+            String repairFingerprint,
+            String errorFingerprint,
+            double confidence,
+            boolean evidenceAvailable,
+            Map<String, Object> evidenceAudit,
+            Map<String, Object> evidenceScope,
+            String retrievalDecision,
+            String retrievalStrategy,
+            Map<String, Object> retrievalAudit,
+            boolean strategyChanged,
+            String checkpointThreadId,
+            String payloadPolicy,
+            Map<String, Object> quarantinePreview,
+            Map<String, Object> autopilotRecoveryFacts,
+            Map<String, Object> repairParameters,
+            Map<String, Object> operatorHandoff) {
+        this(schemaVersion, eventId, status, reasonCode, action, riskLevel, idempotent, repairFingerprint,
+                errorFingerprint, confidence, evidenceAvailable, evidenceAudit, evidenceScope, retrievalDecision,
+                retrievalStrategy, retrievalAudit, strategyChanged, checkpointThreadId, payloadPolicy,
+                quarantinePreview, autopilotRecoveryFacts, repairParameters, operatorHandoff, null, null);
+    }
+
+    /**
+     * 为不建议隔离动作的调用方保留原恢复候选构造器。
      *
-     * @param schemaVersion versioned Python/Java recovery-candidate schema
-     * @param eventId immutable recovery-trigger identifier
-     * @param status finite planner outcome
-     * @param reasonCode low-sensitive planner reason
-     * @param action proposed recovery action
-     * @param riskLevel proposed risk level
-     * @param idempotent whether the candidate claims a replay-safe action
-     * @param repairFingerprint planner repair fingerprint
-     * @param errorFingerprint trigger-bound error fingerprint
-     * @param confidence planner confidence between zero and one
-     * @param evidenceAvailable whether diagnostic evidence was located
-     * @param evidenceAudit diagnostic evidence summary
-     * @param evidenceScope candidate evidence scope
-     * @param retrievalDecision retrieval decision summary
-     * @param retrievalStrategy retrieval strategy summary
-     * @param retrievalAudit retrieval audit summary
-     * @param strategyChanged planner explanation for a changed strategy
-     * @param checkpointThreadId low-sensitive planner checkpoint reference
-     * @param payloadPolicy fixed payload classification
+     * <p>旧版规划响应和普通重试候选没有隔离专用预览，构造器通过传入空预览 Map 保持同一不可变合同。
+     * {@code APPLY_QUARANTINE} 候选仍会在后续被独立 Java 预览验证器拒绝，除非所有必填字段齐全。该构造器
+     * 不执行 I/O、授权或策略评估。</p>
+     *
+     * @param schemaVersion 版本化 Python/Java 恢复候选 schema
+     * @param eventId 不可变恢复触发标识
+     * @param status 有限规划结果
+     * @param reasonCode 低敏规划原因码
+     * @param action 建议恢复动作
+     * @param riskLevel 建议风险等级
+     * @param idempotent 候选是否声明动作可安全重放
+     * @param repairFingerprint 规划器修复指纹
+     * @param errorFingerprint 与触发器绑定的错误指纹
+     * @param confidence 0 到 1 之间的规划置信度
+     * @param evidenceAvailable 是否定位到诊断证据
+     * @param evidenceAudit 诊断证据摘要
+     * @param evidenceScope 候选证据范围
+     * @param retrievalDecision 检索决策摘要
+     * @param retrievalStrategy 检索策略摘要
+     * @param retrievalAudit 检索审计摘要
+     * @param strategyChanged 策略变化的规划器说明
+     * @param checkpointThreadId 低敏规划 checkpoint 引用
+     * @param payloadPolicy 固定载荷分类
      */
     public AgentAutopilotRecoveryPlanResponse(
             String schemaVersion,
@@ -107,7 +149,8 @@ public record AgentAutopilotRecoveryPlanResponse(
             String payloadPolicy) {
         this(schemaVersion, eventId, status, reasonCode, action, riskLevel, idempotent, repairFingerprint,
                 errorFingerprint, confidence, evidenceAvailable, evidenceAudit, evidenceScope, retrievalDecision,
-                retrievalStrategy, retrievalAudit, strategyChanged, checkpointThreadId, payloadPolicy, Map.of());
+                retrievalStrategy, retrievalAudit, strategyChanged, checkpointThreadId, payloadPolicy,
+                Map.of(), Map.of(), Map.of(), Map.of(), null, null);
     }
 
     /**
@@ -139,7 +182,41 @@ public record AgentAutopilotRecoveryPlanResponse(
         this(schemaVersion, eventId, status, reasonCode, action, riskLevel, idempotent, repairFingerprint,
                 errorFingerprint, confidence, evidenceAvailable, evidenceAudit, evidenceScope, retrievalDecision,
                 retrievalStrategy, retrievalAudit, strategyChanged, checkpointThreadId, payloadPolicy,
-                quarantinePreview, Map.of());
+                quarantinePreview, Map.of(), Map.of(), Map.of(), null, null);
+    }
+
+    /**
+     * 保持已有携带重试事实的调用方兼容，并把新修复参数及人工处置包明确设为空。
+     *
+     * <p>旧响应只能继续执行原有重试或隔离动作；新增动作缺少 {@code repairParameters} 时会在独立
+     * Java 验证器中失败关闭，不会因为兼容构造器而获得默认修复权限。</p>
+     */
+    public AgentAutopilotRecoveryPlanResponse(
+            String schemaVersion,
+            String eventId,
+            String status,
+            String reasonCode,
+            String action,
+            String riskLevel,
+            boolean idempotent,
+            String repairFingerprint,
+            String errorFingerprint,
+            double confidence,
+            boolean evidenceAvailable,
+            Map<String, Object> evidenceAudit,
+            Map<String, Object> evidenceScope,
+            String retrievalDecision,
+            String retrievalStrategy,
+            Map<String, Object> retrievalAudit,
+            boolean strategyChanged,
+            String checkpointThreadId,
+            String payloadPolicy,
+            Map<String, Object> quarantinePreview,
+            Map<String, Object> autopilotRecoveryFacts) {
+        this(schemaVersion, eventId, status, reasonCode, action, riskLevel, idempotent, repairFingerprint,
+                errorFingerprint, confidence, evidenceAvailable, evidenceAudit, evidenceScope, retrievalDecision,
+                retrievalStrategy, retrievalAudit, strategyChanged, checkpointThreadId, payloadPolicy,
+                quarantinePreview, autopilotRecoveryFacts, Map.of(), Map.of(), null, null);
     }
 
     /**

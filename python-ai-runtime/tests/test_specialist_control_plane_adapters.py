@@ -264,6 +264,70 @@ class SpecialistControlPlaneAdapterTest(unittest.TestCase):
                             "failedObjectCount": 1,
                             "retryableDirtySampleCount": 2,
                             "quarantinedDirtySampleCount": 1,
+                            "runtimeMetrics": {
+                                "recordsRead": 100,
+                                "recordsWritten": 80,
+                                "failedRecordCount": 20,
+                                "failedObjectCount": 1,
+                                "retryableDirtySampleCount": 2,
+                                "quarantinedDirtySampleCount": 1,
+                            },
+                            "executionPolicyComparison": {
+                                "comparisonStatus": "COMPARISON_AVAILABLE",
+                                "current": {
+                                    "executionId": 900,
+                                    "resolvedChannel": 2,
+                                    "readBatchSize": 100,
+                                    "writeBatchSize": 100,
+                                    "timeoutSeconds": 120,
+                                },
+                                "previousSuccessful": {
+                                    "executionId": 899,
+                                    "resolvedChannel": 4,
+                                    "readBatchSize": 200,
+                                    "writeBatchSize": 200,
+                                    "timeoutSeconds": 60,
+                                },
+                                "changedFields": ["resolvedChannel", "timeoutSeconds"],
+                            },
+                            "connectorRuntimeSummaries": [
+                                {
+                                    "connectorRole": "SOURCE",
+                                    "datasourceId": 1001,
+                                    "lookupStatus": "AVAILABLE",
+                                    "snapshotVersion": "datasmart.datasource.capability-snapshot.v1",
+                                    "connectorRuntimeVersion": "9.2.0",
+                                    "connectorRuntimeVersionSource": "PACKAGE_IMPLEMENTATION_VERSION",
+                                    "connectorType": "MYSQL",
+                                    "connectorFamily": "RELATIONAL_JDBC",
+                                    "healthStatus": "CONNECTION_VERIFIED",
+                                    "canRead": True,
+                                    "canWrite": True,
+                                    "supportsSchemaDiscovery": True,
+                                    "supportsFieldMapping": True,
+                                    "supportsCheckpointResume": True,
+                                    "supportsPartitionParallelism": True,
+                                    "runtimeLimitStatus": "EXECUTION_POLICY_SNAPSHOT_AVAILABLE",
+                                    "effectiveChannel": 2,
+                                    "effectiveReadBatchSize": 100,
+                                    "effectiveWriteBatchSize": 100,
+                                    "effectiveTimeoutSeconds": 120,
+                                    "capacityStatus": "POLICY_GOVERNED_NO_HARD_CONNECTOR_CAPACITY_DECLARED",
+                                    "performanceRecommendations": ["使用有界批量与背压"],
+                                    "issueCodes": [],
+                                }
+                            ],
+                            "evidenceRecords": [
+                                {
+                                    "evidenceId": "sync-evidence:abc123",
+                                    "sourceType": "STRUCTURED_API",
+                                    "sourceRef": "sync-execution:42:900:metrics",
+                                    "retrievedAt": "2026-08-14T13:00:00Z",
+                                    "sourceObservedAt": "2026-08-14T12:59:00",
+                                    "confidence": 0.98,
+                                    "confidenceBasis": "PERSISTED_EXECUTION_AND_OBJECT_LEDGER",
+                                }
+                            ],
                             "rootCauseCodes": ["TARGET_DUPLICATE_KEY"],
                             "recommendedRepairActions": ["REVIEW_EXECUTION_LOG"],
                             "ragQuery": "SELECT password FROM private_table",
@@ -318,6 +382,10 @@ class SpecialistControlPlaneAdapterTest(unittest.TestCase):
         self.assertNotIn("SELECT", public_text)
         self.assertNotIn("ragQuery", str(result.facts))
         self.assertEqual(20, result.facts["failedRecordCount"])
+        self.assertEqual(2, result.facts["executionPolicyComparison"]["current"]["resolvedChannel"])
+        self.assertEqual("9.2.0", result.facts["connectorRuntimeSummaries"][0]["connectorRuntimeVersion"])
+        self.assertEqual(0.98, result.evidence_records[0]["confidence"])
+        self.assertEqual("sync-execution:42:900:metrics", result.evidence_records[0]["sourceRef"])
 
     def test_monitor_combines_executions_logs_objects_and_checks_scope(self) -> None:
         """监控快照应由三路真实 DTO 聚合，并透传同一组可信 Header。"""

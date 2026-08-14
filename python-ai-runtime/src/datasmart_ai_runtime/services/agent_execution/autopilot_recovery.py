@@ -9,6 +9,7 @@ LangGraph checkpoint：先让 RECOVERY_AGENT 读取结构化诊断，再尊重�
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -42,11 +43,23 @@ from datasmart_ai_runtime.services.rag.pipeline import RagPipeline
 _SHA_256 = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
 _HEX_64 = re.compile(r"^[0-9a-fA-F]{64}$")
 _SAFE_CODE = re.compile(r"^[A-Z0-9_.:\-]{1,96}$")
+_RETRYABLE_MODEL_FAILURES = frozenset(
+    {
+        ("MODEL_TIMEOUT", "MODEL_PROVIDER_TRANSPORT"),
+        ("MODEL_PROVIDER_ERROR", "MODEL_PROVIDER_TRANSPORT"),
+    }
+)
 _AUTOMATIC_ACTION_ALIASES = {
     # 这是 Java 和 data-sync 实际执行的规范动作。它仍受下方
     # _has_explicit_transient_retry_facts 保护；仅将动作命名为
     # RETRY_EXECUTION 永远不足以授予无人值守执行权限。
     "RETRY_EXECUTION": "RETRY_EXECUTION",
+    "ROLLBACK_EXECUTION_POLICY": "ROLLBACK_EXECUTION_POLICY",
+    "TUNE_EXECUTION_POLICY": "TUNE_EXECUTION_POLICY",
+    "REFRESH_METADATA": "REFRESH_METADATA",
+    "RESUME_FROM_CHECKPOINT": "RESUME_FROM_CHECKPOINT",
+    "REPLAY_FAILED_SHARDS": "REPLAY_FAILED_SHARDS",
+    "REPAIR_FIELD_MAPPING": "REPAIR_FIELD_MAPPING",
 }
 # 面向模型的名称有意与自动动作表分开维护。只有通过确定性的瞬态失败事实门禁后，
 # 它才是别名，因此不能因自然语言中的动作相似性而将 schema 错误转换为无人值守重试。
@@ -67,6 +80,9 @@ _KNOWN_GOVERNED_ACTIONS = frozenset(
         *_RETRY_ACTION_ALIASES,
         "RECONNECT_DATASOURCE",
         "REFRESH_METADATA",
+        "ROLLBACK_EXECUTION_POLICY",
+        "TUNE_EXECUTION_POLICY",
+        "REPAIR_FIELD_MAPPING",
         # APPLY_QUARANTINE 被有意列入目录，但不自动执行。Python 只能返回
         # 绑定 receipt 的候选；Java 始终是唯一写入方，并在之后启动有界重试。
         "APPLY_QUARANTINE",
@@ -90,13 +106,10 @@ _KNOWN_GOVERNED_ACTIONS = frozenset(
 _NON_AUTOMATIC_GOVERNED_ACTIONS = frozenset(
     {
         "RECONNECT_DATASOURCE",
-        "REFRESH_METADATA",
         "PREVIEW_SCHEMA_REPAIR",
         "PREVIEW_CREATE_TARGET_TABLE",
         "REPLAY_DIRTY_RECORDS",
         "REPLAY_FROM_CHECKPOINT",
-        "REPLAY_FAILED_SHARDS",
-        "RESUME_FROM_CHECKPOINT",
         "ALTER_TARGET_SCHEMA",
         "CREATE_TARGET_TABLE",
         "RENAME_TASK",
@@ -317,11 +330,39 @@ class AutopilotRecoveryResult:
     # 解释 RETRY_EXECUTION 为何符合条件的确定性事实。Java 会在创建恢复案例前
     # 重新校验这份精简投影。
     autopilot_recovery_facts: Mapping[str, Any] = field(default_factory=dict)
+    # 只允许平台固定参数或经过白名单/数值边界收窄的参数跨越 Python/Java 边界。
+    # 模型的 arguments、reason 和任意嵌套对象不会进入该映射。
+    repair_parameters: Mapping[str, Any] = field(default_factory=dict)
+    # 当动作越过首次授权盒时，返回由平台目录生成的处置说明。这里不使用模型自由文本，
+    # 避免攻击性日志或提示词污染人工操作步骤。
+    operator_handoff: Mapping[str, Any] = field(default_factory=dict)
     retrieval_decision: str = "SKIP"
     retrieval_strategy: str = "STRUCTURED_DIAGNOSTIC"
     retrieval_audit: Mapping[str, Any] = field(default_factory=dict)
     strategy_changed: bool = False
     checkpoint_thread_id: str | None = None
+    # 这两个字段只保存固定低敏分类，不保存 Provider 异常消息、URL、响应正文或堆栈。
+    model_failure_reason_code: str | None = None
+    model_failure_source: str | None = None
+    # 该布尔值只能由平台固定白名单计算，绝不采信模型输出或外部请求字段。
+    retryable_failure: bool = False
+
+    def __post_init__(self) -> None:
+        """收窄低敏故障代码，并由平台白名单重新计算可重试标志。
+
+        即使未来内部调用者错误传入 ``retryable_failure=True``，这里也会根据原因码与来源码覆盖它；模型、
+        HTTP 请求和旧 checkpoint 因而都不能自行扩大 Kafka 重投范围。
+        """
+
+        reason_code = _optional_code(self.model_failure_reason_code)
+        source = _optional_code(self.model_failure_source)
+        object.__setattr__(self, "model_failure_reason_code", reason_code)
+        object.__setattr__(self, "model_failure_source", source)
+        object.__setattr__(
+            self,
+            "retryable_failure",
+            _is_retryable_model_failure(reason_code, source),
+        )
 
     def to_summary(self) -> dict[str, Any]:
         """生成 Java 可反序列化的稳定响应，不返回 RAG 正文、日志或模型原始输出。
@@ -330,9 +371,8 @@ class AutopilotRecoveryResult:
         它不含 ``operationState``、message、原始样本内容或任意模型参数。Java 必须用其中的 audit/run/output
         引用重新读取并验证 preview，再执行 apply 和其后的自动 retry，Python 在本方法前后都不会写 data-sync。
 
-        English: the summary exposes a narrow, receipt-bound ``quarantinePreview`` only for an apply
-        candidate.  It is evidence for Java to verify, never an execution command or a substitute for
-        Java/data-sync authorization, idempotency, and bounded-retry policy.
+        最终摘要只为 apply 候选暴露一份与回执绑定的窄化 ``quarantinePreview``。它只是供 Java
+        复核的证据，绝不是执行命令，也不能替代 Java/data-sync 的授权、幂等和有界重试策略。
         """
 
         return {
@@ -351,11 +391,16 @@ class AutopilotRecoveryResult:
             "evidenceScope": dict(self.evidence_scope),
             "quarantinePreview": _quarantine_preview_summary(self.quarantine_preview),
             "autopilotRecoveryFacts": _autopilot_recovery_facts_summary(self.autopilot_recovery_facts),
+            "repairParameters": _repair_parameters_summary(self.repair_parameters),
+            "operatorHandoff": _operator_handoff_summary(self.operator_handoff),
             "retrievalDecision": self.retrieval_decision,
             "retrievalStrategy": self.retrieval_strategy,
             "retrievalAudit": dict(self.retrieval_audit),
             "strategyChanged": self.strategy_changed,
             "checkpointThreadId": self.checkpoint_thread_id,
+            "modelFailureReasonCode": self.model_failure_reason_code,
+            "modelFailureSource": self.model_failure_source,
+            "retryableFailure": self.retryable_failure,
             "payloadPolicy": "LOW_SENSITIVE_AUTOPILOT_RECOVERY_CANDIDATE_ONLY",
         }
 
@@ -384,6 +429,8 @@ class AutopilotRecoveryResult:
         risk_level = _optional_code(summary.get("riskLevel"))
         repair_fingerprint = _optional_fingerprint(summary.get("repairFingerprint"))
         error_fingerprint = _optional_fingerprint(summary.get("errorFingerprint"))
+        model_failure_reason_code = _optional_code(summary.get("modelFailureReasonCode"))
+        model_failure_source = _optional_code(summary.get("modelFailureSource"))
         return cls(
             event_id=event_id,
             status=status,
@@ -399,11 +446,19 @@ class AutopilotRecoveryResult:
             evidence_scope=_mapping_copy(summary.get("evidenceScope")),
             quarantine_preview=_quarantine_preview_summary(summary.get("quarantinePreview")),
             autopilot_recovery_facts=_autopilot_recovery_facts_summary(summary.get("autopilotRecoveryFacts")),
+            repair_parameters=_repair_parameters_summary(summary.get("repairParameters")),
+            operator_handoff=_operator_handoff_summary(summary.get("operatorHandoff")),
             retrieval_decision=_code(summary.get("retrievalDecision"), "SKIP"),
             retrieval_strategy=_code(summary.get("retrievalStrategy"), "STRUCTURED_DIAGNOSTIC"),
             retrieval_audit=_mapping_copy(summary.get("retrievalAudit")),
             strategy_changed=summary.get("strategyChanged") is True,
             checkpoint_thread_id=_optional_text(summary.get("checkpointThreadId"), 512),
+            model_failure_reason_code=model_failure_reason_code,
+            model_failure_source=model_failure_source,
+            retryable_failure=_is_retryable_model_failure(
+                model_failure_reason_code,
+                model_failure_source,
+            ),
         )
 
 
@@ -440,9 +495,9 @@ class AutopilotRecoveryCoordinator:
         Java 控制面安排一次只读 preview；后续模型只有看到真实 receipt 才可能提出 ``APPLY_QUARANTINE``。
         apply 仍只是返回 Java 的候选，绝不从这里调用 data-sync 写接口。
 
-        English: SEARCH and preview are independent one-shot evidence expansions.  A repeated request for either
-        expansion stops with a durable attention result, so the loop cannot become an unbounded model/RAG/tool
-        cycle.  Every transition is checkpointed for replay-safe audit across runtime restarts.
+        SEARCH 和 preview 是相互独立、各自最多一次的证据扩展。重复请求任一扩展都会持久收敛为
+        attention 结果，避免 Loop 退化为无界的模型/RAG/工具循环。每次状态迁移都会写入 checkpoint，
+        从而在运行时重启后仍可安全重放和审计。
         """
 
         if not isinstance(request, AutopilotRecoveryRequest):
@@ -696,6 +751,10 @@ class AutopilotRecoveryCoordinator:
         result = AutopilotRecoveryResult.from_summary(terminal_summary)
         if result.event_id != request.event_id or result.checkpoint_thread_id != thread_id:
             raise ValueError("Autopilot recovery replay binding mismatch: terminal result locator")
+        # 瞬态模型故障的终态只代表“一次规划尝试失败”，不能代表整个恢复事件已经永久结束。
+        # 保留 checkpoint 便于审计，但返回 None 让同一 Kafka 事件的下一次有界投递真正重新调用模型。
+        if result.retryable_failure:
+            return None
         # 较旧 checkpoint 早于 durable-fact 门禁。它们仍可能是有用的历史记录，但在没有证明每一轮
         # 均已被 Java 接受（或属于合法幂等重复）前，历史 CANDIDATE_READY 不得作为新的 Kafka 确认重放。
         # 返回 None 会有意重新进入规划，在产生新的成功结果前检查当前 sink 合同。
@@ -758,8 +817,8 @@ class AutopilotRecoveryCoordinator:
     ) -> SpecialistTurnResult:
         """构造不可扩权的 Recovery turn，并通过统一 Specialist 注册表执行。
 
-        ``trustedAutopilotRecovery`` 中的重复计数和上一轮指纹来自 Java 验证后的事件；Recovery Agent
-        只允许读取这三个固定字段。模型无法从 objective 或 RAG 文档伪造循环状态。
+        ``trustedAutopilotRecovery`` 中的重复计数、上一轮指纹和低敏问题码来自 Java 验证后的事件；
+        Recovery Agent 只允许读取这些固定字段。模型无法从 objective 或 RAG 文档伪造循环状态。
 
         本方法还承担 Recovery 专属的事实登记边界。共享 ``SpecialistAgentCoordinator`` 为普通只读规划保留
         fail-open 兼容行为，因此这里不能只“调用 sink 后继续”：必须保存 sink 的原始低敏 receipt。缺少 sink
@@ -785,6 +844,9 @@ class AutopilotRecoveryCoordinator:
                 "errorFingerprint": request.error_fingerprint,
                 "repeatedErrorCount": request.repeated_error_count,
                 "previousRepairFingerprint": request.previous_repair_fingerprint,
+                # 这里传递的是 data-sync Publisher 已执行格式、数量和长度限制的问题码，
+                # 不是原始日志。下一轮模型据此知道上一动作为何未应用，并自主选择其他方案。
+                "issueCodes": request.issue_codes,
             },
         }
         evidence_references: tuple[str, ...] = ()
@@ -901,16 +963,14 @@ class AutopilotRecoveryCoordinator:
         且 Python 会用可信 trigger 与 receipt 重算 repair fingerprint，完全忽略模型自报指纹。这样 Python
         只能把候选交给 Java，无法绕过 Java 的 apply、审计与自动 retry 流程。
 
-        English: multiple side effects remain fail-closed.  For apply quarantine, this method validates the narrow
-        receipt shape and returns ``ATTENTION_REQUIRED`` on every missing, stale, malformed, or scope-mismatched
-        preview fact.  The final result carries only the approved low-sensitive receipt projection, never the raw
-        preview payload, logs, or model arguments.
+        多副作用建议继续保持 fail-closed。对于 apply quarantine，任何缺失、过期、格式错误或作用域不一致的
+        preview 事实都会返回 ``ATTENTION_REQUIRED``。最终结果只携带已批准的低敏回执投影，不包含原始
+        preview 载荷、日志或模型参数。
 
-        Before constructing ``CANDIDATE_READY`` this method also requires a durable receipt for every Recovery turn.
-        A receipt is valid only when ``registered`` or ``duplicate`` is the literal boolean ``True``; disabled
-        (``skipped``), unattempted, missing, rejected, and fail-open network receipts are all technical failures.
-        The check is intentionally local to Autopilot Recovery so ordinary read-only specialist planning keeps its
-        existing fail-open contract.
+        构造 ``CANDIDATE_READY`` 前，本方法还要求每个 Recovery 回合都有持久回执。只有
+        ``registered`` 或 ``duplicate`` 为字面布尔值 ``True`` 才算有效；禁用（``skipped``）、未尝试、
+        缺失、被拒绝或网络 fail-open 的回执都属于技术失败。该检查只约束 Autopilot Recovery，普通只读
+        Specialist 规划继续保持既有合同。
         """
 
         governed_actions = self._governed_actions(output)
@@ -969,6 +1029,7 @@ class AutopilotRecoveryCoordinator:
                 retrieval_strategy=retrieval_strategy,
                 retrieval_audit=retrieval_audit,
             )
+        repair_parameters: Mapping[str, Any] = {}
         quarantine_preview: Mapping[str, Any] = {}
         if raw_action == "APPLY_QUARANTINE":
             quarantine_preview, preview_issue = self._validated_quarantine_preview(
@@ -989,6 +1050,26 @@ class AutopilotRecoveryCoordinator:
             # 只有每个 preview fact 通过上述严格校验后，才有意赋予绑定 receipt 的自治资格。模型在没有
             # 真实 receipt 时命名 APPLY_QUARANTINE 会通过关注分支退出，且永远不会从本方法获得 LOW/idempotent 标志。
             automatic = raw_action in _RECEIPT_BOUND_AUTOMATIC_ACTIONS
+        elif raw_action in _AUTOMATIC_ACTION_ALIASES and raw_action != "RETRY_EXECUTION":
+            repair_parameters, parameter_issue = self._canonical_repair_parameters(
+                raw_action,
+                governed_actions[0],
+            )
+            if parameter_issue is not None:
+                return self._attention(
+                    request,
+                    thread_id,
+                    parameter_issue,
+                    output=output,
+                    retrieval_decision=retrieval_decision,
+                    retrieval_strategy=retrieval_strategy,
+                    retrieval_audit=retrieval_audit,
+                )
+            repair_fingerprint = self._governed_repair_fingerprint(
+                request,
+                raw_action,
+                repair_parameters,
+            )
         else:
             repair_fingerprint = output.get("actionFingerprint")
             if not isinstance(repair_fingerprint, str) or not _SHA_256.fullmatch(repair_fingerprint):
@@ -1032,6 +1113,7 @@ class AutopilotRecoveryCoordinator:
             },
             quarantine_preview=quarantine_preview,
             autopilot_recovery_facts=autopilot_recovery_facts,
+            repair_parameters=repair_parameters,
             retrieval_decision=retrieval_decision,
             retrieval_strategy=retrieval_strategy,
             retrieval_audit=dict(retrieval_audit),
@@ -1049,23 +1131,92 @@ class AutopilotRecoveryCoordinator:
         )
 
     @staticmethod
+    def _canonical_repair_parameters(
+        action: str,
+        proposal: Mapping[str, Any],
+    ) -> tuple[Mapping[str, Any], str | None]:
+        """把模型建议收窄为 data-sync 能独立复核的固定参数。
+
+        除受限调参外，其余动作完全由服务端选择来源 execution、checkpoint、失败分片或最新元数据，
+        因此模型不能传入 ID、字段名、SQL 或选择器。调参也只接受四个整数，最终相对当前配置的
+        “只能降低并发/批量、只能有限增加超时”规则仍由 data-sync 使用权威策略快照复核。
+        """
+
+        fixed = {
+            "ROLLBACK_EXECUTION_POLICY": {"rollbackTarget": "LAST_SUCCESSFUL_EXECUTION"},
+            "REFRESH_METADATA": {"forceRefresh": True},
+            "RESUME_FROM_CHECKPOINT": {"checkpointSelector": "LATEST_PERSISTED"},
+            "REPLAY_FAILED_SHARDS": {
+                "objectState": "FAILED",
+                "workUnitType": "PARTITION_SHARD",
+            },
+            "REPAIR_FIELD_MAPPING": {"repairMode": "METADATA_PROVEN_SAFE"},
+        }
+        if action in fixed:
+            return fixed[action], None
+        if action != "TUNE_EXECUTION_POLICY":
+            return {}, "RECOVERY_REPAIR_PARAMETERS_UNSUPPORTED"
+        raw_values = proposal.get("proposedValues")
+        if not isinstance(raw_values, Mapping):
+            return {}, "RECOVERY_TUNING_PARAMETERS_REQUIRED"
+        bounds = {
+            "maxChannel": (1, 64),
+            "readBatchSize": (1, 100_000),
+            "writeBatchSize": (1, 100_000),
+            "timeoutSeconds": (1, 3_600),
+        }
+        normalized: dict[str, int] = {}
+        for name, (minimum, maximum) in bounds.items():
+            value = raw_values.get(name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                return {}, "RECOVERY_TUNING_PARAMETERS_INVALID"
+            normalized[name] = value
+        if not normalized:
+            return {}, "RECOVERY_TUNING_PARAMETERS_REQUIRED"
+        return normalized, None
+
+    @staticmethod
+    def _governed_repair_fingerprint(
+        request: AutopilotRecoveryRequest,
+        action: str,
+        parameters: Mapping[str, Any],
+    ) -> str:
+        """使用跨语言稳定材料绑定事件、错误、执行、动作和收窄后的参数。"""
+
+        canonical_parameters = ",".join(
+            f"{key}={_canonical_parameter_value(parameters[key])}"
+            for key in sorted(parameters)
+        )
+        material = "|".join(
+            (
+                request.event_id,
+                request.error_fingerprint.lower(),
+                request.current_execution_id,
+                action,
+                canonical_parameters,
+            )
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _require_durable_specialist_facts(
         fact_receipts: list[tuple[str, Any]],
     ) -> None:
-        """Require Java acknowledgement for every Specialist turn before reporting success.
+        """报告成功前，要求每个 Specialist 回合都获得 Java 的持久事实确认。
 
-        The Specialist result and its durable fact are separate contracts: a model can finish with ``COMPLETED``
-        while the Java registration client is disabled, fail-open, rejected, or unable to reach the control plane.
-        Treating any of those states as a successful Recovery plan would let the Java Kafka consumer commit an ACK
-        without the audit fact that explains the autonomous decision.  This helper therefore uses a deliberately
-        small, transport-independent receipt protocol and accepts exactly two success cases:
+        Specialist 结果和持久事实是两个独立合同：即使模型已经返回 ``COMPLETED``，Java 登记客户端
+        仍可能被禁用、错误地 fail-open、拒绝请求或无法到达控制面。若把这些情况当作 Recovery 规划成功，
+        Java Kafka 消费者就可能在缺少自治决策审计事实时提交 ACK。
 
-        * ``registered is True`` means Java accepted this fact now;
-        * ``duplicate is True`` means Java already accepted the same idempotent fact.
+        因此，本辅助方法使用刻意精简且与传输实现无关的回执协议，只接受两种成功情况：
 
-        ``skipped`` and ``attempted`` are checked explicitly so a malformed receipt cannot pass merely because a
-        truthy value appeared in an unrelated field.  The exception contains only the stable machine code; callers
-        can retry the HTTP/Kafka delivery without exposing network details, response bodies, or credentials.
+        * ``registered is True`` 表示 Java 本次已经接收该事实；
+        * ``duplicate is True`` 表示 Java 之前已经接收相同的幂等事实。
+
+        方法还会显式检查 ``skipped`` 和 ``attempted``，防止格式错误的回执仅因无关字段为真而通过。
+        异常只包含稳定机器码，调用方可以安全重试 HTTP/Kafka 投递，不会暴露网络细节、响应正文或凭据。
         """
 
         if not fact_receipts:
@@ -1075,13 +1226,12 @@ class AutopilotRecoveryCoordinator:
 
     @staticmethod
     def _require_durable_specialist_receipt(receipt: Any) -> None:
-        """Validate one Java fact receipt without trusting permissive truthiness.
+        """在不信任宽松真假值转换的前提下，校验一条 Java 事实回执。
 
-        The Python client returns a dataclass in production, while tests and future transports may use a mapping.
-        Both forms are accepted, but only literal booleans are valid.  ``registered`` means the control plane
-        accepted the fact now and ``duplicate`` means the same idempotency key was already accepted.  Every other
-        state is a technical dependency failure: the caller must retry the Kafka event rather than acknowledge an
-        autonomous recovery decision that cannot be audited durably.
+        生产环境中的 Python 客户端返回 dataclass，测试或未来传输适配器也可能返回 Mapping；两种形状
+        都可以接收，但字段值必须是字面布尔值。``registered`` 表示控制面本次已经接收事实，
+        ``duplicate`` 表示相同幂等键之前已经被接收。其他状态都属于技术依赖失败：调用方必须重试
+        Kafka 事件，不能确认一项无法持久审计的自治恢复决策。
         """
 
         if receipt is None:
@@ -1109,9 +1259,9 @@ class AutopilotRecoveryCoordinator:
         样本 ID、issue 列表及 audit/run/output 引用全部满足固定合同。``operationState`` 仅用于本地验收，不能
         进入最终 ``quarantinePreview``，以免响应膨胀为通用工具输出通道。
 
-        English: this is a fail-closed boundary between a model suggestion and a Java-executable candidate.  It
-        normalizes IDs and digest only after validation, sorts IDs numerically for deterministic hashing, and returns
-        a fixed reason code instead of remote payload details.  It performs no I/O and never calls data-sync.
+        这是模型建议与 Java 可执行候选之间的 fail-closed 边界。只有校验通过后才会规范 ID 和摘要，
+        样本 ID 按数值排序以保证哈希确定性；失败只返回固定原因码，不复制远端载荷细节。方法不执行 I/O，
+        也绝不调用 data-sync。
         """
 
         if not isinstance(investigation_summary, Mapping):
@@ -1197,9 +1347,8 @@ class AutopilotRecoveryCoordinator:
         升序以逗号连接。该值把本次恢复事件、失败事实和 Java preview 的精确选择绑定在一起，Java 可用相同
         算法独立复算；方法不写状态、不调工具。
 
-        English: this deterministic SHA-256 binds the apply candidate to the exact Java preview selection.  Sorting
-        numeric IDs prevents representation order from changing the candidate fingerprint, while excluding all model
-        fields prevents a model-supplied action fingerprint from becoming authority.
+        该确定性 SHA-256 把 apply 候选绑定到 Java preview 的精确选择。按数值排序 ID 可避免表示顺序改变
+        候选指纹；排除所有模型字段则可防止模型提供的动作指纹被提升为权威事实。
         """
 
         sample_ids = tuple(sorted(int(value) for value in quarantine_preview["selectedSampleIds"]))
@@ -1301,6 +1450,15 @@ class AutopilotRecoveryCoordinator:
             if result.status == SpecialistTurnStatus.WAITING_FOR_INPUT
             else "RECOVERY_SPECIALIST_NOT_COMPLETED"
         )
+        model_failure_reason_code = None
+        model_failure_source = None
+        if reason == "RECOVERY_PLANNING_MODEL_FAILED":
+            model_failure_reason_code = _optional_code(
+                result.structured_output.get("modelFailureReasonCode")
+            )
+            model_failure_source = _optional_code(
+                result.structured_output.get("modelFailureSource")
+            )
         blocked = AutopilotRecoveryResult(
             event_id=request.event_id,
             status=status,
@@ -1315,6 +1473,12 @@ class AutopilotRecoveryCoordinator:
                 "executionId": request.current_execution_id,
             },
             checkpoint_thread_id=thread_id,
+            model_failure_reason_code=model_failure_reason_code,
+            model_failure_source=model_failure_source,
+            retryable_failure=_is_retryable_model_failure(
+                model_failure_reason_code,
+                model_failure_source,
+            ),
         )
         self._record_terminal_checkpoint(request, thread_id, blocked)
         return blocked
@@ -1352,6 +1516,7 @@ class AutopilotRecoveryCoordinator:
             retrieval_decision=retrieval_decision,
             retrieval_strategy=retrieval_strategy,
             retrieval_audit=dict(retrieval_audit or {}),
+            operator_handoff=_build_operator_handoff(request, reason_code, output),
             strategy_changed=bool(output.get("strategyChanged")),
             checkpoint_thread_id=thread_id,
         )
@@ -1405,6 +1570,8 @@ class AutopilotRecoveryCoordinator:
             state={
                 "specialistStatus": result.status.value,
                 "specialistErrorCode": result.error_code,
+                "modelFailureReasonCode": _optional_code(output.get("modelFailureReasonCode")),
+                "modelFailureSource": _optional_code(output.get("modelFailureSource")),
                 "retrievalDecision": output.get("retrievalDecision") or output.get("ragDecision"),
                 "retrievalStrategy": output.get("retrievalStrategy"),
                 "repairActionCount": len(repair_actions),
@@ -1605,6 +1772,196 @@ def _mapping_copy(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _canonical_parameter_value(value: Any) -> str:
+    """把受限参数转换为 Java/data-sync 可按同一规则复算的稳定文本。"""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _repair_parameters_summary(value: Mapping[str, Any] | Any) -> dict[str, Any]:
+    """白名单化自动修复参数，阻止模型借嵌套参数扩大副作用。"""
+
+    if not isinstance(value, Mapping):
+        return {}
+    allowed = {
+        "rollbackTarget": str,
+        "maxChannel": int,
+        "readBatchSize": int,
+        "writeBatchSize": int,
+        "timeoutSeconds": int,
+        "forceRefresh": bool,
+        "checkpointSelector": str,
+        "objectState": str,
+        "workUnitType": str,
+        "repairMode": str,
+    }
+    result: dict[str, Any] = {}
+    for name, expected_type in allowed.items():
+        item = value.get(name)
+        if item is None or isinstance(item, bool) and expected_type is int:
+            continue
+        if isinstance(item, expected_type):
+            result[name] = item
+    return result
+
+
+def _operator_handoff_summary(value: Mapping[str, Any] | Any) -> dict[str, Any]:
+    """将人工处置包限制为固定字段和有界字符串数组。"""
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    schema_version = str(value.get("schemaVersion") or "").strip()
+    blocked_action = _code(value.get("blockedAction"), "")
+    if schema_version == "datasmart.autopilot.operator-handoff.v1":
+        result["schemaVersion"] = schema_version
+    if blocked_action and _SAFE_CODE.fullmatch(blocked_action):
+        result["blockedAction"] = blocked_action
+    for name in (
+        "rootCauseCodes",
+        "evidenceReferences",
+        "requiredPermission",
+        "operationSteps",
+        "impact",
+        "rollbackSteps",
+        "verificationSteps",
+    ):
+        raw_items = value.get(name)
+        if not isinstance(raw_items, (list, tuple)):
+            continue
+        items = tuple(
+            str(item).strip()[:500]
+            for item in raw_items
+            if item is not None and str(item).strip()
+        )[:12]
+        if items:
+            result[name] = items
+    evidence_records = _operator_evidence_records(value.get("evidenceRecords"))
+    if evidence_records:
+        result["evidenceRecords"] = evidence_records
+    return result
+
+
+def _operator_evidence_records(value: Any) -> tuple[dict[str, Any], ...]:
+    """裁剪人工处置包中的统一证据元数据，不携带正文或模型说明。"""
+
+    if not isinstance(value, (list, tuple)):
+        return ()
+    records: list[dict[str, Any]] = []
+    for item in value[:12]:
+        if not isinstance(item, Mapping):
+            continue
+        source_type = _code(item.get("sourceType"), "")
+        source_ref = str(item.get("sourceRef") or item.get("evidenceId") or "").strip()[:500]
+        retrieved_at = str(item.get("retrievedAt") or "").strip()[:64]
+        confidence_basis = _code(item.get("confidenceBasis"), "")
+        try:
+            confidence = float(item.get("confidence"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            not source_type
+            or not source_ref
+            or not retrieved_at
+            or not confidence_basis
+            or not math.isfinite(confidence)
+            or confidence < 0.0
+            or confidence > 1.0
+        ):
+            continue
+        records.append({
+            "sourceType": source_type,
+            "sourceRef": source_ref,
+            "retrievedAt": retrieved_at,
+            "confidence": round(confidence, 6),
+            "confidenceBasis": confidence_basis,
+        })
+    return tuple(records)
+
+
+def _build_operator_handoff(
+    request: AutopilotRecoveryRequest,
+    reason_code: str,
+    output: Mapping[str, Any],
+) -> dict[str, Any]:
+    """根据平台目录生成越权后的人工处置包，不采信模型自由文本。
+
+    处置包只解释“为什么自动循环停下、谁可以处理、如何处理与验证”。真实字段名、SQL、凭据、
+    样本行和日志正文均不会进入该合同；用户进入相应受权限保护的管理页面后再查看完整资源。
+    """
+
+    action_codes = _low_sensitive_repair_action_codes(output.get("repairActions"))
+    blocked_action = action_codes[0] if action_codes else "UNKNOWN_RECOVERY_ACTION"
+    permission_by_action = {
+        "CHANGE_CREDENTIAL": "DATASOURCE_CREDENTIAL_MANAGE",
+        "CHANGE_SCHEMA": "TARGET_SCHEMA_DDL",
+        "ALTER_TARGET_SCHEMA": "TARGET_SCHEMA_DDL",
+        "CREATE_TARGET_TABLE": "TARGET_SCHEMA_DDL",
+        "PREVIEW_SCHEMA_REPAIR": "TARGET_SCHEMA_DDL",
+        "REVIEW_PARENT_DEPENDENCY_OR_REPAIR_SOURCE_REFERENCE": "SYNC_DATA_CONTRACT_REPAIR",
+        "DELETE_DATA": "TARGET_DATA_DELETE",
+        "OVERWRITE_TARGET": "TARGET_DATA_OVERWRITE",
+        "EXPAND_DATA_SCOPE": "SYNC_SCOPE_MANAGE",
+    }
+    permission = permission_by_action.get(blocked_action, "SYNC_TASK_RECOVERY_MANAGE")
+    evidence_audit = output.get("evidenceAudit")
+    records = evidence_audit.get("evidenceRecords") if isinstance(evidence_audit, Mapping) else ()
+    references: list[str] = []
+    evidence_records: list[dict[str, Any]] = []
+    if isinstance(records, (list, tuple)):
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            reference = record.get("sourceRef") or record.get("evidenceId")
+            normalized = str(reference or "").strip()
+            if normalized and normalized not in references:
+                references.append(normalized[:500])
+            normalized_records = _operator_evidence_records((record,))
+            if normalized_records:
+                evidence_records.append(normalized_records[0])
+    if not references:
+        references.append(
+            f"sync-execution:{request.sync_task_id}:{request.current_execution_id}"
+        )
+    root_causes = tuple(
+        dict.fromkeys(
+            (
+                _code(reason_code, "RECOVERY_ATTENTION_REQUIRED"),
+                *(
+                    _code(item, "")
+                    for item in request.issue_codes
+                    if _code(item, "")
+                ),
+            )
+        )
+    )[:12]
+    return {
+        "schemaVersion": "datasmart.autopilot.operator-handoff.v1",
+        "blockedAction": blocked_action,
+        "rootCauseCodes": root_causes,
+        "evidenceReferences": tuple(references[:12]),
+        "evidenceRecords": tuple(evidence_records[:12]),
+        "requiredPermission": (permission,),
+        "operationSteps": (
+            "使用具备所需权限的账号打开对应任务或数据源治理页面。",
+            "按根因码复核受保护的执行日志、元数据和当前配置后提交变更。",
+            "通过预检后从失败 execution 发起一次有界恢复，不扩大原同步范围。",
+        ),
+        "impact": (
+            "该动作可能改变数据源访问、目标结构、写入语义或同步范围，自治循环已停止。",
+        ),
+        "rollbackSteps": (
+            "变更前记录当前配置版本；失败时恢复该版本并停止新的执行调度。",
+        ),
+        "verificationSteps": (
+            "重新执行连接测试和任务预检。",
+            "确认新 execution 成功且读取、写入、失败记录数符合预期。",
+        ),
+    }
+
+
 def _optional_code(value: Any) -> str | None:
     """读取可选平台枚举；空值保持 ``None``，避免重放时制造虚假的动作或风险。"""
 
@@ -1612,6 +1969,24 @@ def _optional_code(value: Any) -> str | None:
         return None
     normalized = _code(value, "")
     return normalized or None
+
+
+def _is_retryable_model_failure(reason_code: str | None, source: str | None) -> bool:
+    """判断固定模型故障分类是否允许交给 Kafka 做有界重投。
+
+    只有 Provider 调用超时或传输层故障属于瞬态失败。JSON 解析、响应契约、越权输出、结果读取和适配器
+    错误即使再次投递也不会自然改变，因此不能进入重试集合。该函数只比较平台枚举，不读取异常消息，
+    也不接受模型自行声明 ``retryable``，从而防止模型输出扩大运行次数。
+
+    Args:
+        reason_code: Recovery Specialist 生成的固定低敏故障原因码。
+        source: 故障发生层级的固定低敏来源码。
+
+    Returns:
+        两个代码同时命中平台白名单时返回 ``True``，否则返回 ``False``。
+    """
+
+    return (reason_code, source) in _RETRYABLE_MODEL_FAILURES
 
 
 def _optional_fingerprint(value: Any) -> str | None:
@@ -1703,8 +2078,8 @@ def _positive_integer(value: Any) -> int | None:
     因此不能用宽松的 ``int(value)`` 接受 ``True``、``1.0`` 或带符号文本。返回 ``None`` 表示调用方必须
     fail-closed，而不是尝试猜测或补默认值。
 
-    English: this deliberately strict parser keeps a JSON receipt's numeric identity stable across services.  It has
-    no side effects and provides a single invalid marker so callers can return a low-sensitive attention reason.
+    该刻意严格的解析器保证 JSON 回执中的数字身份在跨服务时保持稳定。它没有副作用，并统一用一个无效标记
+    告知调用方返回低敏 attention 原因。
     """
 
     if isinstance(value, bool):
@@ -1725,8 +2100,7 @@ def _bounded_receipt_text(value: Any, max_length: int) -> str | None:
     中文说明：auditId、runId 和 outputRef 都来自 Java receipt，而非模型；仍需在进入最终 API 合同前做
     非空和长度边界校验。该函数不解释 URI、不查询控制面，URI 前缀及字段间语义由调用方继续验证。
 
-    English: receipt locators are opaque identifiers.  This helper only enforces a bounded transport shape and never
-    turns a text value into proof of execution by itself.
+    回执定位符属于不透明标识。本辅助函数只约束有界传输形状，绝不会仅凭一个文本值就认定执行已经发生。
     """
 
     normalized = str(value or "").strip()
@@ -1740,9 +2114,8 @@ def _quarantine_preview_summary(value: Mapping[str, Any] | Any) -> dict[str, Any
     直接构造 ``AutopilotRecoveryResult`` 的未来代码也无法通过 ``to_summary`` 泄露 ``operationState``、message、
     原始坏行或其它 Java 工具输出。字段缺失时不猜测默认值，直接省略，Java 的独立合同校验会拒绝不完整候选。
 
-    English: this is presentation allow-listing, not receipt validation.  The coordinator owns semantic validation;
-    the final serializer merely guarantees that the public contract cannot grow through an arbitrary Mapping attached
-    to the frozen result object.  It performs no I/O, authorization, or data-sync execution.
+    这是展示字段白名单，不是回执语义校验。coordinator 负责语义验证；最终序列化器只保证冻结结果对象上
+    附带的任意 Mapping 不能扩张公开合同。方法不执行 I/O、授权判断或 data-sync 操作。
     """
 
     if not isinstance(value, Mapping):

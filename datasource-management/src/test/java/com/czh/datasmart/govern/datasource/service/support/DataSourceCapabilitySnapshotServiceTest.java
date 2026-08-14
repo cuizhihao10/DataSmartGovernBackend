@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.datasource.controller.dto.DataSourceCapabilitySn
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.support.ConnectionTestStatus;
 import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
+import com.czh.datasmart.govern.datasource.support.DataSourceType;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -42,6 +43,10 @@ class DataSourceCapabilitySnapshotServiceTest {
         assertEquals("LOW_SENSITIVE_CAPABILITY_ONLY", snapshot.getPayloadPolicy());
         assertEquals("MYSQL", snapshot.getConnectorType());
         assertEquals("RELATIONAL_JDBC", snapshot.getConnectorFamily());
+        assertFalse(snapshot.getConnectorRuntimeVersion().isBlank());
+        assertFalse("UNAVAILABLE".equals(snapshot.getConnectorRuntimeVersion()));
+        assertTrue(Set.of("PACKAGE_IMPLEMENTATION_VERSION", "JDBC_DRIVER_INTERFACE")
+                .contains(snapshot.getConnectorRuntimeVersionSource()));
         assertEquals("CONNECTION_VERIFIED", snapshot.getHealthStatus());
         assertTrue(snapshot.isEligibleForTaskPlanning());
         assertTrue(snapshot.isEligibleForExecutionPrecheck());
@@ -122,6 +127,11 @@ class DataSourceCapabilitySnapshotServiceTest {
         datasource.setWorkspaceId(30L);
         datasource.setName("不应进入快照的内部展示名");
         datasource.setType(connectorType);
+        try {
+            datasource.setDriverClassName(DataSourceType.valueOf(connectorType).getDriverClassName());
+        } catch (IllegalArgumentException ignored) {
+            // 路线图连接器可能没有 JDBC 驱动，快照应明确返回版本不可用，而不是伪造版本。
+        }
         datasource.setJdbcUrl("jdbc:mysql://secret-host:3306/prod");
         datasource.setUsername("secret-user");
         datasource.setPassword("secret-password");

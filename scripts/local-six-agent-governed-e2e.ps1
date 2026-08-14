@@ -1346,12 +1346,18 @@ function Invoke-ConfirmedAgentRun {
             maxRecoveryCycles = $AutopilotMaxRecoveryCycles
             maxTotalDurationMinutes = $AutopilotMaxTotalDurationMinutes
             maxAutomaticRiskLevel = 'LOW'
-            # 这两个动作是当前服务端真正可兑现的自动执行白名单。脚本不会用这些值执行任何恢复 POST；
-            # failed-object retry 是 RETRY_EXECUTION 的受治理执行结果，preview 是只读证据而非扩权动作。
-            # 后续真实动作仍由 data-sync/Agent Runtime 在每轮根据风险、证据、预览和审批重新校验。
+            # 目录中的八个动作都已有受治理执行器；它们只是用户在首次确认时授予的上限，不代表一定执行。
+            # 后续每轮仍由模型基于结构化诊断选择一个动作，再由 Agent Runtime 和 data-sync 使用当前事实、
+            # 双主体、项目权限、风险、指纹、幂等回执与循环预算重新校验。凭据、DDL、删除、覆盖和扩域不在目录内。
             allowedRecoveryActions = @(
                 'RETRY_EXECUTION',
-                'APPLY_QUARANTINE'
+                'APPLY_QUARANTINE',
+                'ROLLBACK_EXECUTION_POLICY',
+                'TUNE_EXECUTION_POLICY',
+                'REFRESH_METADATA',
+                'RESUME_FROM_CHECKPOINT',
+                'REPLAY_FAILED_SHARDS',
+                'REPAIR_FIELD_MAPPING'
             )
             requireApprovalFor = @(
                 'CHANGE_SCHEMA',
@@ -1426,7 +1432,7 @@ function Assert-ConfirmedAutopilotSnapshot {
 
     .DESCRIPTION
         AgentRunConfirmedExecutionResponse.autopilotSnapshot 是浏览器和 E2E 能看到的唯一公开授权证据。它绑定
-        本次确认的根 session/run、循环和总时长预算、低风险上限以及两个当前可兑现的自动动作。后续
+        本次确认的根 session/run、循环和总时长预算、低风险上限以及八个当前可兑现的受治理自动动作。后续
         autopilot-recovery GET 故意不重复公开这些授权字段；因此这里在确认成功后立即验证，并把已验证快照
         传给后续恢复轮询作边界比对，而不是从恢复状态 API 猜测或重建授权。
 
@@ -1500,9 +1506,19 @@ function Assert-ConfirmedAutopilotSnapshot {
         }
         $allowedActions.Add($action) | Out-Null
     }
-    if ($allowedActions.Count -ne 2 -or -not $allowedActions.Contains('RETRY_EXECUTION') -or
-        -not $allowedActions.Contains('APPLY_QUARANTINE')) {
-        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '公开授权盒没有严格保留当前服务端可兑现的 RETRY_EXECUTION/APPLY_QUARANTINE 白名单。'
+    $requiredAllowedActions = @(
+        'RETRY_EXECUTION',
+        'APPLY_QUARANTINE',
+        'ROLLBACK_EXECUTION_POLICY',
+        'TUNE_EXECUTION_POLICY',
+        'REFRESH_METADATA',
+        'RESUME_FROM_CHECKPOINT',
+        'REPLAY_FAILED_SHARDS',
+        'REPAIR_FIELD_MAPPING'
+    )
+    if ($allowedActions.Count -ne $requiredAllowedActions.Count -or
+        @($requiredAllowedActions | Where-Object { -not $allowedActions.Contains($_) }).Count -gt 0) {
+        Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '公开授权盒没有严格保留当前服务端可兑现的八项受治理低风险动作目录。'
     }
 
     $approvalActions = [System.Collections.Generic.List[string]]::new()

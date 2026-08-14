@@ -81,12 +81,82 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         verify(fixture.dataSyncClient, never()).retryFailedObjects(any());
     }
 
+    /** 字段映射修复必须先通过 Java 参数复核，再由 data-sync 修复并进入恢复后验证。 */
+    @Test
+    void shouldApplyGovernedFieldMappingRepairAndVerifyTheRequeuedExecution() {
+        Fixture fixture = fixture();
+        AgentAutopilotVerifiedRecoveryTrigger trigger = trigger();
+        AgentAutopilotRecoveryPlanResponse response = governedRepairResponse("REPAIR_FIELD_MAPPING");
+        AgentAutopilotRecoveryCaseView approved = caseView("AUTO_APPROVED", 0L, "REPAIR_FIELD_MAPPING");
+        AgentAutopilotRecoveryCaseView started = caseView("RECOVERY_STARTED", 1L, "REPAIR_FIELD_MAPPING");
+        Map<String, Object> parameters = Map.of("repairMode", "METADATA_PROVEN_SAFE");
+        AgentAutopilotRecoveryRepairReceipt repairReceipt = new AgentAutopilotRecoveryRepairReceipt(
+                "event-1:repair-apply", 81L, 31L, 41L, 41L, "REPAIR_FIELD_MAPPING",
+                true, 1, "QUEUED", "RETRYING", "AUTOPILOT_FIELD_MAPPING_REPAIRED",
+                List.of(), response.repairFingerprint(), "AUTO_APPROVED", false, null, null);
+        when(fixture.evidenceVerifier.verify(trigger, response)).thenReturn(true);
+        when(fixture.repairVerifier.supports("REPAIR_FIELD_MAPPING")).thenReturn(true);
+        when(fixture.repairVerifier.verify(trigger, response)).thenReturn(parameters);
+        when(fixture.policyEvaluator.evaluate(any(), any(), any())).thenReturn(
+                new AgentAutopilotRecoveryDecision(
+                        AgentAutopilotRecoveryDecisionType.AUTO_APPROVED,
+                        "RECOVERY_PREAUTHORIZED", "policy-1", "REPAIR_FIELD_MAPPING"));
+        when(fixture.dataSyncClient.recordDecision(trigger, response, true)).thenReturn(approved);
+        when(fixture.dataSyncClient.applyGovernedRepair(trigger, approved, response, parameters))
+                .thenReturn(repairReceipt);
+        when(fixture.dataSyncClient.recordTransition(
+                trigger, approved, "RECOVERY_STARTED", "started", null, 41L)).thenReturn(started);
+
+        AgentAutopilotRecoveryExecutionResult result = fixture.service.execute(trigger, response);
+
+        assertThat(result.status()).isEqualTo("RECOVERY_STARTED");
+        assertThat(result.reasonCode()).isEqualTo("AUTOPILOT_FIELD_MAPPING_REPAIRED");
+        verify(fixture.pythonClient).verifyPostRecoveryAction(
+                trigger, started, "REPAIR_FIELD_MAPPING",
+                new AgentAutopilotRecoveryRetryReceipt(31L, 41L, 1, "QUEUED", "RETRYING"));
+        verify(fixture.dataSyncClient, never()).retryFailedObjects(any());
+    }
+
+    /** 未应用动作携带持久下一轮证明时，本轮应退出但不得重复写失败迁移。 */
+    @Test
+    void shouldMoveNotAppliedRepairToAttentionRequired() {
+        Fixture fixture = fixture();
+        AgentAutopilotVerifiedRecoveryTrigger trigger = trigger();
+        AgentAutopilotRecoveryPlanResponse response = governedRepairResponse("REPAIR_FIELD_MAPPING");
+        AgentAutopilotRecoveryCaseView approved = caseView("AUTO_APPROVED", 0L, "REPAIR_FIELD_MAPPING");
+        Map<String, Object> parameters = Map.of("repairMode", "METADATA_PROVEN_SAFE");
+        AgentAutopilotRecoveryRepairReceipt repairReceipt = new AgentAutopilotRecoveryRepairReceipt(
+                "event-1:repair-apply", 81L, 31L, 41L, 41L, "REPAIR_FIELD_MAPPING",
+                false, 0, "FAILED", null, "AUTOPILOT_FIELD_MAPPING_REQUIRES_MANUAL_CHANGE",
+                List.of("METADATA_TARGET_REQUIRED_FIELD_UNMAPPED"), response.repairFingerprint(),
+                "ATTENTION_REQUIRED", true, "autopilot-trigger:" + "b".repeat(64), 2);
+        when(fixture.evidenceVerifier.verify(trigger, response)).thenReturn(true);
+        when(fixture.repairVerifier.supports("REPAIR_FIELD_MAPPING")).thenReturn(true);
+        when(fixture.repairVerifier.verify(trigger, response)).thenReturn(parameters);
+        when(fixture.policyEvaluator.evaluate(any(), any(), any())).thenReturn(
+                new AgentAutopilotRecoveryDecision(
+                        AgentAutopilotRecoveryDecisionType.AUTO_APPROVED,
+                        "RECOVERY_PREAUTHORIZED", "policy-1", "REPAIR_FIELD_MAPPING"));
+        when(fixture.dataSyncClient.recordDecision(trigger, response, true)).thenReturn(approved);
+        when(fixture.dataSyncClient.applyGovernedRepair(trigger, approved, response, parameters))
+                .thenReturn(repairReceipt);
+
+        AgentAutopilotRecoveryExecutionResult result = fixture.service.execute(trigger, response);
+
+        assertThat(result.status()).isEqualTo("ATTENTION_REQUIRED");
+        assertThat(result.reasonCode()).isEqualTo("AUTOPILOT_FIELD_MAPPING_REQUIRES_MANUAL_CHANGE");
+        verifyNoInteractions(fixture.pythonClient);
+        verify(fixture.dataSyncClient, never()).retryFailedObjects(any());
+        verify(fixture.dataSyncClient, never()).recordTransition(
+                trigger, approved, "RECOVERY_FAILED", "repair-not-applied",
+                "AUTOPILOT_FIELD_MAPPING_REQUIRES_MANUAL_CHANGE", 41L);
+    }
+
     /**
-     * A retry dispatch failure must remain retryable after the local idempotent replay budget is exhausted.
+     * 本地幂等重放预算耗尽后，重试派发失败仍必须保持可重试。
      *
-     * <p>The {@code RECOVERY_STARTED} receipt remains intact, so a later Kafka delivery uses the existing started
-     * case to replay the same idempotency key. The service must not ACK an artificial attention result or overwrite
-     * the lifecycle with a failure receipt while the downstream integration is unavailable.</p>
+     * <p>{@code RECOVERY_STARTED} 回执保持不变，因此后续 Kafka 投递会复用已启动 case 和同一个幂等键。
+     * 下游集成不可用时，服务不能 ACK 人工构造的关注结果，也不能用失败回执覆盖现有生命周期。</p>
      */
     @Test
     void shouldPropagateRetryDispatchFailureForKafkaRetry() {
@@ -152,11 +222,11 @@ class AgentAutopilotRecoveryExecutionServiceTest {
     }
 
     /**
-     * A successful data-sync retry is not the end of the governed Kafka transaction.
+     * data-sync 成功接受重试并不代表受治理 Kafka 事务已经结束。
      *
-     * <p>If Python cannot run or persist PRECHECK/MONITOR facts, this event must remain unacknowledged. The next
-     * delivery replays the same data-sync idempotency key and the same Specialist turn IDs; returning a normal
-     * {@code RECOVERY_STARTED} result here would create an unaudited autonomous side effect.</p>
+     * <p>如果 Python 无法运行或持久化 PRECHECK/MONITOR 事实，该事件必须保持未确认。下一次投递会重放
+     * 相同的 data-sync 幂等键和 Specialist 回合 ID；若此处正常返回 {@code RECOVERY_STARTED}，就会
+     * 产生缺少审计事实的自治副作用。</p>
      */
     @Test
     void shouldPropagatePostRecoveryVerificationFailureForKafkaRetry() {
@@ -212,7 +282,7 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         verify(fixture.dataSyncClient).retryFailedObjects(trigger);
     }
 
-    /** A verified low-risk preview is applied once, then the same bounded failed-object retry continues unattended. */
+    /** 已验证的低风险预览只应用一次，随后在同一边界内继续无人值守重试失败对象。 */
     @Test
     void shouldApplyVerifiedQuarantineBeforeStartingBoundedRetry() {
         Fixture fixture = fixture();
@@ -244,7 +314,7 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         verify(fixture.dataSyncClient).retryFailedObjects(trigger);
     }
 
-    /** A cross-scope or malformed model preview stops before a case or downstream write can be created. */
+    /** 跨作用域或格式错误的模型预览必须在创建 case 或下游写入前停止。 */
     @Test
     void shouldRequireValidQuarantinePreviewBeforeAnySideEffect() {
         Fixture fixture = fixture();
@@ -267,7 +337,7 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         verifyNoInteractions(fixture.policyEvaluator, fixture.dataSyncClient);
     }
 
-    /** An incomplete durable receipt cannot start retry even when both policy layers approved the candidate. */
+    /** 即使双层策略已批准候选，持久回执不完整时也不能启动重试。 */
     @Test
     void shouldStopBeforeRetryWhenQuarantineReceiptIsNotDurablyApplied() {
         Fixture fixture = fixture();
@@ -293,7 +363,7 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         verify(fixture.dataSyncClient, never()).retryFailedObjects(any());
     }
 
-    /** A replayed started case continues retry without applying the already committed quarantine a second time. */
+    /** 重放已启动 case 时继续重试，但不能再次应用已经提交的隔离动作。 */
     @Test
     void shouldResumeQuarantineRecoveryWithoutReapplyingReceipt() {
         Fixture fixture = fixture();
@@ -387,7 +457,61 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         verify(fixture.dataSyncClient).retryFailedObjects(repeatedTrigger);
     }
 
-    /** A verified SEARCH candidate must retain only its compact grounded retrieval proof in the callback result. */
+    /**
+     * 上一受治理动作未应用时，data-sync 写入的新问题码本身就是可信的结构化证据扩展。
+     * 模型因此可以自主选择 SKIP，但必须改选不同动作，并继续通过 Java 参数复核和 data-sync 权威策略。
+     */
+    @Test
+    void shouldAllowDifferentRepairAfterTrustedNotAppliedEvidenceWithoutForcingRag() {
+        Fixture fixture = fixture();
+        AgentAutopilotVerifiedRecoveryTrigger repeatedTrigger = repeatedRepairReplanTrigger(
+                "b".repeat(64), "REFRESH_METADATA", "METADATA_TARGET_FIELD_NOT_FOUND");
+        AgentAutopilotRecoveryPlanResponse response = governedRepairResponse("REPAIR_FIELD_MAPPING");
+        AgentAutopilotRecoveryCaseView approved = caseView("AUTO_APPROVED", 0L, "REPAIR_FIELD_MAPPING");
+        AgentAutopilotRecoveryCaseView started = caseView("RECOVERY_STARTED", 1L, "REPAIR_FIELD_MAPPING");
+        Map<String, Object> parameters = Map.of("repairMode", "METADATA_PROVEN_SAFE");
+        AgentAutopilotRecoveryRepairReceipt repairReceipt = new AgentAutopilotRecoveryRepairReceipt(
+                "event-1:repair-apply", 81L, 31L, 41L, 41L, "REPAIR_FIELD_MAPPING",
+                true, 1, "QUEUED", "RETRYING", "AUTOPILOT_FIELD_MAPPING_REPAIRED",
+                List.of(), response.repairFingerprint(), "AUTO_APPROVED", false, null, null);
+        when(fixture.evidenceVerifier.verify(repeatedTrigger, response)).thenReturn(true);
+        when(fixture.repairVerifier.supports("REPAIR_FIELD_MAPPING")).thenReturn(true);
+        when(fixture.repairVerifier.verify(repeatedTrigger, response)).thenReturn(parameters);
+        when(fixture.policyEvaluator.evaluate(any(), any(), any())).thenReturn(
+                new AgentAutopilotRecoveryDecision(
+                        AgentAutopilotRecoveryDecisionType.AUTO_APPROVED,
+                        "RECOVERY_PREAUTHORIZED", "policy-1", "REPAIR_FIELD_MAPPING"));
+        when(fixture.dataSyncClient.recordDecision(repeatedTrigger, response, true)).thenReturn(approved);
+        when(fixture.dataSyncClient.applyGovernedRepair(repeatedTrigger, approved, response, parameters))
+                .thenReturn(repairReceipt);
+        when(fixture.dataSyncClient.recordTransition(
+                repeatedTrigger, approved, "RECOVERY_STARTED", "started", null, 41L)).thenReturn(started);
+
+        AgentAutopilotRecoveryExecutionResult result = fixture.service.execute(repeatedTrigger, response);
+
+        assertThat(result.status()).isEqualTo("RECOVERY_STARTED");
+        assertThat(result.retrievalDecision()).isEqualTo("SKIP");
+        verify(fixture.dataSyncClient).applyGovernedRepair(
+                repeatedTrigger, approved, response, parameters);
+    }
+
+    /** data-sync 已证明上一动作未应用时，即使模型生成了新指纹，也不得重复选择同一个动作。 */
+    @Test
+    void shouldRejectSameRepairAfterTrustedNotAppliedEvidence() {
+        Fixture fixture = fixture();
+        AgentAutopilotVerifiedRecoveryTrigger repeatedTrigger = repeatedRepairReplanTrigger(
+                "b".repeat(64), "REFRESH_METADATA", "METADATA_TARGET_FIELD_NOT_FOUND");
+        AgentAutopilotRecoveryPlanResponse response = governedRepairResponse("REFRESH_METADATA");
+        when(fixture.evidenceVerifier.verify(repeatedTrigger, response)).thenReturn(true);
+
+        AgentAutopilotRecoveryExecutionResult result = fixture.service.execute(repeatedTrigger, response);
+
+        assertThat(result.status()).isEqualTo("ATTENTION_REQUIRED");
+        assertThat(result.reasonCode()).isEqualTo("RECOVERY_REPEATED_REPAIR_ACTION_UNCHANGED");
+        verifyNoInteractions(fixture.policyEvaluator, fixture.dataSyncClient);
+    }
+
+    /** 已验证的 SEARCH 候选只能在回调中保留紧凑、可落地核验的检索证明。 */
     @Test
     void shouldProjectVerifiedSearchEvidenceIntoTheLowSensitiveExecutionResult() {
         Fixture fixture = fixture();
@@ -440,12 +564,11 @@ class AgentAutopilotRecoveryExecutionServiceTest {
     }
 
     /**
-     * Scope, digest, source, and freshness violations are deterministic evidence denials rather than delivery failures.
+     * 作用域、摘要、来源或新鲜度不合法属于确定性证据拒绝，不是投递失败。
      *
-     * <p>Each supplied reason is emitted by the evidence verifier after it has examined the same immutable planner
-     * response. Retrying that unchanged response cannot repair its business facts, so the execution service must return
-     * a low-sensitive {@code REJECTED} result for the consumer to durably callback and acknowledge. It must stop before
-     * creating a data-sync case, state transition, or retry side effect.</p>
+     * <p>每个原因码都由证据验证器检查同一份不可变规划响应后产生。重复处理未变化的响应无法修复其业务
+     * 事实，因此执行服务必须返回低敏 {@code REJECTED}，由 consumer 持久回调后确认消息；同时必须在
+     * 创建 data-sync case、状态迁移或重试副作用前停止。</p>
      */
     @Test
     void shouldReturnRejectedForPermanentEvidenceViolationsWithoutStartingRecovery() {
@@ -470,11 +593,10 @@ class AgentAutopilotRecoveryExecutionServiceTest {
     }
 
     /**
-     * Technical evidence-verification failures remain visible to Kafka retry handling.
+     * 技术性证据校验失败必须继续暴露给 Kafka 重试处理。
      *
-     * <p>This represents failures such as an unavailable JDK crypto primitive or another local runtime defect, not a
-     * deterministic evidence mismatch. The service may record the rejected verification attempt for observability, but
-     * it must rethrow the same exception so no terminal result is acknowledged without a durable retry path.</p>
+     * <p>这类失败代表 JDK 加密原语不可用或其他本地运行时缺陷，并非确定性证据不匹配。服务可以记录被拒绝
+     * 的校验尝试用于观测，但必须重新抛出同一个异常，避免在没有持久重试路径时确认终态结果。</p>
      */
     @Test
     void shouldPropagateTechnicalEvidenceVerificationFailureForKafkaRetry() {
@@ -541,7 +663,7 @@ class AgentAutopilotRecoveryExecutionServiceTest {
                 "rootCauseCodes", List.of("CONNECTOR_OR_NETWORK_UNAVAILABLE"));
     }
 
-    /** Builds the exact preview projection and canonical fingerprint used by the Python/Java apply protocol. */
+    /** 构造 Python/Java 应用协议使用的精确 preview 投影和规范指纹。 */
     private AgentAutopilotRecoveryPlanResponse quarantineResponse() {
         String confirmationDigest = "e".repeat(64);
         String repairFingerprint = sha256(String.join("|",
@@ -565,7 +687,22 @@ class AgentAutopilotRecoveryExecutionServiceTest {
                         "outputRef", "agent-runtime://run-1/quarantine-preview"));
     }
 
-    /** Computes lowercase SHA-256 for test-owned cross-language fingerprint fixtures. */
+    /** 构造一个携带元数据证明型修复参数及跨语言指纹的候选。 */
+    private AgentAutopilotRecoveryPlanResponse governedRepairResponse(String action) {
+        Map<String, Object> parameters = Map.of("repairMode", "METADATA_PROVEN_SAFE");
+        String repairFingerprint = sha256(String.join("|",
+                "event-1", "a".repeat(64), "41", action,
+                "repairMode=METADATA_PROVEN_SAFE"));
+        return new AgentAutopilotRecoveryPlanResponse(
+                "datasmart.autopilot.recovery-candidate.v1", "event-1", "CANDIDATE_READY",
+                "RECOVERY_CANDIDATE_READY", action, "LOW", true,
+                repairFingerprint, "a".repeat(64), 0.91d, true,
+                Map.of(), Map.of(), "SKIP", "STRUCTURED_DIAGNOSTIC", Map.of(), true,
+                "autopilot-recovery:event-1", "LOW_SENSITIVE_AUTOPILOT_RECOVERY_CANDIDATE_ONLY",
+                Map.of(), Map.of(), parameters, Map.of());
+    }
+
+    /** 为测试自有的跨语言指纹夹具计算小写 SHA-256。 */
     private String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
@@ -591,19 +728,45 @@ class AgentAutopilotRecoveryExecutionServiceTest {
                 trigger.deadlineAt(), trigger.recoveryStartedAt());
     }
 
+    /**
+     * 构造由 data-sync “动作未应用”回执派生的可信下一轮事件。
+     * 主原因、上一动作标记和新发现的问题码都来自服务端白名单，不接受模型自由文本。
+     */
+    private AgentAutopilotVerifiedRecoveryTrigger repeatedRepairReplanTrigger(
+            String previousRepairFingerprint,
+            String previousAction,
+            String structuredIssueCode) {
+        AgentAutopilotVerifiedRecoveryTrigger trigger = trigger();
+        AgentAutopilotRecoveryTriggerEvent event = trigger.event();
+        AgentAutopilotRecoveryTriggerEvent repeatedEvent = new AgentAutopilotRecoveryTriggerEvent(
+                event.schemaVersion(), event.eventId(), event.rootSessionId(), event.rootRunId(),
+                event.tenantId(), event.applicationId(), event.projectId(), event.userId(), event.actorId(),
+                event.agentId(), event.delegationId(), event.syncTaskId(), event.rootExecutionId(),
+                event.currentExecutionId(), 2, event.maxRecoveryCycles(), event.deadlineAt(),
+                event.errorFingerprint(), 1, previousRepairFingerprint,
+                List.of(
+                        "AUTOPILOT_REFRESHED_METADATA_PRECHECK_FAILED",
+                        "PREVIOUS_REPAIR_ACTION_" + previousAction,
+                        structuredIssueCode),
+                event.authorizationSnapshot(), event.authorizationSnapshotDigest(), event.triggeredAt());
+        return new AgentAutopilotVerifiedRecoveryTrigger(
+                repeatedEvent, trigger.session(), trigger.rootRun(), trigger.authorization(),
+                trigger.deadlineAt(), trigger.recoveryStartedAt());
+    }
+
     /** 创建 data-sync recovery case 的固定响应。 */
     private AgentAutopilotRecoveryCaseView caseView(String state, Long version) {
         return caseView(state, version, "RETRY_EXECUTION");
     }
 
-    /** Creates a data-sync recovery case response for a named low-risk action. */
+    /** 为指定低风险动作创建固定的 data-sync recovery case 响应。 */
     private AgentAutopilotRecoveryCaseView caseView(String state, Long version, String action) {
         return new AgentAutopilotRecoveryCaseView(
                 81L, 31L, 40L, 41L, state, version, 1, 5,
                 action, null, "d".repeat(64), "e".repeat(64));
     }
 
-    /** Creates the scope-bound data-sync receipt required before post-recovery Specialist verification. */
+    /** 创建恢复后 Specialist 验证前必需的范围绑定 data-sync 回执。 */
     private AgentAutopilotRecoveryRetryReceipt retryReceipt() {
         return new AgentAutopilotRecoveryRetryReceipt(
                 31L, 41L, 2, "QUEUED", "RETRYING");
@@ -612,6 +775,7 @@ class AgentAutopilotRecoveryExecutionServiceTest {
     /** 创建隔离的 mock 依赖和被测服务。 */
     private Fixture fixture() {
         AgentAutopilotRecoveryEvidenceVerifier evidenceVerifier = mock(AgentAutopilotRecoveryEvidenceVerifier.class);
+        AgentAutopilotRecoveryRepairVerifier repairVerifier = mock(AgentAutopilotRecoveryRepairVerifier.class);
         AgentAutopilotRecoveryPolicyEvaluator policyEvaluator = mock(AgentAutopilotRecoveryPolicyEvaluator.class);
         AgentAutopilotRecoveryDataSyncClient dataSyncClient = mock(AgentAutopilotRecoveryDataSyncClient.class);
         AgentAutopilotRecoveryPythonClient pythonClient = mock(AgentAutopilotRecoveryPythonClient.class);
@@ -619,8 +783,9 @@ class AgentAutopilotRecoveryExecutionServiceTest {
         return new Fixture(
                 new AgentAutopilotRecoveryExecutionService(
                         evidenceVerifier, new AgentAutopilotRecoveryQuarantinePreviewVerifier(),
-                        policyEvaluator, dataSyncClient, pythonClient, metrics),
+                        repairVerifier, policyEvaluator, dataSyncClient, pythonClient, metrics),
                 evidenceVerifier,
+                repairVerifier,
                 policyEvaluator,
                 dataSyncClient,
                 pythonClient,
@@ -630,6 +795,7 @@ class AgentAutopilotRecoveryExecutionServiceTest {
     private record Fixture(
             AgentAutopilotRecoveryExecutionService service,
             AgentAutopilotRecoveryEvidenceVerifier evidenceVerifier,
+            AgentAutopilotRecoveryRepairVerifier repairVerifier,
             AgentAutopilotRecoveryPolicyEvaluator policyEvaluator,
             AgentAutopilotRecoveryDataSyncClient dataSyncClient,
             AgentAutopilotRecoveryPythonClient pythonClient,

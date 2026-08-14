@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from datetime import datetime
 from typing import Any, Mapping
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -324,6 +325,12 @@ class RecoverySpecialistAgentTest(unittest.TestCase):
         self.assertTrue(result.structured_output["diagnosticEvidenceGate"]["satisfied"])
         self.assertIn("STRUCTURED_API", result.structured_output["evidenceAudit"]["sourceTypes"])
         self.assertIn("EXECUTION_LOG", result.structured_output["evidenceAudit"]["sourceTypes"])
+        for evidence in result.structured_output["evidenceAudit"]["evidenceRecords"]:
+            self.assertTrue(evidence["sourceRef"])
+            datetime.fromisoformat(evidence["retrievedAt"].replace("Z", "+00:00"))
+            self.assertGreaterEqual(evidence["confidence"], 0.0)
+            self.assertLessEqual(evidence["confidence"], 1.0)
+            self.assertTrue(evidence["confidenceBasis"])
 
     def test_recovery_fails_closed_before_model_when_diagnostic_evidence_is_insufficient(self) -> None:
         """Recovery 需要可审计诊断事实，但不能把 RAG 是否调用当成证据门槛。"""
@@ -409,6 +416,11 @@ class RecoverySpecialistAgentTest(unittest.TestCase):
                         "errorFingerprint": "a" * 64,
                         "repeatedErrorCount": 1,
                         "previousRepairFingerprint": previous_fingerprint.removeprefix("sha256:"),
+                        "issueCodes": (
+                            "AUTOPILOT_REFRESHED_METADATA_PRECHECK_FAILED",
+                            "PREVIOUS_REPAIR_ACTION_REFRESH_METADATA",
+                            "METADATA_TARGET_FIELD_NOT_FOUND",
+                        ),
                     },
                 }
             )
@@ -418,10 +430,18 @@ class RecoverySpecialistAgentTest(unittest.TestCase):
         self.assertTrue(repeated.structured_output["strategyChanged"])
         self.assertEqual(1, model.requests[0].diagnostic_facts["repeatedErrorCount"])
         self.assertEqual(previous_fingerprint, model.requests[0].diagnostic_facts["previousRepairFingerprint"])
+        self.assertEqual(
+            (
+                "AUTOPILOT_REFRESHED_METADATA_PRECHECK_FAILED",
+                "PREVIOUS_REPAIR_ACTION_REFRESH_METADATA",
+                "METADATA_TARGET_FIELD_NOT_FOUND",
+            ),
+            model.requests[0].diagnostic_facts["autopilotIssueCodes"],
+        )
         self.assertNotIn("trustedAutopilotRecovery", diagnostic_client.requests[0].context_summary)
 
     def test_consumes_completed_monitor_dependency_before_recovery_model_call(self) -> None:
-        """Pass only deterministic monitor facts from the completed dependency into recovery planning."""
+        """只把已完成依赖中的确定性监控事实传入恢复规划。"""
 
         diagnostic = _DiagnosticClient(_diagnostic())
         model = _PlanningModel(RecoveryPlanningModelOutput(actions=({"actionType": "READ_ONLY_DIAGNOSIS"},)))
@@ -451,7 +471,7 @@ class RecoverySpecialistAgentTest(unittest.TestCase):
         self.assertTrue(result.structured_output["monitoringSummaryAvailable"])
 
     def test_model_timeout_has_stable_low_sensitive_reason_code_and_source(self) -> None:
-        """Classify a provider timeout without returning its endpoint, prompt, response or stack trace."""
+        """分类 Provider 超时，但不返回其端点、提示词、响应或堆栈。"""
 
         secret_error = "timeout from https://provider.internal/v1 with token=secret-value"
         events: list[Mapping[str, Any]] = []

@@ -713,3 +713,45 @@ Provider 切换到 `https://qa.dashun9527.com/v1` 并通过 `/models`、`/respon
 新镜像上的 task `109` / execution `2775` 按以下顺序完成：关闭 worker scheduler；通过 Gateway 规划、确认并建立 LOW 风险、3 轮、120 分钟授权盒；暂停 datasource-management；重新开启 worker 形成真实 range-probe transport failure；确认失败账本和 outbox `DELIVERED` 后恢复 datasource-management；之后不再进行人工操作。系统自主选择 `SKIP / STRUCTURED_DIAGNOSTIC`，完成 Java diagnosis/preview，返回 `RECOVERY_STARTED / AUTOPILOT_FAILED_OBJECTS_REQUEUED`，在 cycle `1/3` 自动将 case 收敛为 `RECOVERED`。
 
 最终 execution `2775` 为 `SUCCEEDED`，读 `20`、写 `20`、失败 `0`，单对象成功。源目标聚合一致：行数 `20`、唯一 ID `20`、ID 合计 `210`、金额合计 `2210.00`。Gateway 公开 API 复核 execution、对象、19 条日志、Recovery 快照和两个 session 的 8 条 durable facts 成功；恢复后 `PRECHECK_AGENT`、`MONITOR_AGENT` 再次完成。脚本末尾一次只读 execution 查询遇到 permission-admin 瞬时不可用并非零退出，服务恢复后相同公开查询全部成功。当前脚本只对 GET 的 502/503/504 以及明确“权限中心暂时不可用”的 403 最多重试 3 次；确认、重试、隔离等 POST 和普通权限拒绝仍立即失败，相关离线回归已通过。
+
+### 8.8 2026-08-14 受治理修复动作演练要求
+
+Recovery Loop 现在可以在首次授权盒内提出并执行以下低风险修复：回滚到最近一次成功策略；降低 channel/batch 或在声明硬上限内增加 timeout；刷新元数据并重新预检；恢复最新持久 checkpoint；只重放失败分片；应用元数据唯一证明的字段映射修复。动作不能只依赖模型文字结论，必须同时具备当前授权、case/cycle、作用域、动作指纹、幂等回执、Java/data-sync 双策略和持久事实。
+
+每次演练应在低敏验收记录中确认以下诊断字段：结构化错误与对象统计、当前策略、最近成功策略、连接器运行时版本和来源、当前限制、硬容量是否声明，以及 RAG `SEARCH/SKIP` 决策。检索证据必须包含 `sourceType`、`sourceRef`、`retrievedAt`、`confidence`、`confidenceBasis`；若任何字段缺失，期望结果应为 fail-closed，而不是继续自动修复。
+
+字段类夹具应至少覆盖：大小写字段名自动归一化；目标未占用、类型兼容、主键属性一致、双方有序号时序号一致且候选唯一时自动修复列重命名；目标非空且无默认值字段缺失映射时以 `METADATA_REQUIRED_TARGET_FIELD_NOT_MAPPED` 阻断；目标字段可空/有默认值/自动生成且非主键时安全移除失效映射；存在歧义候选时停止；不得生成默认值、修改 DDL 或禁用外键。外键关系当前未纳入完整元数据合同，因此外键错误的期望结果是退出 Loop，并给出根因、证据、所需权限、操作步骤、影响、回滚和验证方法。
+
+推荐的重复门禁为：
+
+```powershell
+mvn test
+Set-Location .\python-ai-runtime
+pytest -q
+Set-Location ..
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-governed-e2e-exit-code-regression.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-check.ps1 `
+  -Strict `
+  -CheckServiceAccountToken `
+  -CheckAgentGatewayDiagnostics
+```
+
+2026-08-14 当前结果为 Java `1544 tests / 0 failures / 0 errors / 9 skipped`、Python `1174 passed / 1 skipped`、六 Agent 离线退出码/公开合同回归通过、认证 smoke `PASS=89 / WARN=0 / FAIL=0`。Frontend 的六项合同脚本、lint 和 build 同样通过。`datasource-management`、`data-sync`、`agent-runtime`、`python-ai-runtime` 最新镜像均为 healthy。
+
+真实 E2E 口径：task `109` 已关闭 transport failure 自动重试主链路门禁；新增修复目录必须按动作分别做隔离故障注入。演练期间禁止手工调用 retry/quarantine/replay 来冒充自治恢复，禁止修改凭据、权限、DDL、约束、目标数据或同步范围。涉及这些高风险边界时，验收目标应是系统正确退出 Loop 并生成完整人工处置说明，而不是强行得到 `RECOVERED`。
+
+### 8.9 2026-08-15 字段重命名自治修复演练
+
+本演练使用现有 MySQL 源端和 PostgreSQL 目标端创建独立目标表。建任务时源目标都包含 `id`、`customer_name`、`amount`、`region`，先确认首次映射和预检均有效；随后暂停 worker，把目标列 `customer_name` 改名为 `name`，再恢复 worker。该结构变化只用于隔离环境故障注入，不应在生产任务上手工制造。
+
+预期链路不是直接重试：首轮写入应因旧字段映射失败；cycle 1 可以先选择 `REFRESH_METADATA`，完整预检仍失败时不得伪报修复成功；下一轮只有在目标列未占用、类型兼容、主键属性一致、序号一致且唯一候选成立时，才允许 `REPAIR_FIELD_MAPPING` 更新任务定义并重排 execution。候选多于一个或任何约束不满足时，预期结果是退出自动动作并保留明确原因，不允许模型猜列名。
+
+2026-08-15 的真实结果为 task `119` / execution `2860`。outbox `28` 在 cycle 1 以 `REFRESH_METADATA` 返回 `AUTOPILOT_REFRESHED_METADATA_PRECHECK_FAILED`；outbox `29` 在 cycle 2 以 `REPAIR_FIELD_MAPPING` 返回 `RECOVERY_STARTED / AUTOPILOT_GOVERNED_REPAIR_APPLIED_AND_REQUEUED`。两次均 `DELIVERED`，模型均选择 `SKIP / STRUCTURED_DIAGNOSTIC / evidence=0`。case `14` 最终 `RECOVERED`，execution 和对象账本均 `SUCCEEDED`，读 `20`、写 `20`、失败 `0`，目标表 20 行，持久映射为 `customer_name -> name`。整个恢复阶段没有手工调用 retry、repair 或 replay。
+
+task `118` 是必须保留的失败证据：旧实现更新任务定义时使用 `WHERE id`，而真实主键列是 `task_id`，因此第二轮修复进入 Kafka DLT。修复必须由 SQL 片段回归证明条件使用 `task_id`，不能通过忽略数据库异常或放宽 Kafka 重试次数掩盖。修复后的 data-sync 聚焦组为 `58 tests / 0 failures / 0 errors`。
+
+演练中若主动重建 data-sync 容器，Nacos 可能短暂保留旧实例地址。Gateway 应原样传播授权放行后的下游连接异常，不能把它改写成权限中心不可用；对应聚焦回归为 `33 tests`。服务注册稳定后，再通过 Gateway 公开 API 复核 execution、对象、Recovery 快照和 Specialist durable facts。
+
+动作后 `PRECHECK_AGENT`/`MONITOR_AGENT` 在重排回执后立即执行，不阻塞 Kafka 等待长任务结束。它们证明修复已被受治理执行面接收并形成持久观察事实；最终成功必须另外核对 `case=RECOVERED`、repair receipt、`execution=SUCCEEDED`、对象账本、读写统计和目标数据。若将来要求 Specialist 输出终态成功摘要，应新增 worker 终态事件驱动的 finalization，而不是延长 Kafka 消费事务。
+
+本次演练后的完整重复门禁结果为：JDK 21 Reactor `1563 tests / 0 failures / 0 errors / 9 skipped`，Python `1178 passed / 1 skipped`，Frontend 六项合同、lint 和 build 全部通过，离线 E2E 退出码合同全部通过，严格只读 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。这些数字应和演练 task/execution/case 标识一并记录，不能只保留“测试通过”的笼统结论。

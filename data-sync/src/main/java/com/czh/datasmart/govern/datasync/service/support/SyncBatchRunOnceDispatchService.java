@@ -11,9 +11,12 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceRunOnceProperties;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryPlanWorkerResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
+import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
@@ -23,13 +26,21 @@ import com.czh.datasmart.govern.datasync.integration.datasource.runonce.Datasour
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceTransportUnavailableException;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -39,10 +50,9 @@ import java.util.Set;
  * complete/fail 的控制面所有者；datasource-management 只作为受控 connector runtime 执行“一批 read/write”。
  * 这样可以避免两个微服务同时修改各自的同步任务状态，形成不可审计的“双控制面”。</p>
  *
- * <p>当前最小闭环只放行 {@code FULL}/{@code ONE_TIME_MIGRATION} 且 checkpoint 类型为
- * {@code NONE_OR_FINAL_WATERMARK} 的场景。原因是增量同步需要安全交接 checkpoint 原始值，而上一阶段
- * datasource-management 出于低敏原则不会把 checkpoint 原始值放入响应；如果现在强行打开增量，就会出现
- * “远端知道下一水位，但 data-sync 无法安全持久化水位”的半闭环风险。</p>
+ * <p>普通首次增量任务仍由任务定义预检查控制；已获授权的恢复执行可以从持久 checkpoint 恢复。
+ * connector runtime 每批产生的新水位只通过 internal 响应交还本服务，本服务必须先校验并幂等持久化，
+ * 然后才能用新水位读取下一批。原始值不进入公开结果、审计摘要、Agent 上下文或日志。</p>
  *
  * <p>fail-closed 原则：</p>
  * <p>1. bridgePlan 被阻断时，不调用远端，直接 fail execution；</p>
@@ -56,11 +66,21 @@ public class SyncBatchRunOnceDispatchService {
 
     private static final String PLAN_VERSION = "datasmart.datasource.sync-batch-plan.v1";
     private static final String EXECUTION_BOUNDARY = "DATA_SYNC_TO_DATASOURCE_RUN_ONCE_NO_RAW_SQL_NO_CREDENTIALS";
+    private static final String CHECKPOINT_HANDOFF_MODE = "INTERNAL_RESPONSE_PERSIST_BEFORE_NEXT_BATCH";
+    private static final String CHECKPOINT_VALUE_VISIBILITY = "WORKER_INTERNAL_AND_SYNC_CHECKPOINT_TABLE_ONLY";
+    private static final ObjectMapper CHECKPOINT_VALUE_MAPPER = new ObjectMapper();
     private static final String FULL_CHECKPOINT_TYPE = "NONE_OR_FINAL_WATERMARK";
     private static final Set<String> RUN_ONCE_SAFE_CHECKPOINT_TYPES = Set.of(
             "NONE_OR_FINAL_WATERMARK",
             "BATCH_WINDOW",
             "QUERY_RESULT_BOUNDARY"
+    );
+    private static final Set<String> RECOVERY_RESUMABLE_CHECKPOINT_TYPES = Set.of(
+            "TIME_FIELD",
+            "ID_FIELD",
+            "BATCH_WINDOW",
+            "QUERY_RESULT_BOUNDARY",
+            "NONE_OR_FINAL_WATERMARK"
     );
 
     private final SyncBatchRunnerBridgePlanSupport bridgePlanSupport;
@@ -71,6 +91,7 @@ public class SyncBatchRunOnceDispatchService {
     private final SyncExecutionLogSupport executionLogSupport;
     private SyncExecutionPolicyService executionPolicyService;
     private SyncErrorSampleMapper errorSampleMapper;
+    private SyncCheckpointMapper checkpointMapper;
 
     /**
      * 可选注入执行策略服务。
@@ -84,10 +105,21 @@ public class SyncBatchRunOnceDispatchService {
         this.executionPolicyService = executionPolicyService;
     }
 
-    /** Optional injection preserves constructor compatibility for older unit fixtures. */
+    /** 可选注入错误样本 Mapper，以兼容直接构造本服务的历史测试。 */
     @Autowired(required = false)
     public void setErrorSampleMapper(SyncErrorSampleMapper errorSampleMapper) {
         this.errorSampleMapper = errorSampleMapper;
+    }
+
+    /**
+     * 可选注入 checkpoint Mapper。
+     *
+     * <p>生产环境会注入真实 Mapper；历史单元测试如果不覆盖恢复场景则无需修改构造器。
+     * 恢复请求在 Mapper 缺失时会 fail-closed，绝不会退化成从头读取。</p>
+     */
+    @Autowired(required = false)
+    public void setCheckpointMapper(SyncCheckpointMapper checkpointMapper) {
+        this.checkpointMapper = checkpointMapper;
     }
 
     /**
@@ -144,9 +176,25 @@ public class SyncBatchRunOnceDispatchService {
                                                                   SyncExecution execution,
                                                                   SyncTask task,
                                                                   SyncActorContext actorContext) {
+        return dispatchPreparedRunOnce(bridgePlan, execution, task, actorContext, null);
+    }
+
+    /**
+     * 使用已消费的恢复计划执行 run-once。
+     *
+     * <p>恢复计划只携带 checkpoint 主键，不携带原值。本方法在 data-sync 本地重新读取并校验持久记录，
+     * 校验成功后才把原值放入内部请求；该值不会进入调度结果、审计摘要或普通日志。</p>
+     */
+    public SyncBatchRunOnceDispatchResult dispatchPreparedRunOnce(
+            SyncBatchRunnerBridgePlan bridgePlan,
+            SyncExecution execution,
+            SyncTask task,
+            SyncActorContext actorContext,
+            SyncRecoveryPlanWorkerResult recoveryPlan) {
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
         SyncBatchRunOnceRemoteExecutionResult remoteResult =
-                executePreparedRunOnceRemoteOnly(bridgePlan, execution, task, safeActorContext);
+                executePreparedRunOnceRemoteOnly(bridgePlan, execution, task, safeActorContext,
+                        null, List.of(), null, null, recoveryPlan);
         return applyRemoteExecutionResult(task, execution, safeActorContext, remoteResult);
     }
 
@@ -221,8 +269,41 @@ public class SyncBatchRunOnceDispatchService {
             List<SyncFilterExecutionCondition> additionalFilterConditions,
             Long maxDirtyRecordCountOverride,
             Double maxDirtyRecordRatioOverride) {
+        return executePreparedRunOnceRemoteOnly(bridgePlan, execution, task, actorContext,
+                shardOrPartition, additionalFilterConditions,
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, null);
+    }
+
+    /**
+     * 统一的远端派发实现。恢复计划只由单对象恢复入口传入，普通和 fan-out 调用均传 {@code null}。
+     */
+    private SyncBatchRunOnceRemoteExecutionResult executePreparedRunOnceRemoteOnly(
+            SyncBatchRunnerBridgePlan bridgePlan,
+            SyncExecution execution,
+            SyncTask task,
+            SyncActorContext actorContext,
+            String shardOrPartition,
+            List<SyncFilterExecutionCondition> additionalFilterConditions,
+            Long maxDirtyRecordCountOverride,
+            Double maxDirtyRecordRatioOverride,
+            SyncRecoveryPlanWorkerResult recoveryPlan) {
         requirePreparedDispatchInputs(bridgePlan, execution, task);
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
+
+        RecoveryCheckpointResolution checkpointResolution = resolveRecoveryCheckpoint(
+                bridgePlan, execution, task, recoveryPlan);
+        if (checkpointResolution.issueCode() != null) {
+            executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
+                    "CHECKPOINT", "ERROR", "RECOVERY_CHECKPOINT_HANDOFF_BLOCKED", "BLOCKED",
+                    checkpointResolution.message(),
+                    "issueCode=" + checkpointResolution.issueCode());
+            return failBeforeRemote(task, execution, safeActorContext,
+                    "CONNECTOR_RUNTIME_CHECKPOINT_HANDOFF_BLOCKED",
+                    checkpointResolution.issueCode(),
+                    checkpointResolution.message(),
+                    withIssue(bridgePlan.getIssueCodes(), checkpointResolution.issueCode()));
+        }
+        CheckpointHandoff checkpointHandoff = checkpointResolution.handoff();
 
         if (!properties.isEnabled()) {
             executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
@@ -252,7 +333,8 @@ public class SyncBatchRunOnceDispatchService {
                     "同步执行器桥接计划被阻断，本次执行未触发真实读写",
                     bridgePlan.getIssueCodes());
         }
-        if (!RUN_ONCE_SAFE_CHECKPOINT_TYPES.contains(bridgePlan.getCheckpointType())) {
+        if (!RUN_ONCE_SAFE_CHECKPOINT_TYPES.contains(bridgePlan.getCheckpointType())
+                && checkpointHandoff == null) {
             executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
                     "CHECKPOINT",
                     "ERROR",
@@ -273,7 +355,7 @@ public class SyncBatchRunOnceDispatchService {
 
         DatasourceRunOnceRequest request = buildRequest(bridgePlan, execution, safeActorContext,
                 shardOrPartition, additionalFilterConditions,
-                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy);
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy, checkpointHandoff);
         executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
                 "CHANNEL",
                 "INFO",
@@ -406,10 +488,11 @@ public class SyncBatchRunOnceDispatchService {
                                                   List<SyncFilterExecutionCondition> additionalFilterConditions,
                                                   Long maxDirtyRecordCountOverride,
                                                   Double maxDirtyRecordRatioOverride,
-                                                  SyncEffectiveExecutionPolicy effectivePolicy) {
+                                                  SyncEffectiveExecutionPolicy effectivePolicy,
+                                                  CheckpointHandoff checkpointHandoff) {
         DatasourceRunOnceRequest request = new DatasourceRunOnceRequest();
         request.setExecutionPlan(executionPlan(bridgePlan, execution, shardOrPartition, additionalFilterConditions,
-                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy));
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy, checkpointHandoff));
         request.setSelectedColumns(bridgePlan.getFieldMappingContract().getSelectedColumns());
         request.setWriteColumns(bridgePlan.getFieldMappingContract().getWriteColumns());
         request.setPrimaryKeyColumns(bridgePlan.getFieldMappingContract().getPrimaryKeyColumns());
@@ -417,7 +500,7 @@ public class SyncBatchRunOnceDispatchService {
         request.setActorRole(actorContext.actorRole());
         request.setActorTenantId(actorContext.tenantId());
         request.setShardOrPartition(shardOrPartition);
-        request.setCheckpointValue(null);
+        request.setCheckpointValue(checkpointHandoff == null ? null : checkpointHandoff.checkpointValue());
         request.setPreviousRecordsRead(zeroIfNull(execution.getRecordsRead()));
         request.setPreviousRecordsWritten(zeroIfNull(execution.getRecordsWritten()));
         request.setPreviousFailedRecordCount(zeroIfNull(execution.getFailedRecordCount()));
@@ -426,8 +509,10 @@ public class SyncBatchRunOnceDispatchService {
     }
 
     /**
-     * Load the exact selectors approved by the user for this task.
-     * A hard bound prevents an accidental million-row quarantine from becoming a huge internal request.
+     * 加载用户对当前任务明确批准的隔离记录选择器。
+     *
+     * <p>查询设置硬上限，避免误操作把百万级隔离记录展开成巨大的内部请求；超过上限时由调用链安全失败，
+     * 不会静默截断后继续执行。</p>
      */
     private List<String> loadQuarantinedSourceRecordKeys(Long taskId) {
         if (errorSampleMapper == null || taskId == null) {
@@ -455,7 +540,8 @@ public class SyncBatchRunOnceDispatchService {
                                                                 List<SyncFilterExecutionCondition> additionalFilterConditions,
                                                                 Long maxDirtyRecordCountOverride,
                                                                 Double maxDirtyRecordRatioOverride,
-                                                                SyncEffectiveExecutionPolicy effectivePolicy) {
+                                                                SyncEffectiveExecutionPolicy effectivePolicy,
+                                                                CheckpointHandoff checkpointHandoff) {
         DatasourceRunOnceRequest.ExecutionPlan plan = new DatasourceRunOnceRequest.ExecutionPlan();
         plan.setPlanVersion(PLAN_VERSION);
         plan.setExecutionBoundary(EXECUTION_BOUNDARY);
@@ -463,7 +549,7 @@ public class SyncBatchRunOnceDispatchService {
         plan.setExecutionId(bridgePlan.getExecutionId());
         plan.setReadPlan(readPlan(bridgePlan, shardOrPartition, additionalFilterConditions, effectivePolicy));
         plan.setWritePlan(writePlan(bridgePlan, effectivePolicy));
-        plan.setCheckpointPlan(checkpointPlan(bridgePlan, shardOrPartition, effectivePolicy));
+        plan.setCheckpointPlan(checkpointPlan(bridgePlan, shardOrPartition, effectivePolicy, checkpointHandoff));
         plan.setRuntimeControlPlan(runtimeControlPlan(bridgePlan, execution, shardOrPartition,
                 maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy));
         plan.setWarnings(bridgePlan.getWarnings());
@@ -539,15 +625,109 @@ public class SyncBatchRunOnceDispatchService {
 
     private DatasourceRunOnceRequest.CheckpointPlan checkpointPlan(SyncBatchRunnerBridgePlan bridgePlan,
                                                                   String shardOrPartition,
-                                                                  SyncEffectiveExecutionPolicy effectivePolicy) {
+                                                                  SyncEffectiveExecutionPolicy effectivePolicy,
+                                                                  CheckpointHandoff checkpointHandoff) {
         DatasourceRunOnceRequest.CheckpointPlan checkpointPlan = new DatasourceRunOnceRequest.CheckpointPlan();
-        checkpointPlan.setCheckpointType(bridgePlan.getCheckpointType());
-        checkpointPlan.setInitialCheckpointPolicy("NO_CHECKPOINT_REQUIRED_FOR_FULL_RUN_ONCE");
-        checkpointPlan.setResumeRequired(false);
-        checkpointPlan.setShardAware(hasText(shardOrPartition));
+        checkpointPlan.setCheckpointType(checkpointHandoff == null
+                ? bridgePlan.getCheckpointType() : checkpointHandoff.checkpointType());
+        checkpointPlan.setInitialCheckpointPolicy(checkpointHandoff == null
+                ? "NO_CHECKPOINT_REQUIRED_FOR_FULL_RUN_ONCE" : "RESUME_FROM_PERSISTED_CHECKPOINT");
+        checkpointPlan.setResumeRequired(checkpointHandoff != null);
+        checkpointPlan.setShardAware(hasText(shardOrPartition)
+                || checkpointHandoff != null && hasText(checkpointHandoff.shardOrPartition()));
         checkpointPlan.setPersistEveryRecords(effectivePolicy.effectiveReadBatchSize());
         checkpointPlan.setCheckpointValueVisibility("WORKER_INTERNAL_AND_SYNC_CHECKPOINT_TABLE_ONLY");
         return checkpointPlan;
+    }
+
+    /**
+     * 读取并校验恢复计划引用的 checkpoint。
+     *
+     * <p>这是敏感值进入 connector runtime 前的最后一道服务端门禁。校验同时覆盖恢复计划、当前执行、任务和
+     * checkpoint 持久行，任何范围不一致都返回稳定错误码。方法只返回内存对象，不记录 checkpointValue。</p>
+     */
+    private RecoveryCheckpointResolution resolveRecoveryCheckpoint(
+            SyncBatchRunnerBridgePlan bridgePlan,
+            SyncExecution execution,
+            SyncTask task,
+            SyncRecoveryPlanWorkerResult recoveryPlan) {
+        if (recoveryPlan == null || !recoveryPlan.hasRecoveryPlan()
+                || recoveryPlan.sourceCheckpointId() == null) {
+            return RecoveryCheckpointResolution.empty();
+        }
+        if (!"REPLAY".equalsIgnoreCase(recoveryPlan.recoveryType())) {
+            return RecoveryCheckpointResolution.failed(
+                    "RECOVERY_CHECKPOINT_TYPE_MISMATCH", "只有 REPLAY 恢复计划可以引用来源 checkpoint");
+        }
+        if (checkpointMapper == null) {
+            return RecoveryCheckpointResolution.failed(
+                    "RECOVERY_CHECKPOINT_STORE_UNAVAILABLE", "checkpoint 持久存储当前不可用，恢复执行已阻断");
+        }
+        SyncCheckpoint checkpoint = checkpointMapper.selectById(recoveryPlan.sourceCheckpointId());
+        if (checkpoint == null || !hasText(checkpoint.getCheckpointValue())) {
+            return RecoveryCheckpointResolution.failed(
+                    "RECOVERY_CHECKPOINT_NOT_FOUND", "恢复计划引用的 checkpoint 不存在或没有可恢复水位");
+        }
+        boolean scopeMatches = Objects.equals(recoveryPlan.executionId(), execution.getId())
+                && Objects.equals(recoveryPlan.syncTaskId(), task.getId())
+                && Objects.equals(recoveryPlan.tenantId(), task.getTenantId())
+                && Objects.equals(recoveryPlan.projectId(), task.getProjectId())
+                && Objects.equals(recoveryPlan.workspaceId(), task.getWorkspaceId())
+                && Objects.equals(checkpoint.getId(), recoveryPlan.sourceCheckpointId())
+                && Objects.equals(checkpoint.getExecutionId(), recoveryPlan.sourceExecutionId())
+                && Objects.equals(checkpoint.getSyncTaskId(), task.getId())
+                && Objects.equals(checkpoint.getTenantId(), task.getTenantId())
+                && Objects.equals(checkpoint.getProjectId(), task.getProjectId())
+                && Objects.equals(checkpoint.getWorkspaceId(), task.getWorkspaceId());
+        if (!scopeMatches) {
+            return RecoveryCheckpointResolution.failed(
+                    "RECOVERY_CHECKPOINT_SCOPE_MISMATCH", "恢复计划与 checkpoint 的租户、项目、任务或来源执行范围不一致");
+        }
+        String checkpointType = canonicalCheckpointType(checkpoint.getCheckpointType());
+        String expectedType = canonicalCheckpointType(bridgePlan.getCheckpointType());
+        if (!RECOVERY_RESUMABLE_CHECKPOINT_TYPES.contains(checkpointType)
+                || !Objects.equals(checkpointType, expectedType)) {
+            return RecoveryCheckpointResolution.failed(
+                    "RECOVERY_CHECKPOINT_TYPE_MISMATCH", "持久 checkpoint 类型与当前同步读取策略不一致");
+        }
+        return RecoveryCheckpointResolution.success(new CheckpointHandoff(
+                checkpointType, checkpoint.getCheckpointValue(), checkpoint.getShardOrPartition()));
+    }
+
+    /** 将历史命名统一为当前内部合同使用的 checkpoint 类型。 */
+    private String canonicalCheckpointType(String value) {
+        if (!hasText(value)) {
+            return "UNKNOWN";
+        }
+        return switch (value.trim().toUpperCase(Locale.ROOT)) {
+            case "TIME_WATERMARK" -> "TIME_FIELD";
+            case "ID_RANGE", "ID_WATERMARK" -> "ID_FIELD";
+            case "PARTITION_WINDOW" -> "BATCH_WINDOW";
+            default -> value.trim().toUpperCase(Locale.ROOT);
+        };
+    }
+
+    /** 仅存在于 data-sync 内存中的 checkpoint 原值交接对象，禁止输出到日志。 */
+    private record CheckpointHandoff(String checkpointType, Object checkpointValue, String shardOrPartition) {
+    }
+
+    /** checkpoint 解析结果；失败只暴露稳定原因码和低敏中文说明。 */
+    private record RecoveryCheckpointResolution(
+            CheckpointHandoff handoff,
+            String issueCode,
+            String message) {
+
+        private static RecoveryCheckpointResolution empty() {
+            return new RecoveryCheckpointResolution(null, null, null);
+        }
+
+        private static RecoveryCheckpointResolution success(CheckpointHandoff handoff) {
+            return new RecoveryCheckpointResolution(handoff, null, null);
+        }
+
+        private static RecoveryCheckpointResolution failed(String issueCode, String message) {
+            return new RecoveryCheckpointResolution(null, issueCode, message);
+        }
     }
 
     private DatasourceRunOnceRequest.RuntimeControlPlan runtimeControlPlan(SyncBatchRunnerBridgePlan bridgePlan,
@@ -646,6 +826,28 @@ public class SyncBatchRunOnceDispatchService {
             lastResponse = response;
             recordRemoteBatchResult(task, execution, actorContext, batchIndex, response);
             SyncBatchRunOnceRemoteExecutionResult terminal = handleRemoteResponse(task, execution, actorContext, response);
+            if (terminal != null && terminal.failed()) {
+                return terminal;
+            }
+
+            CheckpointAdvanceResult checkpointAdvance = persistAndAdvanceCheckpoint(
+                    task, execution, actorContext, request, response);
+            if (checkpointAdvance.issueCode() != null) {
+                executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                        "CHECKPOINT",
+                        "ERROR",
+                        "RUN_ONCE_CHECKPOINT_HANDOFF_FAILED",
+                        "FAILED",
+                        checkpointAdvance.message(),
+                        "batchIndex=" + batchIndex + ", issueCode=" + checkpointAdvance.issueCode());
+                return failAfterRemoteResult(task, execution, actorContext,
+                        checkpointAdvance.issueCode(),
+                        checkpointAdvance.message(),
+                        response == null ? null : response.getRunStatus(),
+                        response == null ? 0L : zeroIfNull(response.getTotalRecordsRead()),
+                        response == null ? 0L : zeroIfNull(response.getTotalRecordsWritten()),
+                        response == null ? 0L : zeroIfNull(response.getTotalFailedRecordCount()));
+            }
             if (terminal != null) {
                 return terminal;
             }
@@ -679,6 +881,164 @@ public class SyncBatchRunOnceDispatchService {
                 "MAX_RUN_ONCE_BATCHES_EXCEEDED",
                 "datasource-management run-once 连续批次数超过安全上限，已按 fail-closed 终止；请调大批大小或切换专用离线 Runner",
                 lastResponse == null ? null : lastResponse.getRunStatus());
+    }
+
+    /**
+     * 校验、持久化并推进本次 run-once 返回的 checkpoint。
+     *
+     * <p>这个方法解决的是增量恢复中最关键的顺序问题：远端写入一批数据后，data-sync 必须先保存新的读取水位，
+     * 才能请求下一批。否则下一次仍会从旧水位读取，造成重复写入或无限循环。</p>
+     *
+     * <p>安全与治理规则：</p>
+     * <p>1. 没有候选值时不写 checkpoint；候选标志互相矛盾时 fail-closed；</p>
+     * <p>2. 响应 task/execution、checkpoint 类型、交接模式和可见性必须与当前内部请求一致；</p>
+     * <p>3. 原始值只进入 checkpoint 写入请求和下一批内部请求，日志只记录稳定原因码；</p>
+     * <p>4. 幂等键使用类型、分片和值的 SHA-256 摘要，同一水位重放不会重复创建 checkpoint。</p>
+     *
+     * @return 成功或无需推进时不带原因码；失败时只返回低敏原因码和中文说明。
+     */
+    private CheckpointAdvanceResult persistAndAdvanceCheckpoint(
+            SyncTask task,
+            SyncExecution execution,
+            SyncActorContext actorContext,
+            DatasourceRunOnceRequest request,
+            DatasourceRunOnceResponse response) {
+        if (response == null) {
+            return CheckpointAdvanceResult.noop();
+        }
+        boolean produced = Boolean.TRUE.equals(response.getCheckpointCandidateProduced());
+        boolean callbackRecommended = Boolean.TRUE.equals(response.getCheckpointCallbackRecommended());
+        if (!produced && !callbackRecommended) {
+            return CheckpointAdvanceResult.noop();
+        }
+        if (produced != callbackRecommended) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_HANDOFF_CONTRACT_INCONSISTENT",
+                    "远端 checkpoint 产生标志与持久化建议不一致，已阻断下一批读取");
+        }
+        if (!Objects.equals(task.getId(), response.getTaskId())
+                || !Objects.equals(execution.getId(), response.getExecutionId())) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_RESPONSE_SCOPE_MISMATCH",
+                    "远端 checkpoint 所属任务或执行与当前上下文不一致，已阻断跨范围写入");
+        }
+        if (!CHECKPOINT_HANDOFF_MODE.equals(response.getCheckpointHandoffMode())
+                || !CHECKPOINT_VALUE_VISIBILITY.equals(response.getCheckpointValueVisibility())) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_HANDOFF_POLICY_MISMATCH",
+                    "远端 checkpoint 交接模式或可见性不符合内部安全合同");
+        }
+        Object checkpointCandidate = response.getCheckpointCandidateValue();
+        if (checkpointCandidate == null) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_VALUE_NOT_RETURNED",
+                    "远端报告产生了 checkpoint，但未返回内部候选值，已阻断重复读取");
+        }
+        String expectedType = expectedCheckpointType(request);
+        String actualType = canonicalCheckpointType(response.getCheckpointType());
+        if ("UNKNOWN".equals(expectedType) || !Objects.equals(expectedType, actualType)) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_RESPONSE_TYPE_MISMATCH",
+                    "远端 checkpoint 类型与当前读取计划不一致，已阻断错误水位持久化");
+        }
+
+        String checkpointValue;
+        try {
+            checkpointValue = serializeCheckpointValue(checkpointCandidate);
+        } catch (JsonProcessingException exception) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_VALUE_SERIALIZATION_FAILED",
+                    "远端 checkpoint 候选值无法转换为稳定存储格式，已阻断下一批读取");
+        }
+        if (!hasText(checkpointValue)) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_VALUE_EMPTY",
+                    "远端 checkpoint 候选值为空，已阻断下一批读取");
+        }
+
+        SyncExecutionCheckpointRequest checkpointRequest = new SyncExecutionCheckpointRequest();
+        checkpointRequest.setExecutorId(execution.getExecutorId());
+        checkpointRequest.setCheckpointType(actualType);
+        checkpointRequest.setCheckpointValue(checkpointValue);
+        checkpointRequest.setShardOrPartition(request.getShardOrPartition());
+        checkpointRequest.setRecordsRead(zeroIfNull(response.getTotalRecordsRead()));
+        checkpointRequest.setRecordsWritten(zeroIfNull(response.getTotalRecordsWritten()));
+        checkpointRequest.setIdempotencyKey(checkpointIdempotencyKey(
+                execution.getId(), actualType, request.getShardOrPartition(), checkpointValue));
+        try {
+            lifecycleSupport.writeCheckpoint(task, execution, checkpointRequest, actorContext);
+        } catch (RuntimeException exception) {
+            return CheckpointAdvanceResult.failed(
+                    "CHECKPOINT_PERSIST_FAILED",
+                    "checkpoint 持久化未完成，已阻断下一批读取以避免重复处理");
+        }
+
+        request.setCheckpointValue(checkpointCandidate);
+        return CheckpointAdvanceResult.advanced();
+    }
+
+    /** 从本次内部读取计划提取并规范化期望的 checkpoint 类型。 */
+    private String expectedCheckpointType(DatasourceRunOnceRequest request) {
+        if (request == null || request.getExecutionPlan() == null
+                || request.getExecutionPlan().getCheckpointPlan() == null) {
+            return "UNKNOWN";
+        }
+        return canonicalCheckpointType(request.getExecutionPlan().getCheckpointPlan().getCheckpointType());
+    }
+
+    /**
+     * 把 checkpoint 候选值转换为稳定字符串。
+     *
+     * <p>字符串和标量保持直观形式；窗口、边界等结构化值使用 JSON，避免 {@code Map.toString()} 受实现顺序影响。
+     * 返回值只用于受控持久化与摘要计算，调用方不得打印。</p>
+     */
+    private String serializeCheckpointValue(Object checkpointCandidate) throws JsonProcessingException {
+        if (checkpointCandidate instanceof String text) {
+            return text.trim();
+        }
+        if (checkpointCandidate instanceof Number
+                || checkpointCandidate instanceof Boolean
+                || checkpointCandidate instanceof Character) {
+            return String.valueOf(checkpointCandidate);
+        }
+        return CHECKPOINT_VALUE_MAPPER.writeValueAsString(checkpointCandidate);
+    }
+
+    /**
+     * 生成不暴露原始水位的 checkpoint 幂等键。
+     *
+     * <p>SHA-256 在这里不是用来替代加密存储，而是把“类型 + 分片 + 原值”压缩成固定长度身份。
+     * 数据库中仍保存恢复所需原值，但幂等表、审计和日志只接触摘要身份。</p>
+     */
+    private String checkpointIdempotencyKey(Long executionId,
+                                            String checkpointType,
+                                            String shardOrPartition,
+                                            String checkpointValue) {
+        String digestInput = checkpointType + "\u0000" + firstText(shardOrPartition, "-")
+                + "\u0000" + checkpointValue;
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(digestInput.getBytes(StandardCharsets.UTF_8));
+            return "run-once-checkpoint:" + executionId + ":" + java.util.HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前 JDK 不支持 SHA-256 checkpoint 幂等摘要", exception);
+        }
+    }
+
+    /** checkpoint 推进结果不携带原始值，避免被上层结果或日志意外展开。 */
+    private record CheckpointAdvanceResult(String issueCode, String message) {
+
+        private static CheckpointAdvanceResult noop() {
+            return new CheckpointAdvanceResult(null, null);
+        }
+
+        private static CheckpointAdvanceResult advanced() {
+            return new CheckpointAdvanceResult(null, null);
+        }
+
+        private static CheckpointAdvanceResult failed(String issueCode, String message) {
+            return new CheckpointAdvanceResult(issueCode, message);
+        }
     }
 
     /**

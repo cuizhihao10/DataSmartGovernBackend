@@ -19,12 +19,11 @@ import com.czh.datasmart.govern.datasource.service.execution.SyncDirtyRecordSamp
  *
  * <p>该响应是 connector runtime 返回给 data-sync 的低敏执行摘要。
  * 它回答“这一批有没有读到、有没有写入、是否建议上游回写 progress/checkpoint/complete/fail”，
- * 但不返回真实行数据、SQL、连接串、账号、密码、字段值、失败样本或 checkpoint 原始值。</p>
+ * 但不返回真实行数据、SQL、连接串、账号、密码、失败样本等数据面内容。</p>
  *
- * <p>为什么响应不返回 checkpoint 原始值：</p>
- * <p>checkpoint 可能是业务时间、水位 ID、binlog/WAL offset、对象 key 或分区游标，本身可能透露业务节奏和数据范围。
- * 当前阶段先返回 {@code checkpointCandidateProduced=true/false} 和可见性说明，后续要完整增量闭环时，
- * 应新增受控 checkpoint handoff 机制，例如加密 envelope、服务端回调或仅限内网 mTLS 的专用端点。</p>
+ * <p>checkpoint 候选值是一个例外，但它仍不是公开响应字段：该值只通过受服务账号鉴权保护的 internal 路由，
+ * 从 datasource-management 交给 data-sync 控制面。data-sync 必须先把它写入 checkpoint 表，才能发起下一批读取；
+ * 普通 Controller、Agent 上下文、WebSocket、审计摘要和日志都不得继续传播该原始值。</p>
  */
 @Getter
 @Setter
@@ -35,7 +34,8 @@ public class SyncBatchRunOnceInternalResponse {
     /**
      * 固定载荷策略。
      */
-    public static final String PAYLOAD_POLICY = "LOW_SENSITIVE_RUN_ONCE_RESULT_NO_ROWS_NO_SQL_NO_CREDENTIALS_NO_CHECKPOINT_VALUE";
+    public static final String PAYLOAD_POLICY =
+            "INTERNAL_RUN_ONCE_RESULT_CHECKPOINT_VALUE_RESTRICTED_NO_ROWS_NO_SQL_NO_CREDENTIALS";
 
     /**
      * 同步任务 ID。
@@ -105,7 +105,7 @@ public class SyncBatchRunOnceInternalResponse {
     /**
      * 是否建议 data-sync 回写 checkpoint。
      *
-     * <p>true 表示本批 reader 产生了下一水位候选值，但该响应不携带原始值。</p>
+     * <p>true 表示本批 reader 产生了下一水位候选值，data-sync 必须先持久化再读取下一批。</p>
      */
     private Boolean checkpointCallbackRecommended;
 
@@ -115,9 +115,18 @@ public class SyncBatchRunOnceInternalResponse {
     private Boolean checkpointCandidateProduced;
 
     /**
+     * 本批 reader 产生的下一 checkpoint 原始值。
+     *
+     * <p>该字段只属于 datasource-management -> data-sync 的内部执行合同。它可能包含业务时间、递增 ID、
+     * 分区窗口或查询边界，因此禁止写入日志、公开回执、审计详情、Agent 提示词或用户侧 API。
+     * data-sync 收到后必须先校验 checkpoint 类型和执行范围，再做幂等持久化。</p>
+     */
+    private Object checkpointCandidateValue;
+
+    /**
      * checkpoint 交接策略。
      *
-     * <p>当前固定提醒：响应不返回原始 checkpoint；增量闭环需要后续专用安全交接机制。</p>
+     * <p>当前使用 internal 服务响应交接，并要求 data-sync 在下一批前完成持久化。</p>
      */
     private String checkpointHandoffMode;
 

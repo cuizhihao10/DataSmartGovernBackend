@@ -29,15 +29,36 @@ public class AgentAutopilotAuthorizationService {
 
     public static final String POLICY_VERSION = "datasmart.autopilot.authorization.v1";
     /**
-     * 已经具备真实、幂等且经过双策略校验的自动执行器动作。
+     * 首次创建 Autopilot 授权快照时，在用户没有主动选择恢复动作时使用的保守默认集合。
      *
-     * <p>白名单表达的是“平台今天确实能够无人值守执行什么”，不是未来产品路线图。数据源重连、checkpoint
-     * 恢复、分片回放和元数据刷新仍可由 Recovery Agent 提议，但在各自执行器、权限复核和回归测试落地前，
-     * 不能写进用户授权快照，否则用户会得到一份系统无法兑现的授权承诺。</p>
+     * <p>默认集合故意小于平台动作目录：缺失 {@code allowedRecoveryActions} 或传入空数组只能得到
+     * {@code RETRY_EXECUTION} 与 {@code APPLY_QUARANTINE}，不会因为客户端遗漏字段而自动获得后续新增的
+     * 高级动作。这条规则把“平台认识某个动作”和“本次授权已经同意该动作”分开，避免配置升级或请求反序列化
+     * 差异造成静默扩权。</p>
+     *
+     * <p>需要 checkpoint、分片、元数据或字段映射等高级恢复能力时，调用方必须在请求中显式列出对应业务码；
+     * 随后仍由完整动作目录和其他策略校验共同决定是否可写入授权快照。</p>
+     */
+    public static final List<String> DEFAULT_AUTOMATIC_ACTIONS = List.of(
+            "RETRY_EXECUTION",
+            "APPLY_QUARANTINE");
+
+    /**
+     * 平台当前可被治理层识别、校验并在用户显式请求后写入授权快照的完整自动恢复动作目录。
+     *
+     * <p>该集合不是默认授权清单。它列出八个当前业务码，供 {@link #validatedActions(List, Set, List, String)}
+     * 拒绝未知动作，并允许用户明确申请完整目录或其中的任意受支持子集。默认逻辑始终读取
+     * {@link #DEFAULT_AUTOMATIC_ACTIONS}，因此目录扩充不会反向扩大已有调用的默认权限。</p>
      */
     public static final Set<String> AUTOMATIC_ACTION_ALLOWLIST = Set.of(
             "RETRY_EXECUTION",
-            "APPLY_QUARANTINE");
+            "APPLY_QUARANTINE",
+            "ROLLBACK_EXECUTION_POLICY",
+            "TUNE_EXECUTION_POLICY",
+            "REFRESH_METADATA",
+            "RESUME_FROM_CHECKPOINT",
+            "REPLAY_FAILED_SHARDS",
+            "REPAIR_FIELD_MAPPING");
     public static final Set<String> APPROVAL_ACTION_ALLOWLIST = Set.of(
             "CHANGE_SCHEMA",
             "CHANGE_CREDENTIAL",
@@ -88,7 +109,7 @@ public class AgentAutopilotAuthorizationService {
         List<String> automaticActions = validatedActions(
                 request == null ? null : request.allowedRecoveryActions(),
                 AUTOMATIC_ACTION_ALLOWLIST,
-                List.of("RETRY_EXECUTION", "APPLY_QUARANTINE"),
+                DEFAULT_AUTOMATIC_ACTIONS,
                 "allowedRecoveryActions");
         List<String> approvalActions = validatedActions(
                 request == null ? null : request.requireApprovalFor(),
@@ -121,9 +142,13 @@ public class AgentAutopilotAuthorizationService {
     /**
      * 归一化一个动作列表，并确认每项都位于调用场景允许的平台白名单中。
      *
-     * <p>当输入列表为空时使用 {@code defaults}；输出会保持首次出现的顺序、去除重复项并冻结，便于将同一
-     * 授权事实稳定地写入快照。该方法没有副作用，却是权限收口点：它不会接受模型、客户端或配置传来的未知
-     * 动作。列表内容会进入 {@code policyDigest}，所以归一化也为后续完整性校验提供证据。</p>
+     * <p>当输入列表为 {@code null} 或为空时，只使用调用方传入的 {@code defaults}，绝不以
+     * {@code platformAllowlist} 作为兜底值。前者表示本次请求默认可授予的最小权限，后者只是平台能够识别
+     * 的完整目录；混用两者会让一个缺失字段的请求意外获得全部高级动作。输出会保持首次出现的顺序、去除
+     * 重复项并冻结，便于将同一授权事实稳定地写入快照。</p>
+     *
+     * <p>该方法没有副作用，却是权限收口点：它不会接受模型、客户端或配置传来的未知动作。列表内容会进入
+     * {@code policyDigest}，所以归一化也为后续完整性校验提供证据。</p>
      *
      * @param requested 用户请求的动作列表，可为空
      * @param platformAllowlist 当前策略种类可接受的全部动作

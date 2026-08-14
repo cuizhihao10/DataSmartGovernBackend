@@ -14,6 +14,7 @@ import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.Datas
 import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
@@ -21,6 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -310,6 +313,222 @@ class SyncTaskDefinitionMetadataAwarePrecheckSupportTest {
         assertThat(result.recommendedActions()).anyMatch(action -> action.contains("目标端连接器 POSTGRESQL"));
     }
 
+    /** 字段名仅大小写漂移时，应采用实时元数据中的准确名称并强制绕过缓存。 */
+    @Test
+    void fieldMappingRepairShouldNormalizeMetadataProvenColumnNames() throws Exception {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("ID", "BIGINT", true)));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema", "target_task", column("ID", "BIGINT", true)));
+        SyncTaskDefinition definition = definitionWithCustomTarget("target_schema", "target_task");
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataFieldMappingRepairResult result =
+                support.repairFieldMappings(definition, actor());
+
+        var row = new ObjectMapper().readTree(result.fieldMappingConfig())
+                .path("objectMappings").get(0).path("mappings").get(0);
+        assertThat(result.changedCount()).isEqualTo(1);
+        assertThat(row.path("sourceField").asText()).isEqualTo("ID");
+        assertThat(row.path("targetField").asText()).isEqualTo("ID");
+        ArgumentCaptor<com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest>
+                request = ArgumentCaptor.forClass(
+                com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest.class);
+        verify(metadataClient, atLeastOnce()).discover(any(), request.capture(), any());
+        assertThat(request.getAllValues()).allMatch(value -> Boolean.TRUE.equals(value.getForceRefresh()));
+    }
+
+    /**
+     * 目标列发生真实改名时，只有唯一的未占用候选满足类型、主键属性和元数据序号约束才允许自动修复。
+     *
+     * <p>该场景模拟 {@code customer_name} 被数据库管理员改名为 {@code name}。其它三列仍被现有映射占用，
+     * 因而 {@code name} 是唯一可证明候选。修复只改变已有映射的目标字段，不新增列、不改 DDL、不扩大
+     * 同步行列范围；调用方还会在持久化前再次运行完整预检。</p>
+     */
+    @Test
+    void fieldMappingRepairShouldRetargetUniquelyProvenRenamedColumn() throws Exception {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                columnAt("id", "BIGINT", true, 1),
+                columnAt("customer_name", "VARCHAR", false, 2),
+                columnAt("amount", "DECIMAL", false, 3),
+                columnAt("region", "VARCHAR", false, 4)));
+        DatasourceMetadataDiscoveryResponse.ColumnSummary renamed =
+                columnAt("name", "VARCHAR", false, 2);
+        renamed.setNullable(false);
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema", "target_task",
+                columnAt("id", "BIGINT", true, 1),
+                renamed,
+                columnAt("amount", "NUMERIC", false, 3),
+                columnAt("region", "VARCHAR", false, 4)));
+        SyncTaskDefinition definition = definitionWithCustomTarget("target_schema", "target_task");
+        definition.setFieldMappingConfig("""
+                {"version":"datasmart.sync.field-mapping.v2","objectMappings":[{
+                  "sourceObjectName":"task","targetSchema":"target_schema","targetObjectName":"target_task",
+                  "mappings":[
+                    {"sourceField":"id","targetField":"id","syncEnabled":true},
+                    {"sourceField":"customer_name","targetField":"customer_name","syncEnabled":true},
+                    {"sourceField":"amount","targetField":"amount","syncEnabled":true},
+                    {"sourceField":"region","targetField":"region","syncEnabled":true}
+                  ]
+                }]}
+                """);
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataFieldMappingRepairResult result =
+                support.repairFieldMappings(definition, actor());
+
+        var rows = new ObjectMapper().readTree(result.fieldMappingConfig())
+                .path("objectMappings").get(0).path("mappings");
+        assertThat(result.changedCount()).isEqualTo(1);
+        assertThat(result.issueCodes()).isEmpty();
+        assertThat(rows.get(1).path("sourceField").asText()).isEqualTo("customer_name");
+        assertThat(rows.get(1).path("targetField").asText()).isEqualTo("name");
+    }
+
+    /**
+     * 多个未占用目标列都与失效映射兼容时必须停止自动修复，不能按名称相似度或模型猜测任选一个。
+     */
+    @Test
+    void fieldMappingRepairShouldRejectAmbiguousRenamedColumnCandidates() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true), column("customer_name", "VARCHAR", false)));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema", "target_task",
+                column("id", "BIGINT", true),
+                column("name", "VARCHAR", false),
+                column("display_name", "VARCHAR", false)));
+        SyncTaskDefinition definition = definitionWithCustomTarget("target_schema", "target_task");
+        definition.setFieldMappingConfig("""
+                {"version":"datasmart.sync.field-mapping.v2","objectMappings":[{
+                  "sourceObjectName":"task","targetSchema":"target_schema","targetObjectName":"target_task",
+                  "mappings":[
+                    {"sourceField":"id","targetField":"id","syncEnabled":true},
+                    {"sourceField":"customer_name","targetField":"customer_name","syncEnabled":true}
+                  ]
+                }]}
+                """);
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataFieldMappingRepairResult result =
+                support.repairFieldMappings(definition, actor());
+
+        assertThat(result.changedCount()).isZero();
+        assertThat(result.issueCodes()).contains("AUTOPILOT_TARGET_FIELD_REPAIR_NOT_DETERMINISTIC");
+    }
+
+    /** 源字段已删除时，只有目标列本身可空或有数据库生成语义才允许停用该映射。 */
+    @Test
+    void fieldMappingRepairShouldOmitStaleSourceOnlyForNullableTarget() throws Exception {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true)));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema", "target_task",
+                column("id", "BIGINT", true), column("optional_note", "VARCHAR", false)));
+        SyncTaskDefinition definition = definitionWithCustomTarget("target_schema", "target_task");
+        definition.setFieldMappingConfig("""
+                {"version":"datasmart.sync-field-mapping.v2","objectMappings":[{
+                  "sourceObjectName":"task","targetSchema":"target_schema","targetObjectName":"target_task",
+                  "mappings":[{"sourceField":"legacy_note","targetField":"optional_note","syncEnabled":true}]
+                }]}
+                """);
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataFieldMappingRepairResult result =
+                support.repairFieldMappings(definition, actor());
+
+        var row = new ObjectMapper().readTree(result.fieldMappingConfig())
+                .path("objectMappings").get(0).path("mappings").get(0);
+        assertThat(result.changedCount()).isEqualTo(1);
+        assertThat(row.path("syncEnabled").asBoolean()).isFalse();
+        assertThat(result.issueCodes()).isEmpty();
+    }
+
+    /** 源字段已删除但目标已有数据库默认值时，可停用旧映射并让数据库使用既有默认语义。 */
+    @Test
+    void fieldMappingRepairShouldOmitStaleSourceWhenTargetHasDatabaseDefault() throws Exception {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true)));
+        DatasourceMetadataDiscoveryResponse.ColumnSummary defaulted = column("status", "VARCHAR", false);
+        defaulted.setNullable(false);
+        defaulted.setDefaultValue("ACTIVE");
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema", "target_task", column("id", "BIGINT", true), defaulted));
+        SyncTaskDefinition definition = definitionWithCustomTarget("target_schema", "target_task");
+        definition.setFieldMappingConfig("""
+                {"version":"datasmart.sync-field-mapping.v2","objectMappings":[{
+                  "sourceObjectName":"task","targetSchema":"target_schema","targetObjectName":"target_task",
+                  "mappings":[
+                    {"sourceField":"id","targetField":"id","syncEnabled":true},
+                    {"sourceField":"legacy_status","targetField":"status","syncEnabled":true}
+                  ]
+                }]}
+                """);
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataFieldMappingRepairResult result =
+                support.repairFieldMappings(definition, actor());
+
+        var rows = new ObjectMapper().readTree(result.fieldMappingConfig())
+                .path("objectMappings").get(0).path("mappings");
+        assertThat(result.changedCount()).isEqualTo(1);
+        assertThat(rows.get(1).path("syncEnabled").asBoolean()).isFalse();
+        assertThat(result.issueCodes()).isEmpty();
+    }
+
+    /** 必填且无默认值的目标列未映射时，预检必须在写入前阻断。 */
+    @Test
+    void precheckShouldRejectUnmappedRequiredTargetColumn() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true)));
+        DatasourceMetadataDiscoveryResponse.ColumnSummary required = column("required_code", "VARCHAR", false);
+        required.setNullable(false);
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema", "target_task", column("id", "BIGINT", true), required));
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(definitionWithCustomTarget("target_schema", "target_task"), actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_REQUIRED_TARGET_FIELD_NOT_MAPPED");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("必填列"));
+    }
+
+    /** 必填且无默认值的目标列不能通过停用映射自动绕过。 */
+    @Test
+    void fieldMappingRepairShouldRejectRequiredTargetWithoutDefault() throws Exception {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTaskDefinitionMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true)));
+        DatasourceMetadataDiscoveryResponse.ColumnSummary required = column("required_code", "VARCHAR", false);
+        required.setNullable(false);
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable(
+                "target_schema", "target_task", column("id", "BIGINT", true), required));
+        SyncTaskDefinition definition = definitionWithCustomTarget("target_schema", "target_task");
+        definition.setFieldMappingConfig("""
+                {"version":"datasmart.sync-field-mapping.v2","objectMappings":[{
+                  "sourceObjectName":"task","targetSchema":"target_schema","targetObjectName":"target_task",
+                  "mappings":[{"sourceField":"legacy_code","targetField":"required_code","syncEnabled":true}]
+                }]}
+                """);
+
+        SyncTaskDefinitionMetadataAwarePrecheckSupport.MetadataFieldMappingRepairResult result =
+                support.repairFieldMappings(definition, actor());
+
+        var row = new ObjectMapper().readTree(result.fieldMappingConfig())
+                .path("objectMappings").get(0).path("mappings").get(0);
+        assertThat(result.changedCount()).isZero();
+        assertThat(row.path("syncEnabled").asBoolean()).isTrue();
+        assertThat(result.issueCodes()).contains("AUTOPILOT_SOURCE_FIELD_REPAIR_NOT_DETERMINISTIC");
+    }
+
     private SyncTaskDefinition definitionWithCustomTarget(String targetSchema, String targetTable) {
         SyncTaskDefinition definition = new SyncTaskDefinition();
         definition.setId(1001L);
@@ -420,6 +639,17 @@ class SyncTaskDefinitionMetadataAwarePrecheckSupportTest {
         column.setDataTypeName(type);
         column.setPrimaryKey(primaryKey);
         column.setNullable(!primaryKey);
+        return column;
+    }
+
+    /** 创建带 JDBC 元数据序号的字段摘要，用于证明列改名没有改变表内结构位置。 */
+    private DatasourceMetadataDiscoveryResponse.ColumnSummary columnAt(
+            String name,
+            String type,
+            boolean primaryKey,
+            int ordinalPosition) {
+        DatasourceMetadataDiscoveryResponse.ColumnSummary column = column(name, type, primaryKey);
+        column.setOrdinalPosition(ordinalPosition);
         return column;
     }
 

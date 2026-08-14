@@ -23,7 +23,8 @@ public final class AgentAutopilotRecoveryFactsVerifier {
     private static final String TRANSIENT_FAILURE_CLASS = "TRANSIENT_CONNECTOR_OR_WORKER";
     private static final Pattern SAFE_CODE = Pattern.compile("[A-Z0-9_.:-]{1,96}");
     private static final Set<String> NON_TRANSIENT_CODES = Set.of(
-            "TARGET_DUPLICATE_KEY", "TARGET_NOT_NULL_VIOLATION", "SCHEMA_COLUMN_MISMATCH",
+        "TARGET_DUPLICATE_KEY", "TARGET_NOT_NULL_VIOLATION", "SCHEMA_COLUMN_MISMATCH",
+            "TARGET_FOREIGN_KEY_VIOLATION",
             "TARGET_COLUMN_TOO_NARROW", "TYPE_OR_FORMAT_CONVERSION_FAILED",
             "DATASOURCE_PERMISSION_DENIED", "DATASOURCE_CREDENTIAL_INVALID",
             "DATA_CONTRACT_VIOLATION", "SCOPE_MISMATCH");

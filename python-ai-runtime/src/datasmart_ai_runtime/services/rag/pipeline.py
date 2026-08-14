@@ -333,11 +333,15 @@ class RagPipeline:
                 "documentId": item.chunk.document_id,
                 "chunkId": item.chunk.chunk_id,
                 "sourceType": item.chunk.source_type.value,
+                # sourceRef 是跨诊断、RAG 和 Java 控制面的统一来源字段；sourceUri 继续保留给旧调用方。
+                "sourceRef": item.chunk.source_uri,
                 "sourceUri": item.chunk.source_uri,
                 "retrievedAt": retrieved_at,
                 "queryDigest": query_digest,
                 "querySummary": query_summary,
                 "finalScore": round(item.final_score, 6),
+                "confidence": _rag_evidence_confidence(item),
+                "confidenceBasis": "HYBRID_RETRIEVAL_SCORE",
             }
             for index, item in enumerate(selected, start=1)
         )
@@ -375,6 +379,28 @@ class RagPipeline:
             },
             "payloadPolicy": "LOW_SENSITIVE_RAG_RETRIEVAL_SUMMARY_ONLY",
         }
+
+
+def _rag_evidence_confidence(item: RagScoredChunk) -> float:
+    """把多路召回信号压缩为可审计的 0 到 1 证据可信度。
+
+    ``finalScore`` 的量纲会随召回器配置变化，不能直接当作百分比。因此分别
+    归一化向量、重排、词法和融合信号后再加权。这个值只描述引用与当前查询
+    的匹配可信度，不代表文档内容本身绝对正确。
+    """
+
+    def bounded(value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+    lexical_raw = max(0.0, float(item.lexical_score))
+    lexical_signal = bounded(lexical_raw / (1.0 + lexical_raw))
+    confidence = (
+        (0.35 * bounded(item.vector_score))
+        + (0.25 * bounded(item.rerank_score))
+        + (0.20 * lexical_signal)
+        + (0.20 * bounded(item.fused_score))
+    )
+    return round(confidence, 6)
 
 
 def _rag_messages(

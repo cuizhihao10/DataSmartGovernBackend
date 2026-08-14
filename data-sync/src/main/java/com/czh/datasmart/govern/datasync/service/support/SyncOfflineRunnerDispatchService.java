@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryPlanWorkerResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
@@ -159,10 +160,29 @@ public class SyncOfflineRunnerDispatchService {
                                                            SyncTaskDefinition definition,
                                                            SyncWorkerExecutionPlanView workerPlan,
                                                            SyncActorContext actorContext) {
+        return dispatchOffline(execution, task, definition, workerPlan, actorContext, null);
+    }
+
+    /**
+     * 按离线 Runner 合同调度一次执行，并保留 worker 已消费的恢复计划。
+     *
+     * <p>恢复计划不能藏在日志或线程变量里，因为 worker、data-sync 与 connector runtime 之间存在明确的
+     * 服务边界。本重载把低敏恢复坐标显式传到 run-once 派发层；真正的 checkpoint 原值仍由派发层按主键
+     * 从本地持久表读取，并再次校验租户、项目、任务和来源 execution。</p>
+     *
+     * @param recoveryPlan 已认领并消费的恢复计划；普通执行传 {@code null}
+     */
+    public SyncOfflineRunnerDispatchResult dispatchOffline(SyncExecution execution,
+                                                           SyncTask task,
+                                                           SyncTaskDefinition definition,
+                                                           SyncWorkerExecutionPlanView workerPlan,
+                                                           SyncActorContext actorContext,
+                                                           SyncRecoveryPlanWorkerResult recoveryPlan) {
         requireDispatchInputs(execution, task, definition, workerPlan);
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
         SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, definition, workerPlan);
         SyncOfflineRunnerJobContract contract = bridgePlan.getOfflineRunnerContract();
+        boolean checkpointReplay = isCheckpointReplay(recoveryPlan);
         recordRunnerEvent(task, execution, safeActorContext,
                 "PLAN",
                 bridgePlan.isDispatchable() ? "INFO" : "WARN",
@@ -192,6 +212,15 @@ public class SyncOfflineRunnerDispatchService {
                     USE_REALTIME_CDC_PIPELINE,
                     "当前任务属于实时 CDC 通道，应进入 Debezium/Kafka Connect pipeline，不能由离线 Runner 执行",
                     mergeIssues(bridgePlan, contract, USE_REALTIME_CDC_PIPELINE),
+                    contract);
+        }
+        if (checkpointReplay && !"SINGLE_OBJECT".equalsIgnoreCase(contract.syncScopeType())) {
+            return failBeforeDelegate(task, execution, safeActorContext,
+                    "FAILED_BEFORE_CHECKPOINT_HANDOFF",
+                    contract.contractStatus(),
+                    OFFLINE_RUNNER_CHECKPOINT_HANDOFF_REQUIRED,
+                    "checkpoint 恢复当前只允许单对象执行；fan-out 场景必须按分片保存并校验各自水位",
+                    mergeIssues(bridgePlan, contract, OFFLINE_RUNNER_CHECKPOINT_HANDOFF_REQUIRED),
                     contract);
         }
         if (discoveredObjectFanOutDispatchService != null
@@ -252,7 +281,7 @@ public class SyncOfflineRunnerDispatchService {
                     mergeIssues(bridgePlan, contract, OFFLINE_RUNNER_CONTRACT_BLOCKED),
                     contract);
         }
-        if (!contract.minimalBridgeEndToEndSupported()) {
+        if (!contract.minimalBridgeEndToEndSupported() && !checkpointReplay) {
             SyncOfflineRunnerAdapter dedicatedRunnerAdapter = runnerAdapterRegistry.select(contract).orElse(null);
             if (dedicatedRunnerAdapter != null) {
                 return dispatchDedicatedRunner(dedicatedRunnerAdapter, task, execution, definition, workerPlan,
@@ -261,9 +290,29 @@ public class SyncOfflineRunnerDispatchService {
             return failUnsupportedContractBeforeDelegate(task, execution, safeActorContext, bridgePlan, contract);
         }
 
-        SyncBatchRunOnceDispatchResult runOnceResult =
-                runOnceDispatchService.dispatchPreparedRunOnce(bridgePlan, execution, task, safeActorContext);
+        /*
+         * 普通执行继续复用历史四参数入口，保证 CUSTOM_SQL、单对象 run-once 以及已有扩展实现的合同不变。
+         * 只有 worker 确实消费到恢复计划时才调用五参数重载，把 checkpoint 主键继续传到受控派发层。
+         * 不能把 null 恢复计划也强制塞进新入口，否则测试替身和第三方实现会被误判为返回空回执。
+         */
+        SyncBatchRunOnceDispatchResult runOnceResult = recoveryPlan == null
+                ? runOnceDispatchService.dispatchPreparedRunOnce(
+                bridgePlan, execution, task, safeActorContext)
+                : runOnceDispatchService.dispatchPreparedRunOnce(
+                bridgePlan, execution, task, safeActorContext, recoveryPlan);
         return fromRunOnceResult(runOnceResult, contract);
+    }
+
+    /**
+     * 判断恢复计划是否要求从持久 checkpoint 继续读取。
+     *
+     * <p>只认平台生成的 REPLAY + sourceCheckpointId 组合；模型文字、reason 或 message 都不能打开该通道。</p>
+     */
+    private boolean isCheckpointReplay(SyncRecoveryPlanWorkerResult recoveryPlan) {
+        return recoveryPlan != null
+                && recoveryPlan.hasRecoveryPlan()
+                && "REPLAY".equalsIgnoreCase(recoveryPlan.recoveryType())
+                && recoveryPlan.sourceCheckpointId() != null;
     }
 
     /**

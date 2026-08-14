@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>这组测试验证新的 internal run-once 能力是否满足 data-sync 闭环所需的边界：
  * 只执行一批 read/write，返回低敏摘要，不调用 datasource-management legacy SyncTaskService，
- * 不返回真实行数据、SQL、连接串或 checkpoint 原始值。</p>
+ * 不返回真实行数据、SQL 或连接串；checkpoint 原始值只允许通过内部合同交给 data-sync。</p>
  */
 class SyncBatchConnectorRuntimeRunOnceServiceTest {
 
@@ -70,6 +70,8 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
         assertEquals(12L, response.getTotalRecordsRead());
         assertEquals(11L, response.getTotalRecordsWritten());
         assertEquals("TIME_WATERMARK", response.getCheckpointType());
+        assertEquals("2026-06-20T16:21:00", response.getCheckpointCandidateValue());
+        assertEquals("INTERNAL_RESPONSE_PERSIST_BEFORE_NEXT_BATCH", response.getCheckpointHandoffMode());
         assertEquals(SyncBatchRunOnceInternalResponse.PAYLOAD_POLICY, response.getPayloadPolicy());
         assertFalse(response.toString().contains("2026-06-20T16:21:00"));
         assertTrue(reader.invoked);

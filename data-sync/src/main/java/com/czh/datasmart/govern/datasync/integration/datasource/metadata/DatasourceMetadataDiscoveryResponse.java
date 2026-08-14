@@ -44,6 +44,10 @@ public class DatasourceMetadataDiscoveryResponse {
         private String columnName;
         private String dataTypeName;
         private boolean nullable;
+        /** 目标列已有的数据库默认表达式；只用于判断“省略该列”是否安全，不允许转成业务值。 */
+        private String defaultValue;
+        /** 数据库是否自动生成该列。 */
+        private boolean autoIncrement;
         private boolean primaryKey;
         private Integer ordinalPosition;
     }

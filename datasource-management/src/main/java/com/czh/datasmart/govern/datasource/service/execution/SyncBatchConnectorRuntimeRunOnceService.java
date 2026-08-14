@@ -46,8 +46,8 @@ public class SyncBatchConnectorRuntimeRunOnceService {
     private static final String CHECKPOINT_VALUE_PARAMETER = "checkpointValue";
     private static final String LIMIT_PARAMETER = "limit";
     private static final String OFFSET_PARAMETER = "offset";
-    private static final String CHECKPOINT_HANDOFF_NOT_RETURNED =
-            "CHECKPOINT_VALUE_NOT_RETURNED_USE_SECURE_HANDOFF_BEFORE_INCREMENTAL_CLOSURE";
+    private static final String CHECKPOINT_HANDOFF_INTERNAL_RESPONSE =
+            "INTERNAL_RESPONSE_PERSIST_BEFORE_NEXT_BATCH";
     private static final int MAX_ERROR_SUMMARY_LENGTH = 260;
 
     /**
@@ -95,9 +95,9 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                         writeResult.getDirtySamples(), true);
             }
 
-            boolean checkpointCandidateProduced = resolveCheckpointCandidate(request, readResult) != null;
+            Object checkpointCandidate = resolveCheckpointCandidate(request, readResult);
             boolean endOfSource = Boolean.TRUE.equals(readResult.getEndOfSource());
-            return successResponse(plan, bundle, request, readResult, writeResult, checkpointCandidateProduced, endOfSource);
+            return successResponse(plan, bundle, request, readResult, writeResult, checkpointCandidate, endOfSource);
         } catch (RuntimeException exception) {
             return failureResponse(plan, bundle, request, 0L, 0L, 0L,
                     "RUNNER_FAILED", false, exceptionError("执行阶段异常", exception));
@@ -189,8 +189,9 @@ public class SyncBatchConnectorRuntimeRunOnceService {
     }
 
     /**
-     * Remove only rows matching server-approved PRIMARY_KEY_EQ selectors.
-     * Invalid selectors fail closed rather than broadening the exclusion range.
+     * 只移除命中服务端批准的 {@code PRIMARY_KEY_EQ} 精确选择器的行。
+     *
+     * <p>任一选择器不合法都会整体拒绝本批写入，绝不能把解析失败解释为更宽的隔离范围。</p>
      */
     private SyncBatchRecordBatch excludeQuarantinedRows(SyncBatchRecordBatch batch, List<String> selectors) {
         if (batch == null || batch.isEmpty() || selectors == null || selectors.isEmpty()) {
@@ -266,8 +267,8 @@ public class SyncBatchConnectorRuntimeRunOnceService {
     /**
      * 判断是否产生 checkpoint 候选值。
      *
-     * <p>该方法会在内存中读取增量字段的最后一个非空值，但只返回是否存在，不返回具体值。
-     * 这样能让 data-sync 知道“需要 checkpoint handoff”，同时避免当前低敏响应泄露水位。</p>
+     * <p>该方法会在内存中读取增量字段的最后一个非空值。候选值只会进入受鉴权保护的 internal 响应，
+     * 供 data-sync 在下一批之前持久化；调用链任何位置都不得打印该值。</p>
      */
     private Object resolveCheckpointCandidate(SyncBatchRunOnceInternalRequest request, SyncBatchReadResult readResult) {
         if (!Boolean.TRUE.equals(readResult.getCheckpointRecommended())) {
@@ -292,8 +293,9 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                                                              SyncBatchRunOnceInternalRequest request,
                                                              SyncBatchReadResult readResult,
                                                              SyncBatchWriteResult writeResult,
-                                                             boolean checkpointCandidateProduced,
+                                                             Object checkpointCandidate,
                                                              boolean endOfSource) {
+        boolean checkpointCandidateProduced = checkpointCandidate != null;
         String runStatus = endOfSource ? "SOURCE_EXHAUSTED_COMPLETE_REQUIRED" : "BATCH_WRITTEN_MORE_REMAIN";
         return response(plan, bundle, request,
                 runStatus,
@@ -305,6 +307,7 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                 true,
                 checkpointCandidateProduced,
                 checkpointCandidateProduced,
+                checkpointCandidate,
                 endOfSource,
                 false,
                 null,
@@ -346,6 +349,7 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                 progressRecommended,
                 false,
                 false,
+                null,
                 false,
                 true,
                 errorSummary,
@@ -365,6 +369,7 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                                                       boolean progressCallbackRecommended,
                                                       boolean checkpointCallbackRecommended,
                                                       boolean checkpointCandidateProduced,
+                                                      Object checkpointCandidateValue,
                                                       boolean completeCallbackRecommended,
                                                       boolean failCallbackRecommended,
                                                       String errorSummary,
@@ -385,7 +390,8 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                 progressCallbackRecommended,
                 checkpointCallbackRecommended,
                 checkpointCandidateProduced,
-                CHECKPOINT_HANDOFF_NOT_RETURNED,
+                checkpointCandidateValue,
+                CHECKPOINT_HANDOFF_INTERNAL_RESPONSE,
                 completeCallbackRecommended,
                 failCallbackRecommended,
                 checkpointType(bundle, plan),

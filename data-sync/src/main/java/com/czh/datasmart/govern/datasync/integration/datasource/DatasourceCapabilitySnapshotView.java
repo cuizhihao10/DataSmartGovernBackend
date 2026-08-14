@@ -99,6 +99,12 @@ public class DatasourceCapabilitySnapshotView {
      */
     private String implementationStage;
 
+    /** datasource-management 当前进程实际加载的连接器版本；不可用时为 UNAVAILABLE。 */
+    private String connectorRuntimeVersion;
+
+    /** 连接器版本的低敏取证方式，不暴露驱动类名或文件路径。 */
+    private String connectorRuntimeVersionSource;
+
     /**
      * 是否允许进入任务定义规划。
      *
@@ -122,6 +128,18 @@ public class DatasourceCapabilitySnapshotView {
      */
     private Boolean canWrite;
 
+    /** 是否支持 schema、表和字段发现。 */
+    private Boolean supportsSchemaDiscovery;
+
+    /** 是否支持确定性的字段映射。 */
+    private Boolean supportsFieldMapping;
+
+    /** 是否支持从持久化 checkpoint 恢复。 */
+    private Boolean supportsCheckpointResume;
+
+    /** 是否支持受治理的分区并行。 */
+    private Boolean supportsPartitionParallelism;
+
     /**
      * 支持的同步模式列表。
      */
@@ -131,6 +149,15 @@ public class DatasourceCapabilitySnapshotView {
      * 支持的写入策略列表。
      */
     private List<String> supportedWriteStrategies;
+
+    /** 连接器一致性和幂等语义的低敏说明。 */
+    private List<String> consistencyNotes;
+
+    /** 批量、并发、背压、索引等容量建议。 */
+    private List<String> performanceRecommendations;
+
+    /** 当前运行阶段仍存在的生产限制。 */
+    private List<String> productionLimitations;
 
     /**
      * 阻断或风险原因码。

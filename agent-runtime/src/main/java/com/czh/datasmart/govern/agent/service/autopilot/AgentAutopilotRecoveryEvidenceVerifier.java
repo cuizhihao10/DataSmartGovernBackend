@@ -154,7 +154,9 @@ public class AgentAutopilotRecoveryEvidenceVerifier {
                 throw conflict("AUTOPILOT_EVIDENCE_RECORD_INVALID");
             }
             sourceTypes.add(sourceType);
+            verifyEvidenceSource(record);
             verifyFreshTime(trigger, text(record.get("retrievedAt")));
+            verifyEvidenceConfidence(record);
             Object recordQueryDigest = record.get("queryDigest");
             if (recordQueryDigest != null && !queryDigest.equalsIgnoreCase(text(recordQueryDigest))) {
                 throw conflict("AUTOPILOT_EVIDENCE_QUERY_BINDING_MISMATCH");
@@ -206,6 +208,50 @@ public class AgentAutopilotRecoveryEvidenceVerifier {
                     "AUTOPILOT_RETRIEVAL_SCOPE_MISMATCH");
         }
         verifyFreshTime(trigger, text(audit.get("retrievedAt")));
+        for (Map<String, Object> record : records) {
+            if (code(record.get("sourceType")).isBlank()) {
+                throw conflict("AUTOPILOT_RETRIEVAL_SOURCE_TYPE_INVALID");
+            }
+            verifyEvidenceSource(record);
+            verifyFreshTime(trigger, text(record.get("retrievedAt")));
+            verifyEvidenceConfidence(record);
+        }
+    }
+
+    /**
+     * 校验证据记录携带了可追溯的低敏来源引用。
+     *
+     * <p>诊断证据和 RAG 证据统一使用 {@code sourceRef}。RAG 可以继续附带兼容字段
+     * {@code sourceUri}，但兼容字段不能替代统一合同。本方法只检查引用是否存在，
+     * 不会读取引用指向的日志或文档正文。</p>
+     *
+     * @param record 已完成容器类型校验的单条证据记录
+     * @throws PlatformBusinessException 当来源引用缺失时
+     */
+    private void verifyEvidenceSource(Map<String, Object> record) {
+        if (text(record.get("sourceRef")).isBlank()) {
+            throw conflict("AUTOPILOT_EVIDENCE_SOURCE_REFERENCE_MISSING");
+        }
+    }
+
+    /**
+     * 校验逐条证据可信度及其校准依据。
+     *
+     * <p>可信度必须是 0 到 1 的有限数值，且必须说明它来自平台事实、执行日志、
+     * 历史事故还是混合检索评分。这样可以防止模型只给出一个无法解释的自评分。</p>
+     *
+     * @param record 已完成容器类型校验的单条证据记录
+     * @throws PlatformBusinessException 当可信度越界、非数值或没有校准依据时
+     */
+    private void verifyEvidenceConfidence(Map<String, Object> record) {
+        Object value = record.get("confidence");
+        if (!(value instanceof Number number)
+                || !Double.isFinite(number.doubleValue())
+                || number.doubleValue() < 0.0d
+                || number.doubleValue() > 1.0d
+                || text(record.get("confidenceBasis")).isBlank()) {
+            throw conflict("AUTOPILOT_EVIDENCE_CONFIDENCE_INVALID");
+        }
     }
 
     /**

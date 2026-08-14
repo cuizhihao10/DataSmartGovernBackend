@@ -18,6 +18,8 @@ import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -146,6 +148,99 @@ class SyncExecutionPolicyServiceTest {
         );
         assertThat(effective.readBatchSize()).isEqualTo(2048);
         assertThat(effective.writeBatchSize()).isEqualTo(1024);
+    }
+
+    /** 临时恢复覆盖只有在任务仍运行同一个 execution 且未超过授权截止时间时才能参与策略合并。 */
+    @Test
+    void autopilotOverrideShouldBeBoundToCurrentExecutionStateAndDeadline() {
+        SyncExecutionPolicyMapper policyMapper = mock(SyncExecutionPolicyMapper.class);
+        SyncExecutionPolicyService service = new SyncExecutionPolicyService(
+                policyMapper,
+                mock(SyncExecutionPolicySnapshotMapper.class),
+                mock(SyncTaskMapper.class),
+                mock(SyncTaskDefinitionMapper.class),
+                mock(SyncExecutionMapper.class),
+                mock(SyncDataScopeSupport.class),
+                new ObjectMapper());
+        SyncExecutionPolicy override = autopilotOverride(
+                501L, LocalDateTime.now(ZoneOffset.UTC).plusMinutes(30));
+        when(policyMapper.selectList(any())).thenReturn(List.of(override));
+
+        SyncTask task = new SyncTask();
+        task.setId(77L);
+        task.setTenantId(10L);
+        task.setProjectId(101L);
+        task.setLastExecutionId(501L);
+        task.setCurrentState("RETRYING");
+
+        SyncEffectiveExecutionPolicy active = service.resolveEffectivePolicy(
+                task, new SyncTaskDefinition(),
+                new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-active"));
+        assertThat(active.matchedPolicyCodes()).contains("TASK:AUTOPILOT_RECOVERY_OVERRIDE");
+
+        task.setLastExecutionId(502L);
+        SyncEffectiveExecutionPolicy staleExecution = service.resolveEffectivePolicy(
+                task, new SyncTaskDefinition(),
+                new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-stale"));
+        assertThat(staleExecution.matchedPolicyCodes()).doesNotContain("TASK:AUTOPILOT_RECOVERY_OVERRIDE");
+
+        task.setLastExecutionId(501L);
+        task.setCurrentState("SUCCEEDED");
+        SyncEffectiveExecutionPolicy terminalTask = service.resolveEffectivePolicy(
+                task, new SyncTaskDefinition(),
+                new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-terminal"));
+        assertThat(terminalTask.matchedPolicyCodes()).doesNotContain("TASK:AUTOPILOT_RECOVERY_OVERRIDE");
+    }
+
+    /** 过期或损坏的绑定材料必须 fail-closed，不能降级成普通的高优先级 TASK 策略。 */
+    @Test
+    void autopilotOverrideShouldIgnoreExpiredOrMalformedBinding() {
+        SyncExecutionPolicyMapper policyMapper = mock(SyncExecutionPolicyMapper.class);
+        SyncExecutionPolicyService service = new SyncExecutionPolicyService(
+                policyMapper,
+                mock(SyncExecutionPolicySnapshotMapper.class),
+                mock(SyncTaskMapper.class),
+                mock(SyncTaskDefinitionMapper.class),
+                mock(SyncExecutionMapper.class),
+                mock(SyncDataScopeSupport.class),
+                new ObjectMapper());
+        SyncExecutionPolicy expired = autopilotOverride(
+                501L, LocalDateTime.now(ZoneOffset.UTC).minusSeconds(1));
+        when(policyMapper.selectList(any())).thenReturn(List.of(expired));
+
+        SyncTask task = new SyncTask();
+        task.setId(77L);
+        task.setTenantId(10L);
+        task.setProjectId(101L);
+        task.setLastExecutionId(501L);
+        task.setCurrentState("RUNNING");
+
+        SyncEffectiveExecutionPolicy effective = service.resolveEffectivePolicy(
+                task, new SyncTaskDefinition(),
+                new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-expired"));
+        assertThat(effective.matchedPolicyCodes()).doesNotContain("TASK:AUTOPILOT_RECOVERY_OVERRIDE");
+
+        expired.setDescription("不是结构化恢复绑定");
+        SyncEffectiveExecutionPolicy malformed = service.resolveEffectivePolicy(
+                task, new SyncTaskDefinition(),
+                new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-malformed"));
+        assertThat(malformed.matchedPolicyCodes()).doesNotContain("TASK:AUTOPILOT_RECOVERY_OVERRIDE");
+    }
+
+    /** 构造仅供当前恢复 execution 使用的高优先级任务覆盖。 */
+    private SyncExecutionPolicy autopilotOverride(Long executionId, LocalDateTime deadlineAt) {
+        SyncExecutionPolicy policy = policy(
+                99L, "TASK", "AUTOPILOT_RECOVERY_OVERRIDE", 10L, 101L,
+                null, null, "ANY", 77L, null, 1, 128, 128, 900);
+        policy.setScopeKey("TASK:77");
+        policy.setPriority(10_000);
+        policy.setDescription("""
+                {"bindingType":"AUTOPILOT_RECOVERY_OVERRIDE","caseId":81,
+                 "tenantId":10,"projectId":101,"taskId":77,"executionId":%d,
+                 "authorizationDigest":"%s","policyDigest":"%s",
+                 "deadlineAt":"%s","action":"TUNE_EXECUTION_POLICY"}
+                """.formatted(executionId, "a".repeat(64), "b".repeat(64), deadlineAt));
+        return policy;
     }
 
     private SyncExecutionPolicy policy(Long id,

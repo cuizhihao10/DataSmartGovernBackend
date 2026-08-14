@@ -8,15 +8,19 @@ package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceRunOnceProperties;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryPlanWorkerResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
+import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
+import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -33,7 +37,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * run-once 派发服务测试。
@@ -101,6 +107,150 @@ class SyncBatchRunOnceDispatchServiceTest {
         assertFail(lifecycleSupport, execution, "CHECKPOINT_HANDOFF_NOT_IMPLEMENTED");
         verify(receiptPublisher).publishFailed(eq(task()), eq(execution), any(SyncActorContext.class),
                 eq("CHECKPOINT_HANDOFF_NOT_IMPLEMENTED"), any());
+    }
+
+    /**
+     * 恢复执行引用的持久 checkpoint 通过完整范围校验后，才允许进入内部 run-once 请求。
+     *
+     * <p>原值只存在于捕获的内部 DTO 中；对外结果和日志仍只暴露类型与恢复状态。</p>
+     */
+    @Test
+    void checkpointReplayShouldHandoffPersistedValueAfterScopeValidation() {
+        FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(completeResponse());
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true),
+                mock(DataSyncTaskManagementReceiptPublisher.class));
+        SyncCheckpointMapper checkpointMapper = mock(SyncCheckpointMapper.class);
+        service.setCheckpointMapper(checkpointMapper);
+        SyncExecution execution = execution("INCREMENTAL_ID");
+        execution.setTriggerType(SyncTriggerType.REPLAY.name());
+        SyncTask task = task();
+        SyncTaskDefinition definition = definition("INCREMENTAL_ID", directMapping());
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("INCREMENTAL_ID", "READY_TO_RUN", List.of());
+        SyncBatchRunnerBridgePlan bridgePlan = new SyncBatchRunnerBridgePlanSupport(
+                new SyncFieldMappingExecutionContractSupport(new ObjectMapper()))
+                .buildPlan(execution, task, definition, workerPlan);
+        SyncCheckpoint checkpoint = checkpoint(9001L, 77L, "ID_FIELD", "4200");
+        when(checkpointMapper.selectById(9001L)).thenReturn(checkpoint);
+
+        SyncBatchRunOnceDispatchResult result = service.dispatchPreparedRunOnce(
+                bridgePlan, execution, task, actor(), checkpointRecoveryPlan(9001L));
+
+        assertThat(result.completed()).isTrue();
+        assertThat(client.capturedRequest().getCheckpointValue()).isEqualTo("4200");
+        assertThat(client.capturedRequest().getExecutionPlan().getCheckpointPlan().getCheckpointType())
+                .isEqualTo("ID_FIELD");
+        assertThat(client.capturedRequest().getExecutionPlan().getCheckpointPlan().getInitialCheckpointPolicy())
+                .isEqualTo("RESUME_FROM_PERSISTED_CHECKPOINT");
+        assertThat(client.capturedRequest().getExecutionPlan().getCheckpointPlan().getResumeRequired()).isTrue();
+        assertThat(result.toString()).doesNotContain("4200");
+    }
+
+    /**
+     * checkpoint 即使主键存在，只要来源 execution 不匹配也必须 fail-closed，防止跨执行窃取水位。
+     */
+    @Test
+    void checkpointReplayShouldFailBeforeRemoteCallWhenCheckpointScopeDoesNotMatch() {
+        FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(completeResponse());
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true),
+                mock(DataSyncTaskManagementReceiptPublisher.class));
+        SyncCheckpointMapper checkpointMapper = mock(SyncCheckpointMapper.class);
+        service.setCheckpointMapper(checkpointMapper);
+        SyncExecution execution = execution("INCREMENTAL_ID");
+        execution.setTriggerType(SyncTriggerType.REPLAY.name());
+        SyncTask task = task();
+        SyncTaskDefinition definition = definition("INCREMENTAL_ID", directMapping());
+        SyncBatchRunnerBridgePlan bridgePlan = new SyncBatchRunnerBridgePlanSupport(
+                new SyncFieldMappingExecutionContractSupport(new ObjectMapper()))
+                .buildPlan(execution, task, definition,
+                        workerPlan("INCREMENTAL_ID", "READY_TO_RUN", List.of()));
+        when(checkpointMapper.selectById(9001L)).thenReturn(checkpoint(9001L, 76L, "ID_FIELD", "4200"));
+
+        SyncBatchRunOnceDispatchResult result = service.dispatchPreparedRunOnce(
+                bridgePlan, execution, task, actor(), checkpointRecoveryPlan(9001L));
+
+        assertThat(result.failed()).isTrue();
+        assertThat(result.issueCodes()).contains("RECOVERY_CHECKPOINT_SCOPE_MISMATCH");
+        assertThat(client.calls()).isZero();
+        assertFail(lifecycleSupport, execution, "RECOVERY_CHECKPOINT_SCOPE_MISMATCH");
+    }
+
+    /**
+     * 增量恢复的每一批都必须先保存新水位，再用它读取下一批。
+     *
+     * <p>本测试同时覆盖最终批：即使远端已经建议 complete，最终候选水位也要先写入 checkpoint，
+     * 否则下一次周期执行仍可能从旧位置开始。</p>
+     */
+    @Test
+    void checkpointRecoveryShouldPersistCandidateAndUseItForNextBatch() {
+        DatasourceRunOnceResponse firstBatch = checkpointResponse(moreBatchesResponse(), "4300");
+        DatasourceRunOnceResponse finalBatch = checkpointResponse(completeResponse(14L, 12L), "4400");
+        FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(firstBatch, finalBatch);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true),
+                mock(DataSyncTaskManagementReceiptPublisher.class));
+        SyncCheckpointMapper checkpointMapper = mock(SyncCheckpointMapper.class);
+        service.setCheckpointMapper(checkpointMapper);
+        SyncExecution execution = execution("INCREMENTAL_ID");
+        execution.setTriggerType(SyncTriggerType.REPLAY.name());
+        SyncTask task = task();
+        SyncBatchRunnerBridgePlan bridgePlan = new SyncBatchRunnerBridgePlanSupport(
+                new SyncFieldMappingExecutionContractSupport(new ObjectMapper()))
+                .buildPlan(execution, task, definition("INCREMENTAL_ID", directMapping()),
+                        workerPlan("INCREMENTAL_ID", "READY_TO_RUN", List.of()));
+        when(checkpointMapper.selectById(9001L)).thenReturn(checkpoint(9001L, 77L, "ID_FIELD", "4200"));
+
+        SyncBatchRunOnceDispatchResult result = service.dispatchPreparedRunOnce(
+                bridgePlan, execution, task, actor(), checkpointRecoveryPlan(9001L));
+
+        assertThat(result.completed()).isTrue();
+        assertThat(client.calls()).isEqualTo(2);
+        assertThat(client.checkpointValueSnapshots()).containsExactly("4200", "4300");
+        ArgumentCaptor<SyncExecutionCheckpointRequest> checkpointCaptor =
+                ArgumentCaptor.forClass(SyncExecutionCheckpointRequest.class);
+        verify(lifecycleSupport, times(2)).writeCheckpoint(
+                eq(task), eq(execution), checkpointCaptor.capture(), any(SyncActorContext.class));
+        assertThat(checkpointCaptor.getAllValues())
+                .extracting(SyncExecutionCheckpointRequest::getCheckpointValue)
+                .containsExactly("4300", "4400");
+        assertThat(checkpointCaptor.getAllValues())
+                .extracting(SyncExecutionCheckpointRequest::getCheckpointType)
+                .containsOnly("ID_FIELD");
+        assertThat(checkpointCaptor.getAllValues())
+                .extracting(SyncExecutionCheckpointRequest::getIdempotencyKey)
+                .allSatisfy(key -> assertThat(key)
+                        .startsWith("run-once-checkpoint:88:")
+                        .doesNotContain("4300", "4400"));
+        assertThat(result.toString()).doesNotContain("4200", "4300", "4400");
+    }
+
+    /** 远端只返回“产生了水位”却缺少原值时，必须在第二次远程调用前终止。 */
+    @Test
+    void checkpointRecoveryShouldFailClosedWhenCandidateValueIsMissing() {
+        DatasourceRunOnceResponse incomplete = checkpointResponse(moreBatchesResponse(), null);
+        FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(incomplete, completeResponse());
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true),
+                mock(DataSyncTaskManagementReceiptPublisher.class));
+        SyncCheckpointMapper checkpointMapper = mock(SyncCheckpointMapper.class);
+        service.setCheckpointMapper(checkpointMapper);
+        SyncExecution execution = execution("INCREMENTAL_ID");
+        execution.setTriggerType(SyncTriggerType.REPLAY.name());
+        SyncTask task = task();
+        SyncBatchRunnerBridgePlan bridgePlan = new SyncBatchRunnerBridgePlanSupport(
+                new SyncFieldMappingExecutionContractSupport(new ObjectMapper()))
+                .buildPlan(execution, task, definition("INCREMENTAL_ID", directMapping()),
+                        workerPlan("INCREMENTAL_ID", "READY_TO_RUN", List.of()));
+        when(checkpointMapper.selectById(9001L)).thenReturn(checkpoint(9001L, 77L, "ID_FIELD", "4200"));
+
+        SyncBatchRunOnceDispatchResult result = service.dispatchPreparedRunOnce(
+                bridgePlan, execution, task, actor(), checkpointRecoveryPlan(9001L));
+
+        assertThat(result.failed()).isTrue();
+        assertThat(client.calls()).isEqualTo(1);
+        verify(lifecycleSupport, never()).writeCheckpoint(any(), any(), any(), any());
+        assertFail(lifecycleSupport, execution, "CHECKPOINT_VALUE_NOT_RETURNED");
     }
 
     /**
@@ -248,6 +398,8 @@ class SyncBatchRunOnceDispatchServiceTest {
 
     private DatasourceRunOnceResponse completeResponse(Long totalRecordsRead, Long totalRecordsWritten) {
         DatasourceRunOnceResponse response = new DatasourceRunOnceResponse();
+        response.setTaskId(11L);
+        response.setExecutionId(88L);
         response.setRunStatus("SOURCE_EXHAUSTED_COMPLETE_REQUIRED");
         response.setBatchRecordsRead(2L);
         response.setBatchRecordsWritten(2L);
@@ -261,6 +413,17 @@ class SyncBatchRunOnceDispatchServiceTest {
         response.setProgressCallbackRecommended(false);
         response.setCheckpointCandidateProduced(false);
         response.setPayloadPolicy("LOW_SENSITIVE_RUN_ONCE_RESULT_NO_ROWS_NO_SQL_NO_CREDENTIALS_NO_CHECKPOINT_VALUE");
+        return response;
+    }
+
+    /** 构造符合 internal checkpoint 交接合同的测试响应。 */
+    private DatasourceRunOnceResponse checkpointResponse(DatasourceRunOnceResponse response, Object checkpointValue) {
+        response.setCheckpointCallbackRecommended(true);
+        response.setCheckpointCandidateProduced(true);
+        response.setCheckpointCandidateValue(checkpointValue);
+        response.setCheckpointHandoffMode("INTERNAL_RESPONSE_PERSIST_BEFORE_NEXT_BATCH");
+        response.setCheckpointType("ID_WATERMARK");
+        response.setCheckpointValueVisibility("WORKER_INTERNAL_AND_SYNC_CHECKPOINT_TABLE_ONLY");
         return response;
     }
 
@@ -382,6 +545,27 @@ class SyncBatchRunOnceDispatchServiceTest {
                 "PROJECT", "project_id IN ${actorProjectIds}", List.of(101L), false);
     }
 
+    private SyncCheckpoint checkpoint(Long id, Long sourceExecutionId, String type, String value) {
+        SyncCheckpoint checkpoint = new SyncCheckpoint();
+        checkpoint.setId(id);
+        checkpoint.setTenantId(7L);
+        checkpoint.setProjectId(101L);
+        checkpoint.setWorkspaceId(301L);
+        checkpoint.setSyncTaskId(11L);
+        checkpoint.setExecutionId(sourceExecutionId);
+        checkpoint.setCheckpointType(type);
+        checkpoint.setCheckpointValue(value);
+        checkpoint.setCheckpointTime(LocalDateTime.now().minusMinutes(1));
+        return checkpoint;
+    }
+
+    private SyncRecoveryPlanWorkerResult checkpointRecoveryPlan(Long checkpointId) {
+        return new SyncRecoveryPlanWorkerResult(
+                true, 7L, 101L, 301L, 11L, 88L, 7002L,
+                "REPLAY", 77L, checkpointId, null, null, null, null,
+                "AUTOPILOT_PREAUTHORIZED_CHECKPOINT_RESUME", "CONSUMED", "恢复计划已消费");
+    }
+
     private String directMapping() {
         return """
                 [
@@ -410,6 +594,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         private DatasourceRunOnceRequest capturedRequest;
         private final List<DatasourceRunOnceRequest> capturedRequests = new ArrayList<>();
         private final List<Long> previousRecordsReadSnapshots = new ArrayList<>();
+        private final List<Object> checkpointValueSnapshots = new ArrayList<>();
 
         private FakeDatasourceRunOnceClient(DatasourceRunOnceResponse... responses) {
             this.responses = Arrays.asList(responses);
@@ -421,6 +606,7 @@ class SyncBatchRunOnceDispatchServiceTest {
             capturedRequest = request;
             capturedRequests.add(request);
             previousRecordsReadSnapshots.add(request.getPreviousRecordsRead());
+            checkpointValueSnapshots.add(request.getCheckpointValue());
             int responseIndex = Math.min(calls - 1, responses.size() - 1);
             return responses.get(responseIndex);
         }
@@ -439,6 +625,10 @@ class SyncBatchRunOnceDispatchServiceTest {
 
         private List<Long> previousRecordsReadSnapshots() {
             return previousRecordsReadSnapshots;
+        }
+
+        private List<Object> checkpointValueSnapshots() {
+            return checkpointValueSnapshots;
         }
     }
 }

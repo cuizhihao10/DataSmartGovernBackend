@@ -67,8 +67,27 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
         assertThat(highRisk.state()).isEqualTo(SyncAutopilotRecoveryCaseState.WAITING_APPROVAL);
     }
 
+    /** 高级自动修复必须把当前双主体精确绑定到首次授权，不能只校验内部服务令牌。 */
+    @Test
+    void principalBindingShouldRequireActiveUserAgentAndDelegationFacts() {
+        String policy = """
+                {
+                  "state":"ACTIVE","userId":"501","actorId":"501",
+                  "agentId":"RECOVERY_AGENT","delegationId":"delegation-1"
+                }
+                """;
+
+        assertThat(evaluator.matchesPrincipalBinding(
+                policy, "501", "RECOVERY_AGENT", "delegation-1")).isTrue();
+        assertThat(evaluator.matchesPrincipalBinding(
+                policy, "501", "RECOVERY_AGENT", "delegation-forged")).isFalse();
+        assertThat(evaluator.matchesPrincipalBinding(
+                policy.replace("ACTIVE", "REVOKED"),
+                "501", "RECOVERY_AGENT", "delegation-1")).isFalse();
+    }
+
     /**
-     * 17:00 at +08:00 is 09:00 UTC; relative to the fixed 10:00 UTC test clock it has already expired.
+     * +08:00 时区的 17:00 对应 UTC 09:00；相对于固定的 UTC 10:00 测试时钟，该授权已经过期。
      */
     @Test
     void evaluateShouldCompareOffsetExpiryAsAnInstantInsteadOfServerLocalTime() {
@@ -80,7 +99,7 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
         assertThat(decision.state()).isEqualTo(SyncAutopilotRecoveryCaseState.REJECTED);
     }
 
-    /** A caller cannot extend the authorization window with a later deadline. */
+    /** 调用方不能通过提交更晚的截止时间扩大已有授权窗口。 */
     @Test
     void evaluateShouldRejectADeadlineBeyondThePolicyWindow() {
         SyncAutopilotRecoveryPolicyDecision decision = evaluator.evaluate(
@@ -107,7 +126,7 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
         assertThat(decision.deadlineAt()).isEqualTo(NOW.plusMinutes(10));
     }
 
-    /** A shorter deadline is valid because it narrows the authorization box. */
+    /** 更短的截止时间会收窄授权盒范围，因此属于合法请求。 */
     @Test
     void evaluateShouldAcceptADeadlineShorterThanThePolicyWindow() {
         SyncAutopilotRecoveryPolicyDecision decision = evaluator.evaluate(
@@ -116,6 +135,23 @@ class SyncAutopilotRecoveryPolicyEvaluatorTest {
 
         assertThat(decision.state()).isEqualTo(SyncAutopilotRecoveryCaseState.AUTO_APPROVED);
         assertThat(decision.deadlineAt()).isEqualTo(NOW.plusMinutes(5));
+    }
+
+    /**
+     * PostgreSQL 会把纳秒四舍五入为微秒；同一截止时间写库后多出的 100ns 不能被误判成扩权。
+     */
+    @Test
+    void evaluateShouldAcceptPostgresqlMicrosecondRoundingOnPersistedDeadline() {
+        String policy = policyWithExpiry(
+                "2026-08-10T11:59:59.161252900Z", "RETRY_EXECUTION")
+                .replace("\"maxDurationSeconds\":600", "\"maxDurationSeconds\":7200");
+        LocalDateTime persistedDeadline = LocalDateTime.parse("2026-08-10T11:59:59.161253");
+
+        SyncAutopilotRecoveryPolicyDecision decision = evaluator.evaluate(
+                policy, requestWithDeadline(persistedDeadline));
+
+        assertThat(decision.state()).isEqualTo(SyncAutopilotRecoveryCaseState.AUTO_APPROVED);
+        assertThat(decision.deadlineAt()).isEqualTo(persistedDeadline);
     }
 
     @Test

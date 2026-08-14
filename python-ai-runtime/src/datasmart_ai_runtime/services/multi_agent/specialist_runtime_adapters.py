@@ -868,6 +868,12 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
     _CANONICAL_ACTION_TYPES = (
         "SEARCH_RECOVERY_KNOWLEDGE",
         "RETRY_EXECUTION",
+        "ROLLBACK_EXECUTION_POLICY",
+        "TUNE_EXECUTION_POLICY",
+        "REFRESH_METADATA",
+        "RESUME_FROM_CHECKPOINT",
+        "REPLAY_FAILED_SHARDS",
+        "REPAIR_FIELD_MAPPING",
         "PREVIEW_QUARANTINE",
         "APPLY_QUARANTINE",
         "REPLAY_DIRTY_RECORDS",
@@ -879,13 +885,22 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
     )
     # Java diagnosis 的 recommendedRepairActions 是确定性事实，不是模型输出。模型明确返回
     # actions 时始终优先采用模型建议；只有模型返回空数组时，才允许从下表生成“只读预览”
-    # 兜底。高风险 retry/apply/replay/create/alter 不在此表中，避免 abstain 被解释成授权。
+    # 模型没有选择动作时，只允许平台把确定性诊断收敛为这里列出的安全候选。
+    # REPAIR_FIELD_MAPPING 虽然是写动作，但 Java 端仍会重新读取元数据并证明修复唯一、范围不扩大、完整预检通过；
+    # 无法证明时返回 applied=false 并退出 Loop，因此它不等同于把诊断文本直接当成执行授权。
     _SAFE_PREVIEW_FALLBACKS = {
         "PREVIEW_DIRTY_RECORD_QUARANTINE": "PREVIEW_QUARANTINE",
         "PREVIEW_TARGET_VARCHAR_WIDEN": "PREVIEW_SCHEMA_REPAIR",
-        "PREVIEW_TARGET_DROP_NOT_NULL_OR_FIX_SOURCE_VALUE": "PREVIEW_SCHEMA_REPAIR",
-        "PREVIEW_TARGET_ADD_NULLABLE_COLUMN_OR_REPAIR_FIELD_MAPPING": "PREVIEW_SCHEMA_REPAIR",
+        "REPAIR_FIELD_MAPPING": "REPAIR_FIELD_MAPPING",
+        "PREVIEW_TARGET_DROP_NOT_NULL_OR_FIX_SOURCE_VALUE": "REPAIR_FIELD_MAPPING",
+        "PREVIEW_TARGET_ADD_NULLABLE_COLUMN_OR_REPAIR_FIELD_MAPPING": "REPAIR_FIELD_MAPPING",
     }
+    _SCHEMA_ACTIONS_NARROWABLE_TO_FIELD_MAPPING = frozenset(
+        {"PREVIEW_SCHEMA_REPAIR", "ALTER_TARGET_SCHEMA"}
+    )
+    _TRUSTED_FIELD_MAPPING_REPLAN_ISSUES = frozenset(
+        {"METADATA_TARGET_FIELD_NOT_FOUND", "METADATA_REQUIRED_TARGET_FIELD_NOT_MAPPED"}
+    )
 
     def plan(self, request: RecoveryPlanningModelInput) -> RecoveryPlanningModelOutput:
         """严格按 ``RecoveryPlanningModel`` Protocol 返回建议合同，不返回模型原文摘要。"""
@@ -900,7 +915,15 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
                 "already completed, remainingKnowledgeSearches is zero, and this turn must choose exactly one "
                 "governed action. Do not return SEARCH or SEARCH_RECOVERY_KNOWLEDGE again. For a clearly transient "
                 "connector failure, RETRY_EXECUTION may be proposed as one inert recommendation; it is never "
-                "execution authority. "
+                "execution authority. When structured facts identify a deterministic configuration failure, "
+                "prefer one narrowly scoped governed action: ROLLBACK_EXECUTION_POLICY restores only the latest "
+                "successful runtime-policy snapshot; TUNE_EXECUTION_POLICY may only lower channel/read/write batch "
+                "or request a bounded timeout increase; REFRESH_METADATA performs a fresh read and precheck; "
+                "RESUME_FROM_CHECKPOINT requires an existing persisted checkpoint; REPLAY_FAILED_SHARDS selects "
+                "only failed partition-shard ledgers; REPAIR_FIELD_MAPPING is allowed only for metadata-proven "
+                "case normalization, uniquely resolvable mappings, or omission of a target column that already has "
+                "a database default. Never use these actions to alter DDL, invent values, bypass NOT NULL or foreign "
+                "keys, broaden fields/rows, change credentials, overwrite targets, or delete data. "
                 "你是 DataSmart RECOVERY_AGENT 的建议模型。只能根据给出的失败事实和外部证据生成待审核"
                 "恢复建议；不得创建审批、调用工具、执行、重试、发布或修改任务。不要输出 SQL、凭据、"
                 "样本行、原始日志或隐藏思维链。只返回 JSON，允许字段为 actions、publicSummary、"
@@ -910,6 +933,12 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
                 "EXACT_SEARCH、RAG、WIKI 或 GIT_HISTORY。不要因为这是 Recovery 就固定选择 SEARCH，也不要"
                 "把 RAG 当成唯一有效证据。已知错误码、数据库约束或网络错误可依据结构化 API/日志选择 SKIP；"
                 "陌生错误、低置信度或重复失败应选择 SEARCH，并切换检索或修复策略。"
+                "若 diagnosticFacts.autopilotIssueCodes 包含 PREVIOUS_REPAIR_ACTION_ 前缀，说明该动作刚刚在"
+                "安全预检中未能应用；不得原样重复该动作。应结合其余问题码自主选择一个不同的受治理动作，"
+                "证据不足或只有越权方案时返回空 actions 并说明人工处理条件。若该列表还同时包含"
+                "METADATA_TARGET_FIELD_NOT_FOUND、METADATA_REQUIRED_TARGET_FIELD_NOT_MAPPED，且"
+                "recommendedRepairActions 包含 REPAIR_FIELD_MAPPING，应优先选择 REPAIR_FIELD_MAPPING；"
+                "它只请求 Java 重新读取元数据并证明唯一映射，不得建议 ALTER_TARGET_SCHEMA。"
                 "没有知识证据且选择 SEARCH 时，只返回"
                 "SEARCH_RECOVERY_KNOWLEDGE，不得同时建议修复。已有足够事实时可选择 SKIP。每个 action 的 actionType "
                 "必须从 public payload 的 canonicalActionTypes 中选择，不要创造近义词；toolName 可以省略，"
@@ -962,9 +991,13 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
         if not isinstance(raw_actions, (list, tuple)):
             raise SpecialistRuntimeAdapterError("RECOVERY 模型没有返回 actions 数组")
         actions = tuple(_recovery_action_payload(item) for item in raw_actions)
+        narrowed_actions = self._narrow_schema_action_to_field_mapping(request, actions)
+        narrowing_count = 1 if narrowed_actions != actions else 0
+        actions = narrowed_actions
         fallback_actions = self._safe_preview_fallback_actions(request) if not actions else ()
         invocation_summary = dict(_adapter_invocation_summary(result, self._PROTOCOL_NAME))
         invocation_summary["deterministicPreviewFallbackCount"] = len(fallback_actions)
+        invocation_summary["deterministicGovernanceNarrowingCount"] = narrowing_count
         return RecoveryPlanningModelOutput(
             actions=actions or fallback_actions,
             public_summary=_safe_public_text(_lookup(payload, "publicSummary", "public_summary", "summary"), 1_200),
@@ -995,11 +1028,12 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
         cls,
         request: RecoveryPlanningModelInput,
     ) -> tuple[Mapping[str, Any], ...]:
-        """把 Java 确定性诊断建议映射为最多一个无副作用 preview。
+        """把 Java 确定性诊断建议映射为最多一个平台复核型安全候选。
 
         兜底只在真实模型已成功调用、JSON 已通过边界校验且模型 actions 为空时运行。输入必须是
         ``diagnostic_facts.recommendedRepairActions`` 的短稳定编码；未知编码被忽略。最多返回一个
-        preview，避免一次 abstain 扩成多个并行探测并消耗额外数据库预算。
+        候选，避免一次 abstain 扩成多个并行动作。写动作仍需经过 coordinator、Java 授权盒、动作指纹、
+        元数据唯一性与完整预检，不能由本适配器直接执行。
         """
 
         raw_codes = request.diagnostic_facts.get("recommendedRepairActions")
@@ -1009,12 +1043,63 @@ class GovernedRecoveryPlanningModel(_GovernedProtocolModelAdapter):
             action_type = cls._SAFE_PREVIEW_FALLBACKS.get(code)
             if action_type is None:
                 continue
+            action_id_prefix = "deterministic-preview" if action_type.startswith("PREVIEW_") else "deterministic-safe"
             return ({
-                "actionId": f"deterministic-preview-{action_type.lower().replace('_', '-')}",
+                "actionId": f"{action_id_prefix}-{action_type.lower().replace('_', '-')}",
                 "actionType": action_type,
-                "reason": "模型未选择写操作；依据 Java 确定性诊断先生成只读预览，等待后续审核。",
+                "reason": "模型未选择动作；依据 Java 确定性诊断生成平台复核型安全候选。",
             },)
         return ()
+
+    @classmethod
+    def _narrow_schema_action_to_field_mapping(
+        cls,
+        request: RecoveryPlanningModelInput,
+        actions: tuple[Mapping[str, Any], ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        """把证据充分的 schema 变更建议收窄为 Java 可证明的字段映射修复。
+
+        该规则只处理一个非常窄的恢复事实组合：上一轮 ``REFRESH_METADATA`` 已由 data-sync 真实执行但
+        预检未通过，服务端同时报告目标字段不存在、必填字段未映射，并明确把
+        ``REPAIR_FIELD_MAPPING`` 列入确定性建议。模型此时若选择 ``PREVIEW_SCHEMA_REPAIR`` 或
+        ``ALTER_TARGET_SCHEMA``，平台不会自动放行 DDL，而是把意图收窄成固定参数的映射修复候选。
+
+        返回值仍不是执行授权。coordinator、Java Agent Runtime 和 data-sync 会继续校验首次授权盒、动作指纹、
+        项目范围和元数据唯一性；无法证明安全映射时修复服务返回 ``applied=false`` 并进入下一轮或有界停止。
+        缺少任一服务端问题码、确定性建议或上一动作标记时保持模型原建议，使高风险动作正常进入人工审批。
+        """
+
+        if len(actions) != 1:
+            return actions
+        action_type = str(actions[0].get("actionType") or "").strip().upper()
+        if action_type not in cls._SCHEMA_ACTIONS_NARROWABLE_TO_FIELD_MAPPING:
+            return actions
+
+        raw_recommendations = request.diagnostic_facts.get("recommendedRepairActions")
+        recommendations = {
+            str(value or "").strip().upper()
+            for value in (raw_recommendations if isinstance(raw_recommendations, (list, tuple, set)) else ())
+        }
+        raw_issue_codes = request.diagnostic_facts.get("autopilotIssueCodes")
+        issue_codes = {
+            str(value or "").strip().upper()
+            for value in (raw_issue_codes if isinstance(raw_issue_codes, (list, tuple, set)) else ())
+        }
+        if (
+            "REPAIR_FIELD_MAPPING" not in recommendations
+            or "PREVIOUS_REPAIR_ACTION_REFRESH_METADATA" not in issue_codes
+            or not cls._TRUSTED_FIELD_MAPPING_REPLAN_ISSUES.issubset(issue_codes)
+        ):
+            return actions
+
+        return ({
+            "actionId": "deterministic-narrow-repair-field-mapping",
+            "actionType": "REPAIR_FIELD_MAPPING",
+            "reason": (
+                "模型提出目标 schema 变更；平台依据 data-sync 的字段缺失、必填未映射与元数据刷新回执，"
+                "收窄为由 Java 再次证明唯一性的字段映射修复候选。"
+            ),
+        },)
 
 
 class GovernedMonitoringSummaryModel(_GovernedProtocolModelAdapter):

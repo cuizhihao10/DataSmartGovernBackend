@@ -33,4 +33,6 @@ public class DatasourceMetadataDiscoveryRequest {
     private Boolean includeIndexes;
     private Boolean includeSampleRows;
     private Integer sampleRowLimit;
+    /** true 时要求 datasource-management 绕过缓存读取最新结构。 */
+    private Boolean forceRefresh;
 }

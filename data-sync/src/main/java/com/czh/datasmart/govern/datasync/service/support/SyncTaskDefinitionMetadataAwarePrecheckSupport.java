@@ -25,10 +25,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 基于两端真实元数据的同步任务定义预检查组件。
@@ -70,6 +72,19 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
      * @return 低敏 issue/action/note 集合，供总预检报告合并。
      */
     public MetadataAwarePrecheckResult evaluate(SyncTaskDefinition definition, SyncActorContext actorContext) {
+        return evaluate(definition, actorContext, false);
+    }
+
+    /**
+     * 执行可选强制刷新的元数据感知预检查。
+     *
+     * <p>普通创建/发布路径保持缓存友好；只有 Autopilot 的 REFRESH_METADATA 与字段映射修复会传
+     * {@code forceRefresh=true}。强制刷新只改变元数据读取来源，不放宽操作者权限、字段数量上限、
+     * 样本行禁令或预检阻断规则。</p>
+     */
+    public MetadataAwarePrecheckResult evaluate(SyncTaskDefinition definition,
+                                                SyncActorContext actorContext,
+                                                boolean forceRefresh) {
         List<String> issueCodes = new ArrayList<>();
         List<String> recommendedActions = new ArrayList<>();
         List<String> safetyNotes = new ArrayList<>();
@@ -110,10 +125,229 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
 
         Map<String, List<FieldMapping>> fieldMappingsByObject = parseFieldMappings(fieldRoot);
         for (ObjectMapping mapping : objectMappings) {
-            validateObjectMapping(definition, mapping, fieldMappingsByObject, actorContext,
+            validateObjectMapping(definition, mapping, fieldMappingsByObject, actorContext, forceRefresh,
                     issueCodes, recommendedActions, safetyNotes);
         }
         return new MetadataAwarePrecheckResult(issueCodes, recommendedActions, safetyNotes);
+    }
+
+    /**
+     * 生成一份只包含元数据可证明安全变更的字段映射修复结果。
+     *
+     * <p>当前允许三类确定性修复：将大小写不准确的列名改为数据库返回的真实列名；当目标列名失效时，
+     * 只把它改到一个未被其它映射占用、类型族一致、主键属性一致且元数据序号一致的唯一现有目标列；
+     * 当源列已不存在，而目标列允许 NULL、已有数据库默认值或自动生成且不是主键时，禁用该映射，让目标
+     * 数据库按既有结构处理。方法不会新增字段、创建默认值、更改 NOT NULL/外键、修改写策略或扩大同步范围。</p>
+     *
+     * <p>返回的新 JSON 仍保持原来的数组、顶层 mappings 或 objectMappings 结构。调用方必须在事务内保存
+     * 前再次执行完整预检，并把旧配置纳入修复回执；本方法本身不写数据库。</p>
+     */
+    public MetadataFieldMappingRepairResult repairFieldMappings(
+            SyncTaskDefinition definition,
+            SyncActorContext actorContext) {
+        if (definition == null || actorContext == null) {
+            return new MetadataFieldMappingRepairResult(
+                    definition == null ? null : definition.getFieldMappingConfig(),
+                    0,
+                    List.of("AUTOPILOT_FIELD_MAPPING_CONTEXT_MISSING"));
+        }
+        JsonNode fieldRoot = parseJsonForEnrichment(definition.getFieldMappingConfig());
+        JsonNode objectRoot = parseJsonForEnrichment(definition.getObjectMappingConfig());
+        if (fieldRoot == null) {
+            return new MetadataFieldMappingRepairResult(
+                    definition.getFieldMappingConfig(), 0,
+                    List.of("AUTOPILOT_FIELD_MAPPING_JSON_INVALID"));
+        }
+        List<ObjectMapping> objectMappings = parseObjectMappings(definition, objectRoot, fieldRoot);
+        List<String> issues = new ArrayList<>();
+        int changedCount = 0;
+        for (ObjectMapping mapping : objectMappings) {
+            List<String> discoveryIssues = new ArrayList<>();
+            List<String> ignoredActions = new ArrayList<>();
+            DatasourceMetadataDiscoveryResponse.TableSummary sourceTable = isCustomSqlMode(definition)
+                    ? null
+                    : discoverTable(definition.getSourceDatasourceId(), definition.getSourceConnectorType(),
+                    mapping.sourceSchema(), mapping.sourceObject(), "SOURCE", actorContext,
+                    discoveryIssues, ignoredActions, true);
+            DatasourceMetadataDiscoveryResponse.TableSummary targetTable = discoverTable(
+                    definition.getTargetDatasourceId(), definition.getTargetConnectorType(),
+                    mapping.targetSchema(), mapping.targetObject(), "TARGET", actorContext,
+                    discoveryIssues, ignoredActions, true);
+            if (!discoveryIssues.isEmpty() || targetTable == null
+                    || !isCustomSqlMode(definition) && sourceTable == null) {
+                issues.addAll(discoveryIssues);
+                continue;
+            }
+            JsonNode rows = resolveMutableFieldMappingRows(fieldRoot, mapping);
+            if (rows == null || !rows.isArray()) {
+                issues.add("AUTOPILOT_FIELD_MAPPING_ROWS_MISSING");
+                continue;
+            }
+            changedCount += repairMappingRows(rows, sourceTable, targetTable,
+                    isCustomSqlMode(definition), issues);
+        }
+        if (changedCount == 0 && issues.isEmpty()) {
+            issues.add("AUTOPILOT_FIELD_MAPPING_NO_SAFE_CHANGE");
+        }
+        try {
+            return new MetadataFieldMappingRepairResult(
+                    objectMapper.writeValueAsString(fieldRoot), changedCount,
+                    List.copyOf(new java.util.LinkedHashSet<>(issues)));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            return new MetadataFieldMappingRepairResult(
+                    definition.getFieldMappingConfig(), 0,
+                    List.of("AUTOPILOT_FIELD_MAPPING_SERIALIZATION_FAILED"));
+        }
+    }
+
+    /** 对一个对象的字段行应用确定性修复，并返回发生变更的行数。 */
+    private int repairMappingRows(JsonNode rows,
+                                  DatasourceMetadataDiscoveryResponse.TableSummary sourceTable,
+                                  DatasourceMetadataDiscoveryResponse.TableSummary targetTable,
+                                  boolean customSqlMode,
+                                  List<String> issues) {
+        Map<String, DatasourceMetadataDiscoveryResponse.ColumnSummary> sourceColumns = customSqlMode
+                ? Map.of() : columnsByName(sourceTable);
+        Map<String, DatasourceMetadataDiscoveryResponse.ColumnSummary> targetColumns = columnsByName(targetTable);
+        Set<String> claimedTargetColumns = existingTargetClaims(rows, targetColumns);
+        int changed = 0;
+        for (JsonNode row : rows) {
+            if (!(row instanceof ObjectNode objectRow)
+                    || row.has("syncEnabled") && !row.path("syncEnabled").asBoolean(true)) {
+                continue;
+            }
+            String sourceField = firstText(row, "sourceField", "sourceColumn");
+            String targetField = firstText(row, "targetField", "targetColumn");
+            DatasourceMetadataDiscoveryResponse.ColumnSummary sourceColumn = customSqlMode
+                    ? null : sourceColumns.get(normalizeKey(sourceField));
+            DatasourceMetadataDiscoveryResponse.ColumnSummary targetColumn =
+                    targetColumns.get(normalizeKey(targetField));
+
+            if (!customSqlMode && sourceColumn == null && targetColumn != null
+                    && canSafelyOmitTargetColumn(targetColumn)) {
+                objectRow.put("syncEnabled", false);
+                changed++;
+                continue;
+            }
+            if (targetColumn == null && sourceColumn != null) {
+                DatasourceMetadataDiscoveryResponse.ColumnSummary sameName =
+                        targetColumns.get(normalizeKey(sourceColumn.getColumnName()));
+                if (sameName != null
+                        && !claimedTargetColumns.contains(normalizeKey(sameName.getColumnName()))) {
+                    targetColumn = sameName;
+                } else {
+                    targetColumn = uniquelyProvenRenamedTarget(
+                            sourceColumn, targetColumns, claimedTargetColumns);
+                }
+            }
+            if (!customSqlMode && sourceColumn == null) {
+                issues.add("AUTOPILOT_SOURCE_FIELD_REPAIR_NOT_DETERMINISTIC");
+                continue;
+            }
+            if (targetColumn == null) {
+                issues.add("AUTOPILOT_TARGET_FIELD_REPAIR_NOT_DETERMINISTIC");
+                continue;
+            }
+            boolean rowChanged = false;
+            if (sourceColumn != null && !Objects.equals(sourceField, sourceColumn.getColumnName())) {
+                putFieldName(objectRow, "sourceField", "sourceColumn", sourceColumn.getColumnName());
+                rowChanged = true;
+            }
+            if (!Objects.equals(targetField, targetColumn.getColumnName())) {
+                putFieldName(objectRow, "targetField", "targetColumn", targetColumn.getColumnName());
+                rowChanged = true;
+            }
+            claimedTargetColumns.add(normalizeKey(targetColumn.getColumnName()));
+            if (rowChanged) {
+                changed++;
+            }
+        }
+        return changed;
+    }
+
+    /**
+     * 收集当前仍真实存在且已被启用映射占用的目标列。
+     *
+     * <p>失效目标名不会进入集合，因此可以被修复；仍存在的目标列无论位于待修复行之前还是之后都会先被
+     * 占用，避免遍历顺序让两个源字段落到同一个目标列。未启用行只是字段映射页面的展示信息，不代表写入
+     * 边界，也不会占用候选。</p>
+     *
+     * @param rows 当前对象的可变字段映射数组
+     * @param targetColumns 强制刷新后按规范名索引的真实目标字段
+     * @return 保持元数据顺序的目标字段规范名集合
+     */
+    private Set<String> existingTargetClaims(
+            JsonNode rows,
+            Map<String, DatasourceMetadataDiscoveryResponse.ColumnSummary> targetColumns) {
+        Set<String> claimed = new LinkedHashSet<>();
+        for (JsonNode row : rows) {
+            if (!(row instanceof ObjectNode)
+                    || row.has("syncEnabled") && !row.path("syncEnabled").asBoolean(true)) {
+                continue;
+            }
+            String key = normalizeKey(firstText(row, "targetField", "targetColumn"));
+            if (key != null && targetColumns.containsKey(key)) {
+                claimed.add(key);
+            }
+        }
+        return claimed;
+    }
+
+    /**
+     * 从真实目标元数据中证明一个失效字段名对应的唯一改名候选。
+     *
+     * <p>候选必须同时满足四项约束：没有被其它启用映射占用；与源字段属于同一可直接搬运类型族；主键
+     * 属性相同；两端都提供 JDBC ordinalPosition 时序号相同。序号缺失不会单独否决候选，但此时若同类型
+     * 候选超过一个仍会失败关闭。方法最多保留两个候选，发现歧义后不再继续收集，也不会使用名称相似度、
+     * 模型自由文本或样本值猜测。</p>
+     *
+     * @param sourceColumn 已由源端强制刷新元数据证明存在的字段
+     * @param targetColumns 强制刷新后的真实目标字段
+     * @param claimedTargetColumns 已被其它启用映射占用的目标字段规范名
+     * @return 恰好一个候选时返回该字段；没有候选或存在歧义时返回 {@code null}
+     */
+    private DatasourceMetadataDiscoveryResponse.ColumnSummary uniquelyProvenRenamedTarget(
+            DatasourceMetadataDiscoveryResponse.ColumnSummary sourceColumn,
+            Map<String, DatasourceMetadataDiscoveryResponse.ColumnSummary> targetColumns,
+            Set<String> claimedTargetColumns) {
+        List<DatasourceMetadataDiscoveryResponse.ColumnSummary> candidates = targetColumns.values().stream()
+                .filter(Objects::nonNull)
+                .filter(candidate -> hasText(candidate.getColumnName()))
+                .filter(candidate -> !claimedTargetColumns.contains(normalizeKey(candidate.getColumnName())))
+                .filter(candidate -> typeCompatible(sourceColumn.getDataTypeName(), candidate.getDataTypeName()))
+                .filter(candidate -> sourceColumn.isPrimaryKey() == candidate.isPrimaryKey())
+                .filter(candidate -> ordinalCompatible(sourceColumn, candidate))
+                .limit(2)
+                .toList();
+        return candidates.size() == 1 ? candidates.getFirst() : null;
+    }
+
+    /**
+     * 比较字段在表内的 JDBC 序号；只有两端都给出序号时才要求严格相等。
+     *
+     * <p>部分连接器或历史响应没有 ordinalPosition，不能仅因缺失可观测字段把所有安全修复都拒绝；
+     * 这种情况下仍由“唯一未占用且类型/主键兼容”规则兜底。若两端都有序号，改名不应改变原列结构位置，
+     * 不相等会直接排除候选。</p>
+     */
+    private boolean ordinalCompatible(
+            DatasourceMetadataDiscoveryResponse.ColumnSummary sourceColumn,
+            DatasourceMetadataDiscoveryResponse.ColumnSummary targetColumn) {
+        Integer sourceOrdinal = sourceColumn.getOrdinalPosition();
+        Integer targetOrdinal = targetColumn.getOrdinalPosition();
+        return sourceOrdinal == null || targetOrdinal == null || sourceOrdinal.equals(targetOrdinal);
+    }
+
+    /** 判断省略映射后目标数据库是否仍有明确值语义。 */
+    private boolean canSafelyOmitTargetColumn(
+            DatasourceMetadataDiscoveryResponse.ColumnSummary column) {
+        return column != null && !column.isPrimaryKey()
+                && (column.isNullable() || column.isAutoIncrement()
+                || hasText(column.getDefaultValue()));
+    }
+
+    /** 保持历史字段别名，不把 sourceColumn/targetColumn 格式强制重写成新格式。 */
+    private void putFieldName(ObjectNode row, String preferredName, String aliasName, String value) {
+        row.put(row.has(aliasName) && !row.has(preferredName) ? aliasName : preferredName, value);
     }
 
     /**
@@ -177,6 +411,7 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
                                        ObjectMapping mapping,
                                        Map<String, List<FieldMapping>> fieldMappingsByObject,
                                        SyncActorContext actorContext,
+                                       boolean forceRefresh,
                                        List<String> issueCodes,
                                        List<String> recommendedActions,
                                        List<String> safetyNotes) {
@@ -193,9 +428,9 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
                 issueCodes.add("METADATA_SOURCE_OBJECT_REQUIRED");
                 recommendedActions.add("非 SQL 自定义传输必须声明源端表/对象；请回到对象映射步骤选择源端对象。");
             } else if (!sourceSchemaMissing) {
-                sourceTable = discoverTable(definition.getSourceDatasourceId(), definition.getSourceConnectorType(),
-                        mapping.sourceSchema(), mapping.sourceObject(), "SOURCE", actorContext,
-                        issueCodes, recommendedActions);
+            sourceTable = discoverTable(definition.getSourceDatasourceId(), definition.getSourceConnectorType(),
+                    mapping.sourceSchema(), mapping.sourceObject(), "SOURCE", actorContext,
+                    issueCodes, recommendedActions, forceRefresh);
             }
         }
 
@@ -212,7 +447,7 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
         } else if (!targetSchemaMissing) {
             targetTable = discoverTable(definition.getTargetDatasourceId(), definition.getTargetConnectorType(),
                     mapping.targetSchema(), mapping.targetObject(), "TARGET", actorContext,
-                    issueCodes, recommendedActions);
+                    issueCodes, recommendedActions, forceRefresh);
         }
 
         if (targetTable != null && isConflictWriteStrategy(definition) && !hasText(definition.getPrimaryKeyField())
@@ -441,6 +676,8 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
                         + "；字段名=" + safeField(mapping.targetField()));
             }
         }
+        validateRequiredTargetColumnsMapped(objectMapping, targetColumns, enabledMappings,
+                issueCodes, recommendedActions);
         if (enabledMappings.size() < targetColumns.size()) {
             safetyNotes.add("SQL 自定义传输未覆盖目标表的全部字段；预检查允许该场景，"
                     + "未写入字段的最终值由目标表 NULL/DEFAULT/触发器等结构约束决定。");
@@ -491,12 +728,53 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
                         + " 的类型族不兼容；当前最小 runner 不会自动执行复杂转换，请取消勾选或补充转换规则。");
             }
         }
+        validateRequiredTargetColumnsMapped(objectMapping, targetColumns, enabledMappings,
+                issueCodes, recommendedActions);
         if (enabledMappings.size() < sourceColumns.size()) {
             safetyNotes.add("存在未勾选同步的源字段；预检允许该场景，执行时这些源字段不会写入目标端。");
         }
         if (enabledMappings.size() < targetColumns.size()) {
             safetyNotes.add("存在未由源端写入的目标字段；预检允许该场景，最终值由目标表 NULL/DEFAULT/触发器等结构约束决定。");
         }
+    }
+
+    /**
+     * 阻止必填且无数据库生成语义的目标列漏出字段映射。
+     *
+     * <p>允许省略的目标列只有三类：可空列、已有数据库默认值的列、自动生成列。
+     * 其余 NOT NULL 列如果没有启用映射，任务即使通过字段存在性检查，也必然在写入阶段失败。
+     * 本方法只给出问题码和低敏建议，不自动扩大同步字段范围、不创建默认值，也不修改表结构。</p>
+     */
+    private void validateRequiredTargetColumnsMapped(
+            ObjectMapping objectMapping,
+            Map<String, DatasourceMetadataDiscoveryResponse.ColumnSummary> targetColumns,
+            List<FieldMapping> enabledMappings,
+            List<String> issueCodes,
+            List<String> recommendedActions) {
+        Set<String> mappedTargets = enabledMappings.stream()
+                .map(FieldMapping::targetField)
+                .map(this::normalizeKey)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        List<String> missingRequired = targetColumns.values().stream()
+                .filter(Objects::nonNull)
+                .filter(column -> !canSafelyOmitTargetColumn(column))
+                .map(DatasourceMetadataDiscoveryResponse.ColumnSummary::getColumnName)
+                .filter(Objects::nonNull)
+                .filter(columnName -> !mappedTargets.contains(normalizeKey(columnName)))
+                .map(this::safeField)
+                .distinct()
+                .limit(20)
+                .toList();
+        if (missingRequired.isEmpty()) {
+            return;
+        }
+        issueCodes.add("METADATA_REQUIRED_TARGET_FIELD_NOT_MAPPED");
+        recommendedActions.add("目标对象 "
+                + lowSensitiveObject(objectMapping.targetSchema(), objectMapping.targetObject())
+                + " 存在未映射的必填列 " + missingRequired
+                + "；需要映射已有源字段，或由有权限人员设置数据库默认值/调整约束后再执行。"
+                + "Autopilot 不会擅自扩大同步字段范围或修改 DDL。");
     }
 
     private DatasourceMetadataDiscoveryResponse.TableSummary discoverTable(Long datasourceId,
@@ -507,6 +785,20 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
                                                                            SyncActorContext actorContext,
                                                                            List<String> issueCodes,
                                                                            List<String> recommendedActions) {
+        return discoverTable(datasourceId, connectorType, schemaName, tableName, side, actorContext,
+                issueCodes, recommendedActions, false);
+    }
+
+    /** 使用与普通发现完全相同的边界，并可明确要求下游绕过缓存。 */
+    private DatasourceMetadataDiscoveryResponse.TableSummary discoverTable(Long datasourceId,
+                                                                           String connectorType,
+                                                                           String schemaName,
+                                                                           String tableName,
+                                                                           String side,
+                                                                           SyncActorContext actorContext,
+                                                                           List<String> issueCodes,
+                                                                           List<String> recommendedActions,
+                                                                           boolean forceRefresh) {
         if (datasourceId == null) {
             issueCodes.add("METADATA_" + side + "_DATASOURCE_MISSING");
             recommendedActions.add(side + " 数据源 ID 为空，无法执行元数据存在性预检。");
@@ -525,6 +817,7 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
             request.setIncludeIndexes(Boolean.FALSE);
             request.setIncludeSampleRows(Boolean.FALSE);
             request.setSampleRowLimit(null);
+            request.setForceRefresh(forceRefresh);
             DatasourceMetadataDiscoveryResponse response =
                     metadataDiscoveryClient.discover(datasourceId, request, actorContext);
             return findExactTable(response, schemaName, tableName, connectorType, side, issueCodes, recommendedActions);
@@ -978,6 +1271,12 @@ public class SyncTaskDefinitionMetadataAwarePrecheckSupport {
     public record MetadataAwarePrecheckResult(List<String> issueCodes,
                                               List<String> recommendedActions,
                                               List<String> safetyNotes) {
+    }
+
+    /** 元数据证明型字段映射修复的纯计算结果。 */
+    public record MetadataFieldMappingRepairResult(String fieldMappingConfig,
+                                                   int changedCount,
+                                                   List<String> issueCodes) {
     }
 
     private record ObjectMapping(String sourceSchema,

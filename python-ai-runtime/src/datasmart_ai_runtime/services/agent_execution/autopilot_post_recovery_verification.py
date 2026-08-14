@@ -1,23 +1,20 @@
-"""Verify a real Autopilot retry with PRECHECK_AGENT and MONITOR_AGENT.
+"""使用 PRECHECK_AGENT 与 MONITOR_AGENT 复核一次真实的 Autopilot 重试。
 
-Python recovery planning deliberately stops before business side effects.  Java
-and data-sync own authorization, policy evaluation, idempotency, quarantine and
-the actual failed-object retry.  This module starts only after data-sync has
-returned a receipt for that real action.  It then runs the two read-only
-specialists against the receipt-bound task/execution and persists their turn
-facts through the existing Java fact sink.
+Python 恢复规划有意停在业务副作用之前。授权、策略评估、幂等、隔离以及真实的失败对象
+重试均由 Java 和 data-sync 负责。本模块只在 data-sync 返回真实动作回执后启动，再让两个
+只读 Specialist 针对回执绑定的任务和执行进行检查，并通过既有 Java 事实接收端持久化回合
+事实。
 
-The workflow is replay safe:
+该流程具备安全重放能力：
 
-* one stable checkpoint thread is derived from the recovery event and receipt;
-* one stable turn ID is derived for each specialist role;
-* a completed checkpoint is replayed without invoking either specialist again;
-* an interrupted attempt may rerun, but Java receives the same turn IDs and
-  idempotency keys, so it updates the same two facts instead of inserting new
-  facts.
+* 根据恢复事件和动作回执派生唯一且稳定的 checkpoint 线程；
+* 为每个 Specialist 角色派生稳定的回合 ID；
+* 已完成的 checkpoint 直接重放结果，不会再次调用 Specialist；
+* 中断后的尝试可以重新执行，但 Java 会收到相同的回合 ID 和幂等键，因此只会更新原有
+  两条事实，不会插入重复记录。
 
-No method in this module can retry a task, apply quarantine, run SQL or widen a
-delegation.  It is a post-action observation boundary only.
+本模块中的任何方法都无权重试任务、执行隔离、运行 SQL 或扩大授权范围；它只负责动作后
+的只读观察边界。
 """
 
 from __future__ import annotations
@@ -53,18 +50,16 @@ _SAFE_CODE = re.compile(r"[A-Z0-9_.:-]{1,96}")
 
 
 class AutopilotPostRecoveryVerificationError(RuntimeError):
-    """Signal a retryable post-recovery verification infrastructure failure."""
+    """表示一次可以由基础设施重试的恢复后复核故障。"""
 
 
 @dataclass(frozen=True)
 class AutopilotPostRecoveryVerificationRequest:
-    """Trusted Java projection of one real data-sync retry receipt.
+    """Java 根据真实 data-sync 重试回执构造的可信请求投影。
 
-    Identity and scope fields are copied from the already verified recovery
-    trigger.  ``task_id`` and ``execution_id`` come from the data-sync retry
-    response and must equal the trigger scope.  The equality check prevents a
-    malformed or compromised downstream response from redirecting specialist
-    reads to another resource.
+    身份与作用域字段来自已经通过校验的恢复触发事件。``task_id`` 和 ``execution_id``
+    来自 data-sync 重试响应，且必须与触发事件作用域完全一致。该相等性校验可以阻止格式
+    错误或被篡改的下游响应把 Specialist 的读取请求重定向到其他资源。
     """
 
     event_id: str
@@ -87,12 +82,10 @@ class AutopilotPostRecoveryVerificationRequest:
     cycle: int
 
     def __post_init__(self) -> None:
-        """Normalize the internal contract before any checkpoint or HTTP call.
+        """在写入 checkpoint 或发起 HTTP 调用前规范化内部合同。
 
-        This is defense in depth, not a replacement for Java authorization.
-        Free-form references are length and character bounded, database IDs are
-        positive decimal numbers, and the receipt locators must remain inside
-        the original trigger scope.
+        这是纵深防御措施，不能替代 Java 授权。自由格式引用会受到长度和字符约束，数据库
+        ID 必须为十进制正整数，回执中的资源定位信息也必须处于原触发事件作用域内。
         """
 
         reference_fields = (
@@ -147,7 +140,7 @@ class AutopilotPostRecoveryVerificationRequest:
         cls,
         payload: Mapping[str, Any],
     ) -> "AutopilotPostRecoveryVerificationRequest":
-        """Map the fixed Java JSON body without inventing security defaults."""
+        """映射固定的 Java JSON 请求体，不为安全字段虚构默认值。"""
 
         if not isinstance(payload, Mapping):
             raise ValueError("Autopilot post-recovery payload 必须是 JSON object")
@@ -173,7 +166,7 @@ class AutopilotPostRecoveryVerificationRequest:
         )
 
     def binding(self) -> dict[str, str | int]:
-        """Return the low-sensitive immutable identity stored in checkpoints."""
+        """返回写入 checkpoint 的低敏、不可变身份绑定。"""
 
         return {
             "eventId": self.event_id,
@@ -197,7 +190,7 @@ class AutopilotPostRecoveryVerificationRequest:
 
 @dataclass(frozen=True)
 class AutopilotPostRecoveryVerificationResult:
-    """Low-sensitive success contract returned to Java after both facts persist."""
+    """两条事实持久化完成后返回给 Java 的低敏成功合同。"""
 
     event_id: str
     task_id: str
@@ -209,7 +202,7 @@ class AutopilotPostRecoveryVerificationResult:
     replayed: bool = False
 
     def to_summary(self) -> dict[str, Any]:
-        """Serialize only stable role and resource evidence, never tool output."""
+        """只序列化稳定的角色和资源证据，绝不写入工具原始输出。"""
 
         return {
             "schemaVersion": AUTOPILOT_POST_RECOVERY_VERIFICATION_SCHEMA_VERSION,
@@ -232,7 +225,7 @@ class AutopilotPostRecoveryVerificationResult:
         *,
         replayed: bool,
     ) -> "AutopilotPostRecoveryVerificationResult":
-        """Rebuild and validate a terminal checkpoint response for replay."""
+        """重建并校验用于重放的终态 checkpoint 响应。"""
 
         if (
             not isinstance(summary, Mapping)
@@ -257,7 +250,7 @@ class AutopilotPostRecoveryVerificationResult:
 
 
 class AutopilotPostRecoveryVerificationCoordinator:
-    """Run and durably register the two post-action read-only specialists."""
+    """运行两个动作后只读 Specialist，并持久登记其事实。"""
 
     def __init__(
         self,
@@ -267,11 +260,10 @@ class AutopilotPostRecoveryVerificationCoordinator:
         checkpointer: LangGraphDurableCheckpointerService,
         result_sink: Callable[[SpecialistTurnRequest, SpecialistTurnResult], Any],
     ) -> None:
-        """Capture shared runtime dependencies and the durable Java fact sink.
+        """保存共享运行时依赖和 Java 持久事实接收端。
 
-        The sink is intentionally mandatory.  A verification response without
-        durable facts would let Java acknowledge Kafka while the audit evidence
-        was still only in Python memory.
+        事实接收端有意设计为必填依赖。若复核响应没有对应的持久事实，Java 可能在审计证据
+        仍只存在于 Python 内存时就确认 Kafka 消息，从而造成不可追溯的恢复结果。
         """
 
         if specialist_coordinator is None or checkpointer is None or result_sink is None:
@@ -288,13 +280,12 @@ class AutopilotPostRecoveryVerificationCoordinator:
         self,
         request: AutopilotPostRecoveryVerificationRequest,
     ) -> AutopilotPostRecoveryVerificationResult:
-        """Verify one receipt, persist two facts, and checkpoint the outcome.
+        """复核一个动作回执，持久化两条事实，并记录最终 checkpoint。
 
-        A completed checkpoint is returned directly.  An interrupted checkpoint
-        reruns the same two turn IDs; the Java fact store then performs an
-        identity-preserving upsert.  Every missing role, specialist failure,
-        fact-sink failure or checkpoint failure raises a technical error so the
-        Java Kafka listener remains unacknowledged and uses bounded retry/DLT.
+        已完成的 checkpoint 会被直接返回。若上次执行中断，则使用相同的两个回合 ID 重跑，
+        Java 事实库据此执行保持身份不变的 upsert。任何角色缺失、Specialist 失败、事实接收
+        失败或 checkpoint 失败都会抛出技术异常，使 Java Kafka 监听器不确认该消息，并进入
+        有界重试或 DLT。
         """
 
         if not isinstance(request, AutopilotPostRecoveryVerificationRequest):
@@ -398,13 +389,12 @@ class AutopilotPostRecoveryVerificationCoordinator:
         request: SpecialistTurnRequest,
         result: SpecialistTurnResult,
     ) -> Any:
-        """Require the configured sink to acknowledge a durable registration.
+        """要求配置的事实接收端明确确认已经完成持久登记。
 
-        ``JavaSpecialistTurnFactClient`` may be configured fail-open for local
-        development.  Autopilot cannot use that weaker behavior: unattended
-        recovery must not commit Kafka unless each specialist fact is actually
-        accepted.  Therefore a skipped or non-registered receipt becomes a
-        retryable technical failure even when the shared client did not throw.
+        本地开发时，``JavaSpecialistTurnFactClient`` 可以配置为失败放行，但 Autopilot 不能
+        采用这种较弱语义：无人值守恢复只有在每条 Specialist 事实都被真实接收后才能提交
+        Kafka。因此，即使共享客户端没有抛出异常，被跳过或未登记的回执也会转为可重试的
+        技术故障。
         """
 
         receipt = self._result_sink(request, result)
@@ -428,7 +418,7 @@ class AutopilotPostRecoveryVerificationCoordinator:
         self,
         request: AutopilotPostRecoveryVerificationRequest,
     ) -> AgentRequest:
-        """Build the minimal trusted request consumed by the coordinator."""
+        """构造协调器所需的最小可信请求。"""
 
         return AgentRequest(
             tenant_id=request.tenant_id,
@@ -455,7 +445,7 @@ class AutopilotPostRecoveryVerificationCoordinator:
         thread_id: str,
         binding: Mapping[str, Any],
     ) -> None:
-        """Persist admission before setting ``checkpoint_recorded=True``."""
+        """在设置 ``checkpoint_recorded=True`` 前先持久化准入事实。"""
 
         self._checkpointer.record_checkpoint(
             LangGraphDurableCheckpoint(
@@ -475,7 +465,7 @@ class AutopilotPostRecoveryVerificationCoordinator:
                 session_id=request.root_session_id,
                 checkpoint_version=1,
                 low_sensitive_summary=(
-                    "Autopilot retry receipt admitted for read-only specialist verification."
+                    "Autopilot 重试回执已进入只读 Specialist 复核流程。"
                 ),
             ),
             event_type="autopilot_post_recovery_verification_started",
@@ -488,7 +478,7 @@ class AutopilotPostRecoveryVerificationCoordinator:
         binding: Mapping[str, Any],
         result: AutopilotPostRecoveryVerificationResult,
     ) -> None:
-        """Persist the replayable low-sensitive terminal response."""
+        """持久化可重放的低敏终态响应。"""
 
         self._checkpointer.record_checkpoint(
             LangGraphDurableCheckpoint(
@@ -511,7 +501,7 @@ class AutopilotPostRecoveryVerificationCoordinator:
                 session_id=request.root_session_id,
                 checkpoint_version=2,
                 low_sensitive_summary=(
-                    "PRECHECK_AGENT and MONITOR_AGENT facts were durably registered."
+                    "PRECHECK_AGENT 与 MONITOR_AGENT 事实已完成持久登记。"
                 ),
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
@@ -524,7 +514,7 @@ class AutopilotPostRecoveryVerificationCoordinator:
         request: AutopilotPostRecoveryVerificationRequest,
         result: AutopilotPostRecoveryVerificationResult,
     ) -> None:
-        """Reject a malformed terminal checkpoint before replaying it to Java."""
+        """在向 Java 重放前拒绝格式错误或绑定不一致的终态 checkpoint。"""
 
         if (
             result.event_id != request.event_id
@@ -540,20 +530,18 @@ class AutopilotPostRecoveryVerificationCoordinator:
 
 
 def _resource_fingerprint(request: AutopilotPostRecoveryVerificationRequest) -> str:
-    """Hash the receipt-bound resource without embedding user data."""
+    """对回执绑定资源计算哈希，且不嵌入用户数据。"""
 
     material = f"{request.task_id}|{request.execution_id}"
     return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _bounded_reference(value: Any) -> str | None:
-    """Accept ordinary enterprise identities while rejecting header controls.
+    """接受常见企业身份格式，同时拒绝可控制请求头的危险字符。
 
-    Actor and user identifiers may legitimately be emails, external subject
-    names or other printable text rather than database numbers.  Restricting
-    them to an identifier regex would reject valid tenants.  This helper keeps
-    the actual trust boundary: non-empty, at most 160 characters, and no ASCII
-    control characters that could corrupt logs or downstream HTTP headers.
+    操作者与用户标识可能合法地使用邮箱、外部主体名称或其他可打印文本，而不一定是数据库
+    数字。若强制套用普通标识符正则，会误拒绝合法租户。本方法只保留真正的信任边界：内容
+    非空、最长 160 个字符，且不得包含可能破坏日志或下游 HTTP 请求头的 ASCII 控制字符。
     """
 
     text = str(value or "").strip()
@@ -565,7 +553,7 @@ def _bounded_reference(value: Any) -> str | None:
 
 
 def _verification_thread_id(request: AutopilotPostRecoveryVerificationRequest) -> str:
-    """Create one durable thread per event and real retry receipt."""
+    """为每个恢复事件及其真实重试回执创建唯一的持久线程。"""
 
     material = f"{request.event_id}|{request.task_id}|{request.execution_id}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
@@ -576,7 +564,7 @@ def _verification_turn_id(
     request: AutopilotPostRecoveryVerificationRequest,
     role: str,
 ) -> str:
-    """Create the stable Java fact identity for one specialist role."""
+    """为单个 Specialist 角色创建稳定的 Java 事实身份。"""
 
     material = (
         f"{request.event_id}|{request.task_id}|{request.execution_id}|{role}|"
@@ -589,7 +577,7 @@ def _checkpoint_id(
     request: AutopilotPostRecoveryVerificationRequest,
     phase: str,
 ) -> str:
-    """Create a deterministic checkpoint ID so lost responses are upserts."""
+    """创建确定性 checkpoint ID，使响应丢失后的重试执行 upsert。"""
 
     material = (
         f"{request.event_id}|{request.task_id}|{request.execution_id}|{phase}|"

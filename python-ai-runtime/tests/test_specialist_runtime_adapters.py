@@ -580,12 +580,110 @@ class SpecialistRuntimeAdapterTest(unittest.TestCase):
         self.assertNotIn("REPLAY_DIRTY_RECORDS", str(output.actions))
         self.assertNotIn("RETRY_FAILED_OBJECTS", str(output.actions))
 
+    def test_recovery_adapter_falls_back_to_metadata_proven_field_mapping_repair(self) -> None:
+        """字段约束诊断可以进入 Java 二次证明的映射修复，不能直接升级成 DDL。"""
+
+        engine = _QueryEngine('{"actions":[],"publicSummary":"由平台复核安全字段映射"}')
+        model = GovernedRecoveryPlanningModel(self._json_model(engine))
+
+        output = model.plan(
+            RecoveryPlanningModelInput(
+                objective="恢复字段映射失败的同步任务",
+                audit_scope=self._audit_scope(),
+                diagnostic_facts={
+                    "failureCode": "TARGET_NOT_NULL_VIOLATION",
+                    "recommendedRepairActions": (
+                        "REPAIR_FIELD_MAPPING",
+                        "PREVIEW_TARGET_DROP_NOT_NULL_OR_FIX_SOURCE_VALUE",
+                    ),
+                },
+                case_evidence={"matchedCaseCount": 0},
+                knowledge_summary={"grounded": False},
+                evidence_references=(),
+                allowed_tool_names=("recovery.failure.diagnose",),
+                max_output_tokens=512,
+                failure_code="TARGET_NOT_NULL_VIOLATION",
+                failure_reason="目标字段约束不满足",
+            )
+        )
+
+        self.assertEqual(1, len(output.actions))
+        self.assertEqual("REPAIR_FIELD_MAPPING", output.actions[0]["actionType"])
+        self.assertTrue(str(output.actions[0]["actionId"]).startswith("deterministic-safe-"))
+        self.assertNotIn("ALTER_TARGET_SCHEMA", str(output.actions))
+
+    def test_recovery_adapter_narrows_schema_change_to_metadata_proven_mapping_repair(self) -> None:
+        """可信重规划证据充分时，把模型的 schema 变更建议收窄为 Java 可证明的映射修复。"""
+
+        engine = _QueryEngine(
+            '{"actions":[{"actionType":"ALTER_TARGET_SCHEMA"}],'
+            '"publicSummary":"字段映射与最新目标元数据不一致"}'
+        )
+        model = GovernedRecoveryPlanningModel(self._json_model(engine))
+
+        output = model.plan(
+            RecoveryPlanningModelInput(
+                objective="恢复目标字段改名后的同步任务",
+                audit_scope=self._audit_scope(),
+                diagnostic_facts={
+                    "failureCode": "WRITE_FAILED",
+                    "recommendedRepairActions": ("REPAIR_FIELD_MAPPING",),
+                    "autopilotIssueCodes": (
+                        "AUTOPILOT_REFRESHED_METADATA_PRECHECK_FAILED",
+                        "PREVIOUS_REPAIR_ACTION_REFRESH_METADATA",
+                        "METADATA_TARGET_FIELD_NOT_FOUND",
+                        "METADATA_REQUIRED_TARGET_FIELD_NOT_MAPPED",
+                    ),
+                },
+                case_evidence={"matchedCaseCount": 0},
+                knowledge_summary={"grounded": False},
+                evidence_references=("sync-diagnosis:10:101:115:2847",),
+                allowed_tool_names=("recovery.failure.diagnose",),
+                max_output_tokens=512,
+                failure_code="WRITE_FAILED",
+                failure_reason="目标字段与已发布映射不一致",
+                decision_phase="DECIDE_AFTER_INVESTIGATION",
+                must_choose_single_governed_action=True,
+            )
+        )
+
+        self.assertEqual("REPAIR_FIELD_MAPPING", output.actions[0]["actionType"])
+        self.assertEqual(1, output.invocation_summary["deterministicGovernanceNarrowingCount"])
+        self.assertNotIn("ALTER_TARGET_SCHEMA", str(output.actions))
+
+    def test_recovery_adapter_keeps_schema_change_for_approval_without_trusted_mapping_evidence(self) -> None:
+        """缺少服务端映射修复证明时，模型的 schema 建议必须保留为审批动作，不能自动降级。"""
+
+        engine = _QueryEngine('{"actions":[{"actionType":"ALTER_TARGET_SCHEMA"}]}')
+        model = GovernedRecoveryPlanningModel(self._json_model(engine))
+
+        output = model.plan(
+            RecoveryPlanningModelInput(
+                objective="处理未知目标字段错误",
+                audit_scope=self._audit_scope(),
+                diagnostic_facts={
+                    "failureCode": "WRITE_FAILED",
+                    "recommendedRepairActions": ("PREVIEW_SCHEMA_REPAIR",),
+                },
+                case_evidence={"matchedCaseCount": 0},
+                knowledge_summary={"grounded": False},
+                evidence_references=(),
+                allowed_tool_names=("recovery.failure.diagnose",),
+                max_output_tokens=512,
+                failure_code="WRITE_FAILED",
+                failure_reason="尚无唯一映射证明",
+            )
+        )
+
+        self.assertEqual("ALTER_TARGET_SCHEMA", output.actions[0]["actionType"])
+        self.assertEqual(0, output.invocation_summary["deterministicGovernanceNarrowingCount"])
+
     def test_recovery_adapter_never_promotes_unknown_or_high_risk_java_recommendations(self) -> None:
         """空模型动作不能把未知或高风险 Java 建议偷偷转换为可执行恢复动作。
 
         这个反例固定 fail-closed 边界：即使诊断事实建议 retry、apply、replay、create 或 alter，
-        Python 适配层也必须保持空动作。只有明确列入只读预览映射表的建议才允许作为低风险
-        handoff 候选，避免将确定性诊断建议错误等同于用户审批或业务执行授权。
+        Python 适配层也必须保持空动作。只有明确列入平台安全候选表的建议才允许进入下一层门禁，
+        避免将任意确定性诊断建议错误等同于用户审批或业务执行授权。
         """
 
         engine = _QueryEngine('{"actions":[],"publicSummary":"证据不足，暂不建议动作"}')

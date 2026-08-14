@@ -31,7 +31,7 @@ class _SequencedRecoveryAgent:
 
     role = AgentSessionRole.RECOVERY_AGENT
 
-    def __init__(self, outputs: list[dict[str, Any]]) -> None:
+    def __init__(self, outputs: list[dict[str, Any] | SpecialistTurnResult]) -> None:
         self._outputs = list(outputs)
         self.requests: list[SpecialistTurnRequest] = []
 
@@ -40,6 +40,8 @@ class _SequencedRecoveryAgent:
 
         self.requests.append(request)
         output = self._outputs.pop(0)
+        if isinstance(output, SpecialistTurnResult):
+            return replace(output, turn_id=request.turn_id)
         return SpecialistTurnResult(
             agent_id="recovery-specialist-test",
             role=self.role,
@@ -187,6 +189,8 @@ def _evidence_audit() -> dict[str, Any]:
                 "sourceRef": "sync-execution:31:41",
                 "retrievedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "queryDigest": "sha256:" + "1" * 64,
+                "confidence": 0.95,
+                "confidenceBasis": "AUTHORITATIVE_PLATFORM_FACT",
             },
         ),
         "evidenceDigest": "sha256:" + "2" * 64,
@@ -257,6 +261,210 @@ def _durable_fact_sink(request: SpecialistTurnRequest, result: SpecialistTurnRes
 
 
 class AutopilotRecoveryCoordinatorTest(unittest.TestCase):
+    def test_transient_model_failure_must_replan_same_event_instead_of_replaying_failure(self) -> None:
+        """Provider 超时是可恢复的技术故障，同一 Kafka 事件重投时必须真正再次调用模型。
+
+        第一轮把低敏故障分类写入终态 checkpoint，便于审计本次尝试；第二轮读取到该终态后不能把它
+        当成永久业务结论直接返回，否则 Spring Kafka 即使完成重投也永远没有机会恢复。测试用同一个
+        eventId 连续规划两次，并要求第二次消费新的 Specialist 输出形成候选。
+        """
+
+        transient_failure = SpecialistTurnResult(
+            agent_id="recovery-specialist-test",
+            role=AgentSessionRole.RECOVERY_AGENT,
+            turn_id="由测试替身按真实请求覆盖",
+            status=SpecialistTurnStatus.FAILED,
+            public_summary="恢复规划模型调用失败，未生成或执行任何修复动作。",
+            structured_output={
+                "modelFailureReasonCode": "MODEL_TIMEOUT",
+                "modelFailureSource": "MODEL_PROVIDER_TRANSPORT",
+            },
+            error_code="RECOVERY_PLANNING_MODEL_FAILED",
+        )
+        recovered_output = {
+            "repairActions": ({"actionType": "REFRESH_METADATA"},),
+            "retrievalDecision": "SKIP",
+            "retrievalStrategy": "STRUCTURED_DIAGNOSTIC",
+            "diagnosticEvidenceGate": {"satisfied": True, "ragRequired": False},
+            "evidenceAudit": _evidence_audit(),
+            "modelConfidence": 0.94,
+        }
+        agent = _SequencedRecoveryAgent([transient_failure, recovered_output])
+        checkpointer = LangGraphDurableCheckpointerService()
+        coordinator = AutopilotRecoveryCoordinator(
+            specialist_registry=SpecialistAgentRegistry((agent,)),
+            rag_pipeline=_StaticRagPipeline(),  # type: ignore[arg-type]
+            checkpointer=checkpointer,
+            result_sink=_durable_fact_sink,
+        )
+        request = _request(cycle=1, repeated_error_count=0, previous_repair_fingerprint=None)
+
+        first = coordinator.plan(request)
+        first_terminal = checkpointer.latest_for_thread(first.checkpoint_thread_id or "")
+        second = coordinator.plan(request)
+
+        self.assertEqual("FAILED", first.status)
+        self.assertEqual("MODEL_TIMEOUT", first.model_failure_reason_code)
+        self.assertEqual("MODEL_PROVIDER_TRANSPORT", first.model_failure_source)
+        self.assertTrue(first.retryable_failure)
+        self.assertIsNotNone(first_terminal)
+        self.assertEqual("autopilot_recovery_finished", first_terminal.node_name)
+        self.assertEqual("MODEL_TIMEOUT", first_terminal.state["terminalResult"]["modelFailureReasonCode"])
+        self.assertEqual("CANDIDATE_READY", second.status)
+        self.assertEqual("REFRESH_METADATA", second.action)
+        self.assertEqual(2, len(agent.requests))
+
+    def test_permanent_model_contract_failure_remains_deterministic_terminal_replay(self) -> None:
+        """模型 JSON/响应契约错误不会因网络重投自行改变，应保留现有确定性终态重放语义。"""
+
+        permanent_failure = SpecialistTurnResult(
+            agent_id="recovery-specialist-test",
+            role=AgentSessionRole.RECOVERY_AGENT,
+            turn_id="由测试替身按真实请求覆盖",
+            status=SpecialistTurnStatus.FAILED,
+            public_summary="恢复规划模型响应不符合结构化合同。",
+            structured_output={
+                "modelFailureReasonCode": "MODEL_RESPONSE_INVALID_JSON",
+                "modelFailureSource": "MODEL_RESPONSE_PARSER",
+            },
+            error_code="RECOVERY_PLANNING_MODEL_FAILED",
+        )
+        agent = _SequencedRecoveryAgent([permanent_failure])
+        coordinator = AutopilotRecoveryCoordinator(
+            specialist_registry=SpecialistAgentRegistry((agent,)),
+            rag_pipeline=_StaticRagPipeline(),  # type: ignore[arg-type]
+            checkpointer=LangGraphDurableCheckpointerService(),
+            result_sink=_durable_fact_sink,
+        )
+        request = _request(cycle=1, repeated_error_count=0, previous_repair_fingerprint=None)
+
+        first = coordinator.plan(request)
+        second = coordinator.plan(request)
+
+        self.assertEqual(first.to_summary(), second.to_summary())
+        self.assertFalse(first.retryable_failure)
+        self.assertEqual("MODEL_RESPONSE_INVALID_JSON", first.model_failure_reason_code)
+        self.assertEqual(1, len(agent.requests))
+
+    def test_governed_low_risk_repairs_return_canonical_parameters_and_fingerprint(self) -> None:
+        """低风险修复必须由平台收窄参数并重算指纹，不能采信模型自报的授权属性。"""
+
+        cases = (
+            (
+                "ROLLBACK_EXECUTION_POLICY",
+                {},
+                {"rollbackTarget": "LAST_SUCCESSFUL_EXECUTION"},
+            ),
+            (
+                "TUNE_EXECUTION_POLICY",
+                {
+                    "proposedValues": {
+                        "maxChannel": 2,
+                        "readBatchSize": 256,
+                        "writeBatchSize": 128,
+                        "timeoutSeconds": 900,
+                    }
+                },
+                {
+                    "maxChannel": 2,
+                    "readBatchSize": 256,
+                    "writeBatchSize": 128,
+                    "timeoutSeconds": 900,
+                },
+            ),
+            (
+                "REFRESH_METADATA",
+                {},
+                {"forceRefresh": True},
+            ),
+            (
+                "RESUME_FROM_CHECKPOINT",
+                {},
+                {"checkpointSelector": "LATEST_PERSISTED"},
+            ),
+            (
+                "REPLAY_FAILED_SHARDS",
+                {},
+                {"objectState": "FAILED", "workUnitType": "PARTITION_SHARD"},
+            ),
+            (
+                "REPAIR_FIELD_MAPPING",
+                {},
+                {"repairMode": "METADATA_PROVEN_SAFE"},
+            ),
+        )
+        for action_type, action_fields, expected_parameters in cases:
+            with self.subTest(action=action_type):
+                action = {"actionType": action_type, **action_fields}
+                output = {
+                    "repairActions": (action,),
+                    # 故意提供错误指纹和自报低风险属性，证明平台不会把模型字段当成权限。
+                    "actionFingerprint": "sha256:" + "f" * 64,
+                    "retrievalDecision": "SKIP",
+                    "retrievalStrategy": "STRUCTURED_DIAGNOSTIC",
+                    "diagnosticEvidenceGate": {"satisfied": True, "ragRequired": False},
+                    "evidenceAudit": _evidence_audit(),
+                    "modelConfidence": 0.93,
+                }
+                coordinator = AutopilotRecoveryCoordinator(
+                    specialist_registry=SpecialistAgentRegistry((_SequencedRecoveryAgent([output]),)),
+                    rag_pipeline=_StaticRagPipeline(),  # type: ignore[arg-type]
+                    checkpointer=LangGraphDurableCheckpointerService(),
+                    result_sink=_durable_fact_sink,
+                )
+                request = _request(
+                    cycle=1,
+                    repeated_error_count=0,
+                    previous_repair_fingerprint=None,
+                )
+
+                result = coordinator.plan(request)
+
+                self.assertEqual("CANDIDATE_READY", result.status)
+                self.assertEqual(action_type, result.action)
+                self.assertEqual("LOW", result.risk_level)
+                self.assertTrue(result.idempotent)
+                self.assertEqual(expected_parameters, dict(result.repair_parameters))
+                self.assertNotEqual("f" * 64, result.repair_fingerprint)
+                self.assertEqual(expected_parameters, result.to_summary()["repairParameters"])
+
+    def test_privileged_repair_exits_loop_with_structured_operator_handoff(self) -> None:
+        """凭据等越权动作必须退出自治循环，并给出可直接执行的统一人工处置合同。"""
+
+        output = {
+            "repairActions": ({"actionType": "CHANGE_CREDENTIAL"},),
+            "retrievalDecision": "SKIP",
+            "retrievalStrategy": "STRUCTURED_DIAGNOSTIC",
+            "diagnosticEvidenceGate": {"satisfied": True, "ragRequired": False},
+            "evidenceAudit": _evidence_audit(),
+            "modelConfidence": 0.96,
+        }
+        coordinator = AutopilotRecoveryCoordinator(
+            specialist_registry=SpecialistAgentRegistry((_SequencedRecoveryAgent([output]),)),
+            rag_pipeline=_StaticRagPipeline(),  # type: ignore[arg-type]
+            checkpointer=LangGraphDurableCheckpointerService(),
+            result_sink=_durable_fact_sink,
+        )
+
+        result = coordinator.plan(
+            _request(cycle=1, repeated_error_count=0, previous_repair_fingerprint=None)
+        )
+
+        self.assertEqual("ATTENTION_REQUIRED", result.status)
+        self.assertEqual("RECOVERY_ACTION_REQUIRES_APPROVAL", result.reason_code)
+        handoff = result.operator_handoff
+        self.assertEqual("datasmart.autopilot.operator-handoff.v1", handoff["schemaVersion"])
+        self.assertEqual("CHANGE_CREDENTIAL", handoff["blockedAction"])
+        self.assertTrue(handoff["rootCauseCodes"])
+        self.assertTrue(handoff["evidenceReferences"])
+        self.assertTrue(handoff["evidenceRecords"])
+        self.assertEqual(0.95, handoff["evidenceRecords"][0]["confidence"])
+        self.assertTrue(handoff["requiredPermission"])
+        self.assertTrue(handoff["operationSteps"])
+        self.assertTrue(handoff["impact"])
+        self.assertTrue(handoff["rollbackSteps"])
+        self.assertTrue(handoff["verificationSteps"])
+
     def test_completed_event_replay_returns_exact_terminal_result_without_replanning(self) -> None:
         """同一 Kafka 事件重投时必须复用 durable 终态，不能再次调用任何决策或调查依赖。
 

@@ -139,6 +139,19 @@ public class DataSourceCapabilitySnapshotView {
     private String implementationStage;
 
     /**
+     * 当前服务进程实际加载的连接器运行版本。
+     *
+     * <p>JDBC 连接器优先读取驱动包的 Implementation-Version，缺失时回退到
+     * {@code java.sql.Driver} 的主次版本。该字段不需要建立数据库连接，也不包含驱动类名。</p>
+     */
+    private String connectorRuntimeVersion;
+
+    /**
+     * 运行版本的取证方式，例如 PACKAGE_IMPLEMENTATION_VERSION、JDBC_DRIVER_INTERFACE 或 UNAVAILABLE。
+     */
+    private String connectorRuntimeVersionSource;
+
+    /**
      * 是否适合进入同步任务规划。
      *
      * <p>它表示当前数据源实例处于可用生命周期，并且连接器不是纯路线图预留。

@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -38,6 +39,8 @@ public class AgentAutopilotRecoveryDataSyncClient {
             "/internal/data-sync/autopilot/recovery/triggers/{eventId}/dead-letter";
     private static final String QUARANTINE_APPLY_PATH =
             "/internal/data-sync/autopilot/recovery/cases/{caseId}/quarantine/apply";
+    private static final String REPAIR_APPLY_PATH =
+            "/internal/data-sync/autopilot/recovery/cases/{caseId}/repairs/apply";
     private static final String RETRY_PATH =
             "/sync-tasks/{taskId}/executions/{executionId}/objects/retry";
 
@@ -45,22 +48,19 @@ public class AgentAutopilotRecoveryDataSyncClient {
     private final AgentToolDownstreamHttpSupport httpSupport;
 
     /**
-     * Writes the final handling outcome for one readable Kafka trigger back to data-sync.
+     * 把一条可解析 Kafka 触发器的最终处理结果写回 data-sync。
      *
-     * <p>The input is the low-sensitive result that the consumer is ready to acknowledge, and the output is
-     * {@code void}: data-sync is the durable owner of the trigger-result receipt. This method deliberately sends
-     * only the internal service token. A verifier rejection can happen before the event has a trustworthy session,
-     * run, or delegation, so attaching user-delegation headers here would either be impossible or would let an
-     * unverified event influence an authorization boundary. The fixed URL and the four fixed body fields also keep
-     * this callback from becoming a generic internal HTTP proxy.</p>
+     * <p>输入是消费者准备确认的低敏结果，data-sync 是触发结果回执的持久所有者，因此没有业务返回值。
+     * 本方法刻意只发送内部服务令牌：验证器可能在事件尚无可信 session、run 或 delegation 时就拒绝，
+     * 此时附加用户委派 Header 既没有事实基础，也可能让未验证事件影响授权边界。固定 URL 和固定请求字段
+     * 同时防止该回调退化为通用内部 HTTP 代理。</p>
      *
-     * <p>A normal return means data-sync accepted a successful platform envelope and the consumer may commit the
-     * Kafka offset. HTTP failures, missing envelopes, non-success envelope codes, and malformed local result data
-     * are all infrastructure or contract failures. They are intentionally surfaced as runtime exceptions so the
-     * listener's bounded retry and DLT policy can preserve the unrecorded terminal result for later handling.</p>
+     * <p>正常返回表示 data-sync 接受了成功平台信封，消费者可以提交 Kafka offset。HTTP 失败、信封缺失、
+     * 非成功码或本地结果格式错误都属于基础设施/合同失败，必须抛出运行时异常，让监听器的有界重试和 DLT
+     * 保留尚未持久化的终态结果。</p>
      *
-     * @param result low-sensitive terminal result for a parsed Autopilot recovery trigger
-     * @throws IllegalStateException when the local result or data-sync response violates the callback contract
+     * @param result 已解析 Autopilot 恢复触发器的低敏终态结果
+     * @throws IllegalStateException 当本地结果或 data-sync 响应违反回调合同时抛出
      */
     public void recordTriggerResult(AgentAutopilotRecoveryExecutionResult result) {
         if (result == null) {
@@ -92,20 +92,17 @@ public class AgentAutopilotRecoveryDataSyncClient {
     }
 
     /**
-     * Asks data-sync to durably converge a trigger whose bounded Kafka delivery reached the dead-letter topic.
+     * 请求 data-sync 持久收敛一条经过 Kafka 有界投递后仍进入死信主题的触发事件。
      *
-     * <p>The request contains only the event ID in a fixed URL and the original current execution ID in the body.
-     * It intentionally sends no represented-user or Agent delegation headers: a DLT handler is reporting transport
-     * exhaustion, while data-sync reloads the authoritative outbox, decision receipt, case scope, and optimistic
-     * version. The internal service token authenticates the caller without turning broker payload fields into
-     * transition authority.</p>
+     * <p>固定 URL 只携带 event ID，请求体只携带原始 current execution ID。这里刻意不发送被代理用户或
+     * Agent 委托头，因为 DLT 处理器报告的是传输耗尽事实；data-sync 必须自行重新加载权威 outbox、决策回执、
+     * case 范围和乐观锁版本。内部服务令牌只认证调用方，不能把 broker 载荷字段提升为状态迁移权限。</p>
      *
-     * <p>A successful platform envelope proves that the DLT fact is now queryable in data-sync. Every malformed
-     * local identity, HTTP failure, or non-success envelope remains an exception so Spring Kafka's
-     * {@code DltStrategy.FAIL_ON_ERROR} does not commit an unconverged dead-letter record.</p>
+     * <p>平台成功信封只证明 DLT 事实已可在 data-sync 查询。任何本地身份格式错误、HTTP 失败或非成功信封
+     * 仍然抛出异常，确保 Spring Kafka 的 {@code DltStrategy.FAIL_ON_ERROR} 不会提交尚未收敛的死信记录。</p>
      *
-     * @param eventId verified event identity parsed from the original trigger payload
-     * @param currentExecutionId positive execution identity carried by that trigger
+     * @param eventId 从原始触发载荷解析并验证的事件身份
+     * @param currentExecutionId 触发器携带的正数执行身份
      */
     public void recordTriggerDeadLettered(String eventId, Long currentExecutionId) {
         String requiredEventId = requiredResultText(eventId);
@@ -143,7 +140,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      * @param response 已由 Python 返回但尚未在 data-sync 落案的低敏候选
      * @param evidenceVerified Java 是否已复算并验证候选证据
      * @return data-sync 持久化后的 case 视图及其乐观锁版本
-     * @throws IllegalStateException when the data-sync response contract lacks valid case data
+     * @throws IllegalStateException data-sync 响应合同缺少有效 case 数据时抛出
      */
     public AgentAutopilotRecoveryCaseView recordDecision(
             AgentAutopilotVerifiedRecoveryTrigger trigger,
@@ -191,7 +188,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      * @param receiptSuffix 参与幂等 receiptId 的固定低敏后缀，例如 {@code started} 或 {@code failed}
      * @param attentionReason 需要人工关注时的稳定原因码；不需要时可为空
      * @return 推进后包含新版本的 case 视图
-     * @throws IllegalStateException when the case lacks optimistic-lock data or the response contract is invalid
+     * @throws IllegalStateException case 缺少乐观锁数据或响应合同无效时抛出
      */
     public AgentAutopilotRecoveryCaseView recordTransition(
             AgentAutopilotVerifiedRecoveryTrigger trigger,
@@ -199,14 +196,34 @@ public class AgentAutopilotRecoveryDataSyncClient {
             String receiptType,
             String receiptSuffix,
             String attentionReason) {
+        return recordTransition(trigger, recoveryCase, receiptType, receiptSuffix, attentionReason,
+                trigger == null ? null : trigger.event().currentExecutionId());
+    }
+
+    /**
+     * 推进 case 并显式记录修复后 execution；checkpoint 恢复创建新 execution 时使用该重载。
+     *
+     * <p>其余迁移仍通过五参数方法自动沿用原事件 execution。显式值只来自已经通过范围校验的 data-sync
+     * 修复回执，不能由模型或任意工具参数提供。</p>
+     */
+    public AgentAutopilotRecoveryCaseView recordTransition(
+            AgentAutopilotVerifiedRecoveryTrigger trigger,
+            AgentAutopilotRecoveryCaseView recoveryCase,
+            String receiptType,
+            String receiptSuffix,
+            String attentionReason,
+            Long currentExecutionId) {
         if (recoveryCase == null || recoveryCase.caseId() == null || recoveryCase.version() == null) {
             throw invalidDataSyncContract("AUTOPILOT_RECOVERY_CASE_VERSION_MISSING");
+        }
+        if (currentExecutionId == null || currentExecutionId <= 0) {
+            throw invalidDataSyncContract("AUTOPILOT_RECOVERY_EXECUTION_ID_INVALID");
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("expectedVersion", recoveryCase.version());
         body.put("receiptId", trigger.event().eventId() + ":" + receiptSuffix);
         body.put("receiptType", receiptType);
-        body.put("currentExecutionId", trigger.event().currentExecutionId());
+        body.put("currentExecutionId", currentExecutionId);
         body.put("cycle", trigger.event().cycle());
         body.put("errorFingerprint", trigger.event().errorFingerprint());
         body.put("repeatedErrorCount", trigger.event().repeatedErrorCount());
@@ -221,26 +238,22 @@ public class AgentAutopilotRecoveryDataSyncClient {
     }
 
     /**
-     * Applies the exact quarantine preview that passed Java verification and data-sync policy approval.
+     * 应用已经通过 Java 验证和 data-sync 策略批准的精确隔离预览。
      *
-     * <p>The method exposes no arbitrary tool, URL, selector, or reason. It binds one fixed internal request to the
-     * persisted case version, original tenant/project/task/execution/cycle, current authorization and policy digests,
-     * Java-validated preview digest and IDs, and the canonical action fingerprint. The stable
-     * {@code eventId:quarantine-apply} receipt lets data-sync replay a committed result when an HTTP response was
-     * lost, while rejecting reuse with changed facts.</p>
+     * <p>本方法不开放任意工具、URL、选择器或原因。固定内部请求同时绑定持久 case 版本、原始租户/项目/
+     * 任务/执行/循环、当前授权和策略摘要、Java 已验证的预览摘要与样本 ID，以及规范动作指纹。稳定的
+     * {@code eventId:quarantine-apply} 回执可在 HTTP 响应丢失时重放已提交结果，但会拒绝同一回执被不同事实复用。</p>
      *
-     * <p>User/Agent delegation headers and the internal service token are both sent by {@link #postEnvelope}. The
-     * downstream service therefore rechecks the represented user's resource scope and the service-to-service source
-     * before changing any error-sample state. This method does not treat HTTP success alone as proof: it requires a
-     * response bound to the expected case and receipt. The caller separately requires the durable
-     * {@code COMPLETED/APPLIED} state before starting retry.</p>
+     * <p>{@link #postEnvelope} 同时发送用户/Agent 委托头和内部服务令牌，因此下游在修改错误样本状态前会重新
+     * 校验被代理用户的资源范围和服务来源。HTTP 成功本身不作为完成证据；响应必须绑定预期 case 和回执，
+     * 调用方还会在启动重试前要求持久状态达到 {@code COMPLETED/APPLIED}。</p>
      *
-     * @param trigger verified initial authorization and recovery-event scope
-     * @param recoveryCase data-sync case currently approved for the apply action
-     * @param response planner candidate containing the canonical repair fingerprint
-     * @param preview Java-validated preview digest and exact selected sample IDs
-     * @return durable apply receipt bound to this event and recovery case
-     * @throws IllegalStateException when local inputs or the downstream receipt violate the fixed contract
+     * @param trigger 已验证的首次授权和恢复事件范围
+     * @param recoveryCase 当前获准执行应用动作的 data-sync case
+     * @param response 携带规范修复指纹的规划候选
+     * @param preview Java 已验证的预览摘要和精确样本 ID
+     * @return 与当前事件和恢复 case 绑定的持久应用回执
+     * @throws IllegalStateException 本地输入或下游回执违反固定合同时抛出
      */
     public AgentAutopilotRecoveryQuarantineApplyReceipt applyAutonomousQuarantine(
             AgentAutopilotVerifiedRecoveryTrigger trigger,
@@ -294,6 +307,74 @@ public class AgentAutopilotRecoveryDataSyncClient {
     }
 
     /**
+     * 把已经由 Java 复核的修复参数提交到 data-sync 固定受治理执行入口。
+     *
+     * <p>请求体只包含 case 乐观锁、资源范围、持久授权摘要、动作指纹和白名单参数。checkpoint 内容、
+     * 策略快照、失败分片和字段元数据不会跨服务传入，而是由 data-sync 从权威数据库重新读取。稳定的
+     * {@code eventId:repair-apply} receipt 使“服务端已提交但响应丢失”的调用可以安全重放。</p>
+     *
+     * <p>响应必须与事件、case、动作和指纹完全一致。{@code applied=false} 是合法的确定性业务结果，
+     * 表示服务端发现缺少 checkpoint、没有安全映射或调参越界；调用方应结束本轮并转人工关注，而不是
+     * 把它当作瞬时网络错误无限重试。</p>
+     *
+     * @param trigger 已验证的事件与双主体上下文
+     * @param recoveryCase data-sync 已自动批准的持久 case
+     * @param response Python 候选，用于绑定动作和指纹
+     * @param verifiedParameters Java 验证器返回的规范参数
+     * @return 与当前范围绑定的修复回执
+     */
+    public AgentAutopilotRecoveryRepairReceipt applyGovernedRepair(
+            AgentAutopilotVerifiedRecoveryTrigger trigger,
+            AgentAutopilotRecoveryCaseView recoveryCase,
+            AgentAutopilotRecoveryPlanResponse response,
+            Map<String, Object> verifiedParameters) {
+        if (trigger == null || recoveryCase == null || response == null || verifiedParameters == null
+                || recoveryCase.caseId() == null || recoveryCase.version() == null) {
+            throw invalidDataSyncContract("AUTOPILOT_REPAIR_APPLY_INPUT_INVALID");
+        }
+        AgentAutopilotRecoveryTriggerEvent event = trigger.event();
+        String receiptId = requiredResultText(event.eventId()) + ":repair-apply";
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("expectedVersion", recoveryCase.version());
+        body.put("tenantId", event.tenantId());
+        body.put("projectId", event.projectId());
+        body.put("syncTaskId", event.syncTaskId());
+        body.put("executionId", event.currentExecutionId());
+        body.put("cycle", event.cycle());
+        body.put("authorizationDigest", recoveryCase.authorizationDigest());
+        body.put("policyDigest", recoveryCase.policyDigest());
+        body.put("action", response.action());
+        body.put("actionFingerprint", response.repairFingerprint());
+        body.put("receiptId", receiptId);
+        body.put("repairParameters", verifiedParameters);
+
+        Map<String, Object> data = postEnvelope(
+                trigger, REPAIR_APPLY_PATH, body, event.eventId(), recoveryCase.caseId());
+        AgentAutopilotRecoveryRepairReceipt receipt = new AgentAutopilotRecoveryRepairReceipt(
+                requiredText(data, "receiptId"),
+                requiredLong(data, "caseId"),
+                requiredLong(data, "syncTaskId"),
+                requiredLong(data, "sourceExecutionId"),
+                requiredLong(data, "executionId"),
+                requiredText(data, "action"),
+                requiredBoolean(data, "applied"),
+                requiredInt(data, "affectedCount"),
+                optionalText(data.get("executionState")),
+                optionalText(data.get("taskState")),
+                requiredText(data, "reasonCode"),
+                optionalCodeList(data.get("issueCodes")),
+                requiredText(data, "actionFingerprint"),
+                requiredText(data, "caseState"),
+                requiredBoolean(data, "replanQueued"),
+                optionalText(data.get("replanEventId")),
+                optionalInt(data.get("nextCycle")));
+        if (!receipt.matchesScope(event, recoveryCase, response)) {
+            throw invalidDataSyncContract("AUTOPILOT_REPAIR_APPLY_RECEIPT_SCOPE_MISMATCH");
+        }
+        return receipt;
+    }
+
+    /**
      * 请求 data-sync 在当前 execution 范围内重新排队全部允许重试的失败对象。
      *
      * <p>输入只有可信触发器，输出为 data-sync 的低层响应字段。方法会产生一次远端重试请求，但不会接受任意
@@ -306,7 +387,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      *
      * @param trigger 已验证且绑定当前同步任务与 execution 的触发器
      * @return 已校验并绑定原任务/执行范围的强类型重排队回执
-     * @throws IllegalStateException when the downstream response lacks parseable case data
+     * @throws IllegalStateException 下游响应缺少可解析 case 数据时抛出
      */
     public AgentAutopilotRecoveryRetryReceipt retryFailedObjects(
             AgentAutopilotVerifiedRecoveryTrigger trigger) {
@@ -351,7 +432,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      * @param traceId 用于跨服务关联的事件标识
      * @param uriVariables 固定路径模板所需的 URI 变量
      * @return 下游平台 envelope 中复制出的 {@code data} Map
-     * @throws IllegalStateException when the response envelope cannot be safely unwrapped
+     * @throws IllegalStateException 响应 envelope 无法安全解包时抛出
      */
     private Map<String, Object> postEnvelope(AgentAutopilotVerifiedRecoveryTrigger trigger,
                                              String path,
@@ -389,7 +470,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      *
      * @param data 已由平台 envelope 解包的 case 字段
      * @return 可用于下一次乐观锁迁移的强类型 case 视图
-     * @throws IllegalStateException when a required response field is missing or malformed
+     * @throws IllegalStateException 必填响应字段缺失或格式错误时抛出
      */
     private AgentAutopilotRecoveryCaseView caseView(Map<String, Object> data) {
         return new AgentAutopilotRecoveryCaseView(
@@ -417,7 +498,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      * @param data 下游响应字段
      * @param field 必须存在的字段名
      * @return 解析成功的长整数字段
-     * @throws IllegalStateException when the response field is missing or not a valid integer
+     * @throws IllegalStateException 响应字段缺失或不是有效整数时抛出
      */
     private Long requiredLong(Map<String, Object> data, String field) {
         try {
@@ -436,7 +517,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      * @param data 下游响应字段
      * @param field 必须存在的字段名
      * @return 已验证且未溢出的整数
-     * @throws IllegalStateException when a response integer is missing, malformed, or outside the Java int range
+     * @throws IllegalStateException 响应整数缺失、格式错误或超出 Java int 范围时抛出
      */
     private Integer requiredInt(Map<String, Object> data, String field) {
         long value = requiredLong(data, field);
@@ -444,6 +525,52 @@ public class AgentAutopilotRecoveryDataSyncClient {
             throw invalidDataSyncContract("AUTOPILOT_DATA_SYNC_NUMERIC_FIELD_INVALID");
         }
         return (int) value;
+    }
+
+    /** 读取可空整数；字段存在但格式错误或溢出时仍按下游合同损坏失败关闭。 */
+    private Integer optionalInt(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            long parsed = Long.parseLong(String.valueOf(value));
+            if (parsed > Integer.MAX_VALUE || parsed < Integer.MIN_VALUE) {
+                throw invalidDataSyncContract("AUTOPILOT_DATA_SYNC_NUMERIC_FIELD_INVALID");
+            }
+            return (int) parsed;
+        } catch (NumberFormatException exception) {
+            throw invalidDataSyncContract("AUTOPILOT_DATA_SYNC_NUMERIC_FIELD_INVALID");
+        }
+    }
+
+    /** 读取严格布尔值，避免字符串、数字或缺失字段被误解释为修复成功。 */
+    private boolean requiredBoolean(Map<String, Object> data, String field) {
+        Object value = data.get(field);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        throw invalidDataSyncContract("AUTOPILOT_DATA_SYNC_BOOLEAN_FIELD_INVALID");
+    }
+
+    /**
+     * 读取可选的低敏原因码列表；任意自由文本或非字符串元素都会使合同失败关闭。
+     */
+    private List<String> optionalCodeList(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        if (!(value instanceof List<?> rawList)) {
+            throw invalidDataSyncContract("AUTOPILOT_DATA_SYNC_CODE_LIST_INVALID");
+        }
+        List<String> result = new ArrayList<>();
+        for (Object item : rawList) {
+            String code = optionalText(item);
+            if (code == null || !code.matches("[A-Z][A-Z0-9_]{0,95}")) {
+                throw invalidDataSyncContract("AUTOPILOT_DATA_SYNC_CODE_LIST_INVALID");
+            }
+            result.add(code);
+        }
+        return List.copyOf(result);
     }
 
     /**
@@ -455,7 +582,7 @@ public class AgentAutopilotRecoveryDataSyncClient {
      * @param data 下游响应字段
      * @param field 必须存在的字段名
      * @return 非空的已清理文本
-     * @throws IllegalStateException when a required response text field is absent or blank
+     * @throws IllegalStateException 必填响应文本字段缺失或为空白时抛出
      */
     private String requiredText(Map<String, Object> data, String field) {
         String value = optionalText(data.get(field));
@@ -481,16 +608,15 @@ public class AgentAutopilotRecoveryDataSyncClient {
     }
 
     /**
-     * Validates a required local trigger-result field before it becomes part of the fixed callback contract.
+     * 在本地触发结果字段进入固定回调合同前，校验该必填字段。
      *
-     * <p>This helper is intentionally small and side-effect free: it trims a single value and rejects null or blank
-     * text. A missing event ID, status, or reason code is not a business denial from data-sync; it means the local
-     * consumer cannot construct the documented internal request. The resulting {@link IllegalStateException} must
-     * therefore remain visible to Kafka retry processing.</p>
+     * <p>该辅助方法只做单值去空白和非空校验，不产生副作用。event ID、状态或原因码缺失并不是
+     * data-sync 给出的业务拒绝，而是本地消费者无法构造约定的内部请求。因此这里抛出的
+     * {@link IllegalStateException} 必须继续交给 Kafka 的有界重试流程处理，不能伪装成已完成回调。</p>
      *
-     * @param value local result field to normalize
-     * @return non-blank trimmed field value
-     * @throws IllegalStateException when the callback field is missing
+     * @param value 待规范化的本地结果字段
+     * @return 去除首尾空白后的非空字段值
+     * @throws IllegalStateException 回调必填字段缺失时抛出
      */
     private String requiredResultText(String value) {
         String normalized = optionalText(value);
@@ -501,15 +627,14 @@ public class AgentAutopilotRecoveryDataSyncClient {
     }
 
     /**
-     * Recognizes a successful platform response envelope without coupling the callback to an optional data payload.
+     * 识别平台统一成功响应信封，同时避免把回调成功与可选 {@code data} 载荷绑定。
      *
-     * <p>The trigger-result endpoint may acknowledge a write with a null or implementation-specific {@code data}
-     * field, so this method relies on the platform-wide {@code code == 0} success rule. It accepts JSON number and
-     * string representations because generic map deserialization can choose either form. Any other shape is a
-     * transport-contract problem, not a terminal Autopilot business decision.</p>
+     * <p>触发结果接口可能用空值或实现特定的 {@code data} 字段确认写入，因此本方法只依据平台统一的
+     * {@code code == 0} 规则。通用 Map 反序列化可能得到 JSON 数字或字符串，两种形式都允许；其他形状
+     * 代表传输合同错误，而不是 Autopilot 已经作出的终态业务裁决。</p>
      *
-     * @param response response envelope decoded by Spring's JSON converter
-     * @return {@code true} only when the platform envelope explicitly reports success
+     * @param response Spring JSON 转换器解析出的响应信封
+     * @return 仅当平台信封明确报告成功时返回 {@code true}
      */
     private boolean successfulPlatformEnvelope(Map<String, Object> response) {
         if (response == null || !response.containsKey("code")) {
@@ -527,14 +652,13 @@ public class AgentAutopilotRecoveryDataSyncClient {
     }
 
     /**
-     * Creates a low-sensitive exception for a broken data-sync integration contract.
+     * 为损坏的 data-sync 集成合同创建低敏技术异常。
      *
-     * <p>The exception contains only a stable reason code and never embeds a response body, URL, token, or remote
-     * message. It is deliberately an {@link IllegalStateException}: a malformed envelope or impossible local request
-     * is a technical failure that must not be acknowledged as a permanent business rejection.</p>
+     * <p>异常只包含稳定原因码，不嵌入响应正文、URL、令牌或远端消息。格式错误的信封或不可能成立的
+     * 本地请求属于技术失败，不能被确认成永久业务拒绝，因此统一使用 {@link IllegalStateException}。</p>
      *
-     * @param reasonCode stable code for logs, metrics, and retry diagnostics
-     * @return technical integration exception for the current callback or response contract
+     * @param reasonCode 用于日志、指标和重试诊断的稳定原因码
+     * @return 当前回调或响应合同对应的技术异常
      */
     private IllegalStateException invalidDataSyncContract(String reasonCode) {
         return new IllegalStateException(reasonCode);

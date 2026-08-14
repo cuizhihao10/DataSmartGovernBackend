@@ -827,6 +827,10 @@ class HttpFailureDiagnosticClient(_ControlPlaneHttpClientBase):
         failed_objects = _diagnosis_failed_object_summaries(data.get("failedObjects"))
         root_causes = _safe_code_list(data.get("rootCauseCodes"), "rootCauseCodes")
         repair_actions = _safe_code_list(data.get("recommendedRepairActions"), "recommendedRepairActions")
+        runtime_metrics = _diagnosis_runtime_metrics(data.get("runtimeMetrics"))
+        policy_comparison = _diagnosis_policy_comparison(data.get("executionPolicyComparison"))
+        connector_summaries = _diagnosis_connector_runtime_summaries(data.get("connectorRuntimeSummaries"))
+        evidence_records = _diagnosis_evidence_records(data.get("evidenceRecords"))
         execution_state = _safe_code(data.get("executionState"))
         diagnosis_digest = _safe_public_text(data.get("diagnosisDigest"), 500)
         failure_code = (
@@ -855,6 +859,9 @@ class HttpFailureDiagnosticClient(_ControlPlaneHttpClientBase):
             "failedObjects": tuple(failed_objects),
             "rootCauseCodes": root_causes,
             "recommendedRepairActions": repair_actions,
+            "runtimeMetrics": runtime_metrics,
+            "executionPolicyComparison": policy_comparison,
+            "connectorRuntimeSummaries": connector_summaries,
             "payloadPolicy": CONTROL_PLANE_PAYLOAD_POLICY,
         }
         facts = {key: value for key, value in facts.items() if value is not None}
@@ -880,6 +887,7 @@ class HttpFailureDiagnosticClient(_ControlPlaneHttpClientBase):
                 "rootCauseCount": len(root_causes),
                 "payloadPolicy": CONTROL_PLANE_PAYLOAD_POLICY,
             },
+            evidence_records=evidence_records,
             public_summary=public_summary,
         )
 
@@ -1788,6 +1796,169 @@ def _diagnosis_failed_object_summaries(value: Any) -> tuple[dict[str, Any], ...]
             "errorCode": _safe_code(item.get("errorCode")),
         }
         result.append({key: value for key, value in summary.items() if value is not None})
+    return tuple(result)
+
+
+def _diagnosis_runtime_metrics(value: Any) -> dict[str, int]:
+    """读取 Java 已聚合的运行指标，不接收日志正文或任意扩展字段。"""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_RESPONSE_FIELD_INVALID")
+    fields = (
+        "recordsRead",
+        "recordsWritten",
+        "failedRecordCount",
+        "failedObjectCount",
+        "retryableDirtySampleCount",
+        "quarantinedDirtySampleCount",
+    )
+    result: dict[str, int] = {}
+    for field_name in fields:
+        parsed = _optional_non_negative_int(value.get(field_name))
+        if parsed is not None:
+            result[field_name] = parsed
+    return result
+
+
+def _diagnosis_policy_comparison(value: Any) -> dict[str, Any]:
+    """裁剪当前/上次成功策略，只保留容量、批量、超时和重试参数。"""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_RESPONSE_FIELD_INVALID")
+    result = {
+        "comparisonStatus": _safe_code(value.get("comparisonStatus")),
+        "current": _diagnosis_policy_snapshot(value.get("current")),
+        "previousSuccessful": _diagnosis_policy_snapshot(value.get("previousSuccessful")),
+        "changedFields": _safe_text_list(value.get("changedFields"), "changedFields"),
+    }
+    return {key: item for key, item in result.items() if item not in (None, "", (), {})}
+
+
+def _diagnosis_policy_snapshot(value: Any) -> dict[str, Any] | None:
+    """解析一份低敏 execution 策略快照，拒绝 snapshotJson 等未声明字段。"""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_RESPONSE_FIELD_INVALID")
+    result: dict[str, Any] = {
+        "executionId": _safe_identifier(value.get("executionId"), "executionId")
+        if value.get("executionId") is not None else None,
+        "policyCodeSummary": _safe_public_text(value.get("policyCodeSummary"), 500),
+        "capturedAt": _safe_public_text(value.get("capturedAt"), 64),
+    }
+    for field_name in (
+        "resolvedChannel",
+        "taskGroupSize",
+        "readBatchSize",
+        "writeBatchSize",
+        "commitIntervalRecords",
+        "timeoutSeconds",
+        "maxRetryCount",
+        "maxDirtyRecordCount",
+    ):
+        result[field_name] = _optional_non_negative_int(value.get(field_name))
+    result["maxDirtyRecordRatio"] = _optional_number(value.get("maxDirtyRecordRatio"))
+    return {key: item for key, item in result.items() if item is not None and item != ""}
+
+
+def _diagnosis_connector_runtime_summaries(value: Any) -> tuple[dict[str, Any], ...]:
+    """解析连接器版本、能力与当前执行限界，不接受地址、驱动类名或凭据。"""
+
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_RESPONSE_FIELD_INVALID")
+    result: list[dict[str, Any]] = []
+    for item in value[:2]:
+        if not isinstance(item, Mapping):
+            raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_RESPONSE_FIELD_INVALID")
+        summary: dict[str, Any] = {
+            "connectorRole": _safe_code(item.get("connectorRole")),
+            "datasourceId": _safe_identifier(item.get("datasourceId"), "datasourceId")
+            if item.get("datasourceId") is not None else None,
+            "lookupStatus": _safe_code(item.get("lookupStatus")),
+            "snapshotVersion": _safe_public_text(item.get("snapshotVersion"), 120),
+            "connectorRuntimeVersion": _safe_public_text(item.get("connectorRuntimeVersion"), 80),
+            "connectorRuntimeVersionSource": _safe_code(item.get("connectorRuntimeVersionSource")),
+            "connectorType": _safe_code(item.get("connectorType")),
+            "connectorFamily": _safe_code(item.get("connectorFamily")),
+            "implementationStage": _safe_code(item.get("implementationStage")),
+            "healthStatus": _safe_code(item.get("healthStatus")),
+            "runtimeLimitStatus": _safe_code(item.get("runtimeLimitStatus")),
+            "capacityStatus": _safe_code(item.get("capacityStatus")),
+            "consistencyNotes": _safe_text_list(item.get("consistencyNotes"), "consistencyNotes"),
+            "performanceRecommendations": _safe_text_list(
+                item.get("performanceRecommendations"), "performanceRecommendations"),
+            "productionLimitations": _safe_text_list(
+                item.get("productionLimitations"), "productionLimitations"),
+            "issueCodes": _safe_code_list(item.get("issueCodes"), "issueCodes"),
+            "generatedAt": _safe_public_text(item.get("generatedAt"), 64),
+        }
+        for field_name in (
+            "canRead",
+            "canWrite",
+            "supportsSchemaDiscovery",
+            "supportsFieldMapping",
+            "supportsCheckpointResume",
+            "supportsPartitionParallelism",
+        ):
+            if item.get(field_name) is not None:
+                summary[field_name] = _required_bool(item.get(field_name), field_name)
+        for field_name in (
+            "effectiveChannel",
+            "effectiveReadBatchSize",
+            "effectiveWriteBatchSize",
+            "effectiveTimeoutSeconds",
+        ):
+            summary[field_name] = _optional_non_negative_int(item.get(field_name))
+        result.append({key: field for key, field in summary.items() if field not in (None, "", (), {})})
+    return tuple(result)
+
+
+def _diagnosis_evidence_records(value: Any) -> tuple[dict[str, Any], ...]:
+    """校验统一证据元数据，保证每条事实都有来源、时间、可信度和校准依据。"""
+
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_RESPONSE_FIELD_INVALID")
+    result: list[dict[str, Any]] = []
+    for item in value[:32]:
+        if not isinstance(item, Mapping):
+            raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_RESPONSE_FIELD_INVALID")
+        confidence = _finite_number(item.get("confidence"))
+        evidence_id = _optional_reference(item.get("evidenceId"), "evidenceId")
+        source_ref = _optional_reference(item.get("sourceRef"), "sourceRef")
+        source_type = _safe_code(item.get("sourceType"))
+        retrieved_at = _safe_public_text(item.get("retrievedAt"), 64)
+        confidence_basis = _safe_code(item.get("confidenceBasis"))
+        if (
+            confidence is None
+            or not 0.0 <= confidence <= 1.0
+            or evidence_id is None
+            or source_ref is None
+            or not source_type
+            or not retrieved_at
+            or not confidence_basis
+        ):
+            raise SpecialistControlPlaneAdapterError("CONTROL_PLANE_EVIDENCE_METADATA_INVALID")
+        record = {
+            "evidenceId": evidence_id,
+            "sourceType": source_type,
+            "sourceRef": source_ref,
+            "retrievedAt": retrieved_at,
+            "confidence": confidence,
+            "confidenceBasis": confidence_basis,
+        }
+        source_observed_at = _safe_public_text(item.get("sourceObservedAt"), 64)
+        if source_observed_at:
+            record["sourceObservedAt"] = source_observed_at
+        result.append(record)
     return tuple(result)
 
 

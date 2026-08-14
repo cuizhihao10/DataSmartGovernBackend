@@ -28,6 +28,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncExecutionPolicySnapshotMappe
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -35,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -43,6 +45,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 数据同步执行策略服务。
@@ -66,6 +69,11 @@ public class SyncExecutionPolicyService {
             "SERVICE_ACCOUNT"
     );
     private static final Set<String> PLATFORM_POLICY_ROLES = Set.of("PLATFORM_ADMINISTRATOR", "SERVICE_ACCOUNT");
+    private static final Set<String> AUTOPILOT_OVERRIDE_ACTIVE_TASK_STATES = Set.of(
+            "QUEUED", "RETRYING", "RUNNING");
+    private static final Set<String> AUTOPILOT_OVERRIDE_ACTIONS = Set.of(
+            "ROLLBACK_EXECUTION_POLICY", "TUNE_EXECUTION_POLICY");
+    private static final Pattern SHA_256 = Pattern.compile("^[0-9a-f]{64}$");
     private static final Set<String> SUPPORTED_SCOPE_TYPES = Set.of(
             "SYSTEM", "PROJECT", "CONNECTOR", "DATASOURCE", "TASK"
     );
@@ -349,6 +357,10 @@ public class SyncExecutionPolicyService {
         if (policy == null || facts == null) {
             return false;
         }
+        if (SyncAutopilotRecoveryRepairService.POLICY_CODE.equals(normalizeCode(policy.getPolicyCode()))
+                && !matchesAutopilotRecoveryOverride(policy, facts)) {
+            return false;
+        }
         String scopeType = normalizeCode(policy.getScopeType());
         if ("SYSTEM".equals(scopeType)) {
             return true;
@@ -368,6 +380,74 @@ public class SyncExecutionPolicyService {
             return connectorMatches(policy, facts);
         }
         return false;
+    }
+
+    /**
+     * 判断一条 Autopilot 临时策略是否仍只属于当前恢复 execution。
+     *
+     * <p>策略表历史结构只支持 TASK 作用域。如果和普通任务策略一样仅比较 taskId，那么夜间恢复产生的降并发或超时调整
+     * 会继续影响后续定时运行。修复服务因此把 case、execution、授权摘要和截止时间写入 description 的结构化 JSON；
+     * 本方法重新解析这些字段，并同时要求任务的 {@code lastExecutionId}、主状态、租户和项目仍匹配。</p>
+     *
+     * <p>任何缺失、类型错误、过期、旧 execution 或未知动作都返回 {@code false}。这是一条运行时 fail-closed 门禁，
+     * 不会修改或删除策略；恢复成功/失败后的软禁用负责保留审计并完成生命周期清理。</p>
+     *
+     * @param policy 候选任务级执行策略
+     * @param facts 当前 worker 即将执行的低敏任务事实
+     * @return 只有该覆盖仍绑定当前受治理恢复窗口时返回 {@code true}
+     */
+    private boolean matchesAutopilotRecoveryOverride(
+            SyncExecutionPolicy policy,
+            ExecutionPolicyFacts facts) {
+        if (!"TASK".equals(normalizeCode(policy.getScopeType()))
+                || policy.getDescription() == null || policy.getDescription().isBlank()) {
+            return false;
+        }
+        try {
+            JsonNode binding = objectMapper.readTree(policy.getDescription());
+            if (binding == null || !binding.isObject()) {
+                return false;
+            }
+            LocalDateTime deadlineAt = LocalDateTime.parse(requiredBindingText(binding, "deadlineAt"));
+            String action = requiredBindingText(binding, "action").toUpperCase(Locale.ROOT);
+            return SyncAutopilotRecoveryRepairService.POLICY_CODE.equals(
+                    requiredBindingText(binding, "bindingType"))
+                    && positiveBindingLong(binding, "caseId")
+                    && same(bindingLong(binding, "tenantId"), facts.tenantId())
+                    && same(bindingLong(binding, "projectId"), facts.projectId())
+                    && same(bindingLong(binding, "taskId"), facts.syncTaskId())
+                    && same(bindingLong(binding, "executionId"), facts.lastExecutionId())
+                    && AUTOPILOT_OVERRIDE_ACTIVE_TASK_STATES.contains(normalizeCode(facts.taskState()))
+                    && AUTOPILOT_OVERRIDE_ACTIONS.contains(action)
+                    && SHA_256.matcher(requiredBindingText(binding, "authorizationDigest")).matches()
+                    && SHA_256.matcher(requiredBindingText(binding, "policyDigest")).matches()
+                    && deadlineAt.isAfter(LocalDateTime.now(ZoneOffset.UTC));
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    /** 读取临时策略绑定中的必填文本；不做字符串化类型转换，避免 JSON 类型混淆。 */
+    private String requiredBindingText(JsonNode binding, String field) {
+        JsonNode value = binding.get(field);
+        if (value == null || !value.isTextual() || value.asText().isBlank()) {
+            throw new IllegalArgumentException("Autopilot policy binding field is invalid: " + field);
+        }
+        return value.asText().trim();
+    }
+
+    /** 读取临时策略绑定中的 Long 标识；浮点、字符串和越界值都会触发 fail-closed。 */
+    private Long bindingLong(JsonNode binding, String field) {
+        JsonNode value = binding.get(field);
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToLong()) {
+            throw new IllegalArgumentException("Autopilot policy binding identifier is invalid: " + field);
+        }
+        return value.longValue();
+    }
+
+    /** caseId 只用于证明绑定材料完整，不参与普通任务策略作用域扩展。 */
+    private boolean positiveBindingLong(JsonNode binding, String field) {
+        return bindingLong(binding, field) > 0;
     }
 
     private boolean datasourceMatches(SyncExecutionPolicy policy, ExecutionPolicyFacts facts) {
@@ -746,6 +826,8 @@ public class SyncExecutionPolicyService {
             Long tenantId,
             Long projectId,
             Long syncTaskId,
+            Long lastExecutionId,
+            String taskState,
             Long sourceDatasourceId,
             Long targetDatasourceId,
             String sourceConnectorType,
@@ -756,6 +838,8 @@ public class SyncExecutionPolicyService {
                     task == null ? null : task.getTenantId(),
                     task == null ? null : task.getProjectId(),
                     task == null ? null : task.getId(),
+                    task == null ? null : task.getLastExecutionId(),
+                    normalize(task == null ? null : task.getCurrentState()),
                     definition == null ? null : definition.getSourceDatasourceId(),
                     definition == null ? null : definition.getTargetDatasourceId(),
                     normalize(definition == null ? null : definition.getSourceConnectorType()),
@@ -768,6 +852,8 @@ public class SyncExecutionPolicyService {
                     bridgePlan == null ? (task == null ? null : task.getTenantId()) : bridgePlan.getTenantId(),
                     bridgePlan == null ? (task == null ? null : task.getProjectId()) : bridgePlan.getProjectId(),
                     bridgePlan == null ? (task == null ? null : task.getId()) : bridgePlan.getSyncTaskId(),
+                    task == null ? null : task.getLastExecutionId(),
+                    normalize(task == null ? null : task.getCurrentState()),
                     bridgePlan == null ? null : bridgePlan.getSourceDatasourceId(),
                     bridgePlan == null ? null : bridgePlan.getTargetDatasourceId(),
                     normalize(bridgePlan == null ? null : bridgePlan.getSourceConnectorType()),

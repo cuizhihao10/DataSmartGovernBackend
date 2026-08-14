@@ -26,6 +26,7 @@ import reactor.core.publisher.Mono;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentCaptor.forClass;
 import org.mockito.ArgumentCaptor;
 import static org.mockito.ArgumentMatchers.any;
@@ -649,6 +650,32 @@ class GatewayAuthorizationFilterTest {
 
         assertThat(chain.called()).isFalse();
         assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(403);
+    }
+
+    /**
+     * 权限中心已经返回允许后，下游服务异常必须保留为路由/业务异常，不能被误写成权限中心不可用。
+     *
+     * <p>Gateway 的过滤链也是一个 Mono。如果把 onErrorResume 放在包含 chain.filter 的整条链尾部，
+     * data-sync 重启时产生的连接拒绝也会落入授权异常处理器，最终被错误转换为 403。该测试使用一个
+     * 明确失败的下游链，固定“只捕获 permission-admin 调用异常”的边界。</p>
+     */
+    @Test
+    void downstreamErrorAfterAllowedDecisionShouldNotBeRewrittenAsAuthorizationFailure() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchange("/api/sync/sync-tasks/119/executions", "GET");
+        when(decisionClient.evaluate(any(), eq("trace-test-001")))
+                .thenReturn(Mono.just(allowedDecision()));
+
+        assertThatThrownBy(() -> filter.filter(
+                exchange,
+                ignored -> Mono.error(new IllegalStateException("data-sync unavailable"))).block())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("data-sync unavailable");
+
+        assertThat(exchange.getResponse().getStatusCode()).isNull();
+        verify(decisionClient).evaluate(any(), eq("trace-test-001"));
     }
 
     /**

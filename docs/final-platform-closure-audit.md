@@ -208,3 +208,27 @@ task `107` 的运行证据补充了两个必须分开处理的问题。首先，
 task `109` / execution `2775` 提供了最终黑盒证据：首轮 `PARTITION_RANGE_PROBE` transport failure、outbox `DELIVERED`、Recovery `SKIP / STRUCTURED_DIAGNOSTIC / evidence=0`、Java diagnosis/preview 成功、consumer `RECOVERY_STARTED`、data-sync 失败对象重排、case cycle `1/3` 为 `RECOVERED`、execution `SUCCEEDED`。最终 worker 统计为读 `20`、写 `20`、失败 `0`，对象账本成功，源目标四项聚合完全一致。全过程没有人工调用恢复写接口。
 
 Gateway 公开查询确认 execution、对象、运行日志、recovery 快照和 8 条 Specialist durable facts；后置 `PRECHECK_AGENT` 与 `MONITOR_AGENT` 在恢复后再次 `COMPLETED`。E2E 脚本最后一次 execution GET 曾因 permission-admin 瞬时不可用退出，但服务恢复后相同身份和项目范围的公开查询全部通过。脚本现已为只读 GET 增加最多 3 次瞬态重试，仅识别 502/503/504 和带固定低敏故障标记的权限中心不可用 403；POST 与普通权限拒绝不会重放。对应离线合同、AST 和退出码回归通过，审计结论更新为无人值守恢复主链路与验收脚本韧性均已收敛。
+
+## 16. 2026-08-14 自治修复目录与证据可追溯性审计
+
+本轮针对“Loop 是否只能重试”完成增量审计。当前 Recovery 诊断已经统一收集结构化错误与对象统计、当前策略和最近成功策略差异、连接器运行时版本及来源、当前 channel/batch/timeout 限制，以及可选的 runbook/历史事故证据。模型自主决定 `SEARCH` 或 `SKIP`，规则只负责开放工具和限制最多一次受控检索；因此当前路线属于 Graph 编排、Loop 有界恢复和 Harness 工具治理的组合，不是固定脚本重试器。
+
+证据对象强制携带来源类型、稳定来源引用、检索时间、`0..1` 置信度和置信度依据。Python 生成后，Java `AgentAutopilotRecoveryEvidenceVerifier` 再做结构与时间校验。没有来源、时间或可信度解释的检索片段不能进入自动动作门禁。诊断同时显式区分“连接器未声明硬容量”和“已知限制”，避免模型把当前配置值误当成平台容量。
+
+平台自动动作上限现包括 `ROLLBACK_EXECUTION_POLICY`、`TUNE_EXECUTION_POLICY`、`REFRESH_METADATA`、`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS` 和 `REPAIR_FIELD_MAPPING`，同时保留已有失败对象重试和精确 quarantine。每个动作都需要当前授权快照、case/cycle/截止时间、任务与 execution 作用域、动作指纹、幂等回执、双策略和持久事实共同通过。临时策略 override 在 Recovery 成功后自动停用，但不删除审计。
+
+字段映射自动修复严格限制为元数据可唯一证明的低风险变更：允许大小写归一化；允许在目标未占用、类型兼容、主键属性一致、双方有序号时序号一致且候选唯一时修复列重命名；只有目标列可空、有默认值、自动生成且非主键时，才能移除已经失效的映射。必填目标列缺少映射会在预检阶段阻断；系统不生成业务默认值、不执行 DDL、不禁用非空/主键/外键约束。凭据、权限、DDL、外键、覆盖或删除数据、扩大同步范围继续退出 Loop，并要求操作员接收根因、证据、权限、步骤、影响、回滚与验证说明。
+
+审计门禁结果：Java Reactor `1544/0/0/9`，Python `1174 passed, 1 skipped`，Frontend 合同、lint、TypeScript 和 Vite build 全通过。四个最新运行时镜像健康；严格认证 smoke 为 `PASS=89, WARN=0, FAIL=0`。全量 Java 回归发现并修复了非 Recovery `CUSTOM_SQL` 被误路由到恢复重载的兼容性回归，证明本轮没有只依赖新增测试。task `109` 继续作为 transport 自动重试的真实黑盒证据；新增的六类修复动作目前是源码、合同和回归级证据，后续仍应逐动作补真实故障注入，不能提前宣称所有数据库约束错误都已完成无人值守黑盒验收。
+
+## 17. 2026-08-15 字段映射修复与 Gateway 错误边界审计
+
+task `117`、`118`、`119` 形成了先发现能力缺口、再暴露持久化合同错误、最后完成真实闭环的连续证据。当前字段映射修复器只在元数据能够唯一证明时处理列重命名；候选歧义、类型不兼容、主键属性不同或序号冲突都会停止。task `118` 暴露的 `WHERE id` 与真实主键列 `task_id` 不一致问题由先失败的 SQL 片段回归锁定，修复后 data-sync 聚焦组 `58 tests` 通过；Java 幂等、策略和 Kafka 有界停止边界均未放宽。
+
+task `119` / execution `2860` 的首轮 20 条字段写入失败先经历 cycle 1 的 `REFRESH_METADATA` 预检失败，再由 cycle 2 的 `REPAIR_FIELD_MAPPING` 自动把 `customer_name -> customer_name` 修复为 `customer_name -> name` 并重排执行。两个 outbox 均 `DELIVERED`，模型均选择 `SKIP / STRUCTURED_DIAGNOSTIC`；case `14` 最终 `RECOVERED`，execution 与对象账本均 `SUCCEEDED`，读写统计为 `20/20/0`，目标实际 20 行。该证据首次把字段映射动作从源码/回归级提升为真实黑盒验收级，不能外推为其他五类修复动作也已完成真实故障注入。
+
+Gateway 另有一个错误边界缺陷：授权成功后的下游连接异常被同一个 `onErrorResume` 捕获并改写为权限中心故障。修复后只物化 permission-admin 调用本身，授权异常继续 fail-closed，下游异常不再被伪装；聚焦回归 `33 tests` 通过。task `119` 演练中容器重建后的短暂 Nacos 旧地址正好提供了真实故障证据，服务注册稳定后公开 API 对 execution、对象、Recovery 和 durable facts 的查询全部通过。
+
+动作后 PRECHECK/MONITOR 是重排回执后的非阻塞观察，不是长任务终态裁决。终态以 data-sync 的 case、repair receipt、execution、对象账本和业务目标对账为准。将来如需 Specialist 单独产出终态摘要，应由 worker 终态事件触发新的 finalization；不应让 Kafka 恢复消费者同步等待业务任务完成。
+
+最终回归审计为 JDK 21 Reactor `1563/0/0/9`、Python `1178 passed / 1 skipped`、Frontend 六项合同加 lint/build 全部通过；六 Agent 离线退出码合同通过，严格只读 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。上述结果与 task `119` 的真实运行证据共同关闭字段映射动作门禁，但策略回滚、限界调参、checkpoint 恢复和失败分片重放仍需各自的真实故障注入，生产发布规则继续服从第 7 节。

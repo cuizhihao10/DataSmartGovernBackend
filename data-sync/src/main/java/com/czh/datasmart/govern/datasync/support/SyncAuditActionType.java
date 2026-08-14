@@ -227,6 +227,13 @@ public enum SyncAuditActionType {
     REPLAY_DIRTY_RECORDS,
     /** 经用户确认后隔离精确主键脏记录，重试时跳过但不删除源数据。 */
     QUARANTINE_DIRTY_RECORDS,
+    /**
+     * 首次授权盒内由 Recovery Agent 执行的固定低风险修复。
+     *
+     * <p>载荷只记录 case、动作、是否应用、原因码、影响数量、动作指纹和双主体引用，不保存 SQL、
+     * 字段值、checkpoint 内容、连接凭据、模型输出或原始日志。</p>
+     */
+    AUTOPILOT_GOVERNED_REPAIR,
     PUBLISH_RECOVERY_CASE,
     ACKNOWLEDGE_ATTENTION,
     RESOLVE_ATTENTION,

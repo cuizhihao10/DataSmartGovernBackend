@@ -16,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.sql.Driver;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -84,6 +85,7 @@ public class DataSourceCapabilitySnapshotService {
         boolean eligibleForTaskPlanning = DataSourceStatus.ACTIVE.equals(datasource.getStatus()) && !roadmapOnly;
         boolean eligibleForExecutionPrecheck = eligibleForTaskPlanning
                 && ConnectionTestStatus.SUCCESS.equals(datasource.getLastTestStatus());
+        ConnectorRuntimeIdentity runtimeIdentity = resolveConnectorRuntimeIdentity(datasource);
 
         return new DataSourceCapabilitySnapshotView(
                 SNAPSHOT_VERSION,
@@ -99,6 +101,8 @@ public class DataSourceCapabilitySnapshotService {
                 profile.getConnectorType(),
                 profile.getConnectorFamily(),
                 profile.getImplementationStage(),
+                runtimeIdentity.version(),
+                runtimeIdentity.source(),
                 eligibleForTaskPlanning,
                 eligibleForExecutionPrecheck,
                 profile.isCanRead(),
@@ -121,6 +125,40 @@ public class DataSourceCapabilitySnapshotService {
                 recommendedActions,
                 LocalDateTime.now()
         );
+    }
+
+    /**
+     * 在不连接外部数据库的前提下读取当前进程实际加载的 JDBC 驱动版本。
+     *
+     * <p>输入只使用平台保存的驱动类名，不读取 URL、账号或密码。优先读取 Jar manifest
+     * 的实现版本；部分驱动没有该元数据时，实例化 {@link Driver} 并读取 JDBC 标准主次版本。
+     * 任意反射失败都降级为 UNAVAILABLE，让 Agent 明确知道证据缺失，而不是猜测版本。</p>
+     *
+     * @param datasource 已通过可见性校验的数据源实体
+     * @return 仅包含版本和值来源的低敏身份
+     */
+    private ConnectorRuntimeIdentity resolveConnectorRuntimeIdentity(DataSourceConfig datasource) {
+        String driverClassName = datasource.getDriverClassName();
+        if (driverClassName == null || driverClassName.isBlank()) {
+            return new ConnectorRuntimeIdentity("UNAVAILABLE", "NON_JDBC_OR_DRIVER_NOT_REGISTERED");
+        }
+        try {
+            Class<?> driverClass = Class.forName(driverClassName.trim());
+            Package driverPackage = driverClass.getPackage();
+            String implementationVersion = driverPackage == null ? null : driverPackage.getImplementationVersion();
+            if (implementationVersion != null && !implementationVersion.isBlank()) {
+                return new ConnectorRuntimeIdentity(implementationVersion.trim(), "PACKAGE_IMPLEMENTATION_VERSION");
+            }
+            Object instance = driverClass.getDeclaredConstructor().newInstance();
+            if (instance instanceof Driver driver) {
+                return new ConnectorRuntimeIdentity(
+                        driver.getMajorVersion() + "." + driver.getMinorVersion(),
+                        "JDBC_DRIVER_INTERFACE");
+            }
+        } catch (ReflectiveOperationException | LinkageError ignored) {
+            // 版本是辅助诊断事实；加载失败必须显式降级，不能阻断原有能力快照或触发外部连接。
+        }
+        return new ConnectorRuntimeIdentity("UNAVAILABLE", "DRIVER_METADATA_UNAVAILABLE");
     }
 
     /**
@@ -234,5 +272,9 @@ public class DataSourceCapabilitySnapshotService {
     private boolean supportsMode(ConnectorCapabilityProfile profile, SyncMode mode) {
         return profile.getSupportedSyncModes() != null
                 && profile.getSupportedSyncModes().contains(mode.name());
+    }
+
+    /** 连接器运行版本及其取证来源，不携带类名、Jar 路径或连接配置。 */
+    private record ConnectorRuntimeIdentity(String version, String source) {
     }
 }

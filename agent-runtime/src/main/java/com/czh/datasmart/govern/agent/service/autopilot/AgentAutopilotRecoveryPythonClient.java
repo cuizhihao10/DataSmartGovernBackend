@@ -43,6 +43,20 @@ public class AgentAutopilotRecoveryPythonClient {
             "PRECHECK_AGENT", "MONITOR_AGENT");
     private static final Set<String> SUPPORTED_STATUSES = Set.of(
             "CANDIDATE_READY", "ATTENTION_REQUIRED", "FAILED");
+    private static final Set<String> MODEL_FAILURE_REASON_CODES = Set.of(
+            "MODEL_TIMEOUT",
+            "MODEL_PROVIDER_ERROR",
+            "MODEL_RESPONSE_INVALID_JSON",
+            "MODEL_RESPONSE_CONTRACT_VIOLATION",
+            "MODEL_RESULT_UNAVAILABLE",
+            "MODEL_ADAPTER_ERROR");
+    private static final Set<String> MODEL_FAILURE_SOURCES = Set.of(
+            "MODEL_PROVIDER_TRANSPORT",
+            "MODEL_PROVIDER_RESPONSE",
+            "MODEL_RESPONSE_PARSER",
+            "MODEL_RESPONSE_CONTRACT",
+            "MODEL_RESULT_READER",
+            "SPECIALIST_MODEL_ADAPTER");
     private static final Pattern SAFE_CODE = Pattern.compile("[A-Z0-9_.:-]{1,96}");
 
     private final RestClient.Builder restClientBuilder;
@@ -62,8 +76,8 @@ public class AgentAutopilotRecoveryPythonClient {
      *
      * @param trigger 已重新验证 session、run、授权和恢复时限的可信触发器
      * @return Python 返回的低敏候选或阻断结果，仍须经过 Java 证据和策略校验
-     * @throws PlatformBusinessException when the caller supplies no verified trigger
-     * @throws IllegalStateException when Python returns an empty, malformed, or schema-incompatible planner response
+ * @throws PlatformBusinessException 调用方没有提供已校验触发事件时抛出
+ * @throws IllegalStateException Python 返回空、格式错误或不符合 schema 的规划响应时抛出
      */
     public AgentAutopilotRecoveryPlanResponse plan(AgentAutopilotVerifiedRecoveryTrigger trigger) {
         if (trigger == null) {
@@ -133,7 +147,7 @@ public class AgentAutopilotRecoveryPythonClient {
             AgentAutopilotRecoveryRetryReceipt retryReceipt) {
         if (trigger == null || recoveryCase == null || recoveryCase.caseId() == null
                 || recoveryCase.caseId() <= 0 || retryReceipt == null
-                || !retryReceipt.matchesRequeuedScope(trigger.event())) {
+                || !retryReceipt.matchesRequeuedScope(trigger.event(), recoveryCase.currentExecutionId())) {
             throw new IllegalStateException("AUTOPILOT_POST_RECOVERY_VERIFICATION_INPUT_INVALID");
         }
         AgentAutopilotRecoveryTriggerEvent event = trigger.event();
@@ -150,7 +164,7 @@ public class AgentAutopilotRecoveryPythonClient {
         request.put("delegationId", event.delegationId());
         request.put("workspaceKey", trigger.session().getWorkspaceKey());
         request.put("syncTaskId", event.syncTaskId());
-        request.put("currentExecutionId", event.currentExecutionId());
+        request.put("currentExecutionId", recoveryCase.currentExecutionId());
         request.put("taskId", retryReceipt.taskId());
         request.put("executionId", retryReceipt.executionId());
         request.put("caseId", recoveryCase.caseId());
@@ -198,22 +212,21 @@ public class AgentAutopilotRecoveryPythonClient {
     }
 
     /**
-     * Validates that a successful HTTP response is the exact low-sensitive recovery-planning contract expected by Java.
+     * 校验 HTTP 成功响应是否严格符合 Java 端约定的低敏恢复规划合同。
      *
-     * <p>The input is a 2xx body already deserialized by Spring and the verified trigger that originated the request.
-     * HTTP success alone is insufficient: this method requires the versioned schema, the original event and error
-     * fingerprint bindings, the fixed payload policy, a safe reason code, a finite supported status, and a finite
-     * confidence value. For a {@code CANDIDATE_READY} response it additionally requires the action, risk level, and
-     * repair fingerprint that later governance checks consume.</p>
+     * <p>输入包括 Spring 已反序列化的 2xx 响应体，以及发起请求前已经验证的触发器。HTTP 成功本身并不
+     * 等于规划有效：还必须校验版本化 schema、原始事件与错误指纹绑定、固定载荷策略、安全原因码、有限状态
+     * 和 0 到 1 之间的有限置信度。若状态为 {@code CANDIDATE_READY}，还必须提供后续治理门禁要使用的动作、
+     * 风险等级和修复指纹。</p>
      *
-     * <p>The method performs no I/O, persistence, authorization, or retry itself. A violation becomes a fixed
-     * {@link IllegalStateException}; the consumer records planning failure and rethrows it so Kafka bounded retry can
-     * handle malformed Python contracts. It intentionally leaves evidence scope, digest, source, and freshness facts
-     * to the evidence verifier, where deterministic business denials become durable {@code REJECTED} results.</p>
+     * <p>本方法自身不执行 I/O、持久化、授权或重试。合同违规会转换成固定的
+     * {@link IllegalStateException}；消费者记录规划失败后继续抛出，让 Kafka 有界重试处理损坏的 Python
+     * 合同。证据范围、摘要、来源和时效性由专用证据验证器负责，确定性业务拒绝则落为持久
+     * {@code REJECTED} 结果。</p>
      *
-     * @param trigger Java-verified trigger that supplies the authoritative event and error-fingerprint bindings
-     * @param response deserialized Python 2xx body, which may be null or incomplete
-     * @throws IllegalStateException when any required planner response contract rule is violated
+     * @param trigger Java 已验证的触发器，提供权威事件和错误指纹绑定
+     * @param response 已反序列化的 Python 2xx 响应体，可能为空或字段不完整
+     * @throws IllegalStateException 任一规划响应合同规则不满足时抛出
      */
     private void validatePlanResponse(AgentAutopilotVerifiedRecoveryTrigger trigger,
                                       AgentAutopilotRecoveryPlanResponse response) {
@@ -237,44 +250,54 @@ public class AgentAutopilotRecoveryPythonClient {
                 || !fingerprint(response.repairFingerprint()))) {
             throw invalidPlannerResponse();
         }
+        boolean planningModelFailed = "FAILED".equals(response.status())
+                && "RECOVERY_PLANNING_MODEL_FAILED".equals(response.reasonCode());
+        if (planningModelFailed
+                && (!MODEL_FAILURE_REASON_CODES.contains(response.modelFailureReasonCode())
+                || !MODEL_FAILURE_SOURCES.contains(response.modelFailureSource()))) {
+            throw invalidPlannerResponse();
+        }
+        if (!planningModelFailed
+                && (!blank(response.modelFailureReasonCode()) || !blank(response.modelFailureSource()))) {
+            throw invalidPlannerResponse();
+        }
     }
 
     /**
-     * Recognizes the fixed 64-character hexadecimal fingerprint form used by the planner response contract.
+     * 识别规划响应合同使用的固定 64 位十六进制指纹格式。
      *
-     * <p>The input is an untrusted response field and the output only says whether its syntax is usable. This pure
-     * helper does not recompute a digest or grant evidence validity; binding the accepted fingerprint to the verified
-     * trigger remains the responsibility of {@link #validatePlanResponse(AgentAutopilotVerifiedRecoveryTrigger,
-     * AgentAutopilotRecoveryPlanResponse)}.</p>
+     * <p>输入是不可信响应字段，返回值只说明语法是否可用。该纯函数不会重新计算摘要，也不会据此认定证据
+     * 有效；将已接受指纹绑定到已验证触发器，仍由
+     * {@link #validatePlanResponse(AgentAutopilotVerifiedRecoveryTrigger, AgentAutopilotRecoveryPlanResponse)}
+     * 负责。</p>
      *
-     * @param value candidate error or repair fingerprint from Python
-     * @return {@code true} only for a non-null 64-character hexadecimal fingerprint
+     * @param value Python 返回的候选错误或修复指纹
+     * @return 仅非空 64 位十六进制指纹返回 {@code true}
      */
     private boolean fingerprint(String value) {
         return value != null && value.matches("[0-9a-fA-F]{64}");
     }
 
     /**
-     * Tests whether a required planner text field is absent after applying the contract's whitespace rule.
+     * 按合同的空白规则判断规划器必填文本是否缺失。
      *
-     * <p>The method has no side effects and does not normalize a value for later use; it only prevents null or blank
-     * action and risk fields from crossing the Java/Python contract boundary as if they were valid governance input.</p>
+     * <p>该方法没有副作用，也不会为后续使用改写字段；它只防止空动作或空风险等级越过 Java/Python 合同
+     * 边界并被误当成有效治理输入。</p>
      *
-     * @param value untrusted planner text field
-     * @return {@code true} when the field is null or blank
+     * @param value 不可信的规划器文本字段
+     * @return 字段为空或全空白时返回 {@code true}
      */
     private boolean blank(String value) {
         return value == null || value.isBlank();
     }
 
     /**
-     * Creates the stable technical exception used for all invalid successful-HTTP planner responses.
+     * 为所有“HTTP 成功但规划合同无效”的响应创建稳定技术异常。
      *
-     * <p>The output intentionally contains a fixed low-sensitive reason code rather than a remote response body or
-     * parsing message. It has no side effects. Callers must let this exception reach the Kafka listener so malformed
-     * Python contracts enter the configured bounded retry and, if still unresolved, DLT path.</p>
+     * <p>异常只携带固定低敏原因码，不包含远端响应正文或解析消息，也不产生副作用。调用方必须让异常到达
+     * Kafka 监听器，使损坏的 Python 合同进入已配置的有界重试；多次仍无法恢复时再进入 DLT。</p>
      *
-     * @return retryable technical contract exception for the current planner response
+     * @return 当前规划响应对应的可重试技术合同异常
      */
     private IllegalStateException invalidPlannerResponse() {
         return new IllegalStateException("PYTHON_AUTOPILOT_RECOVERY_PLANNER_RESPONSE_INVALID");

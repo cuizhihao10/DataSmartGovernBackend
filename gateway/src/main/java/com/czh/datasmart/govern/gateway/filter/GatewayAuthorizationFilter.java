@@ -129,17 +129,33 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         authorizationMetrics.recordCacheAccess(false);
 
         long decisionStartedAt = System.nanoTime();
+        /*
+         * 这里只把 permission-admin 自己的响应或异常转换为 Reactor Signal，再进入下游过滤链。
+         * 如果把 onErrorResume 放在 flatMap(handleDecision) 之后，chain.filter 产生的连接拒绝、超时或
+         * 业务异常也会被误判成“权限中心不可用”，进而错误返回 403。materialize 结束后不再安装授权
+         * 异常恢复器，因此权限判定成功后的下游故障会保留原始语义，交给 Gateway 路由错误处理层。
+         */
         return permissionAdminDecisionClient.evaluate(decisionRequest, traceId)
-                .flatMap(decision -> {
+                .materialize()
+                .flatMap(signal -> {
+                    authorizationMetrics.recordDecisionLatency("REMOTE",
+                            Duration.ofNanos(System.nanoTime() - decisionStartedAt));
+                    if (signal.isOnError()) {
+                        return handleDecisionError(
+                                exchange, chain, signal.getThrowable(), decisionRequest, traceId, "REMOTE");
+                    }
+                    GatewayPermissionDecisionResult decision = signal.get();
+                    if (decision == null) {
+                        return handleDecisionError(
+                                exchange,
+                                chain,
+                                new IllegalStateException("PERMISSION_ADMIN_EMPTY_DECISION"),
+                                decisionRequest,
+                                traceId,
+                                "REMOTE");
+                    }
                     authorizationDecisionCache.put(decisionRequest, decision);
-                    authorizationMetrics.recordDecisionLatency("REMOTE",
-                            Duration.ofNanos(System.nanoTime() - decisionStartedAt));
                     return handleDecision(exchange, chain, decision, decisionRequest, traceId, "REMOTE");
-                })
-                .onErrorResume(error -> {
-                    authorizationMetrics.recordDecisionLatency("REMOTE",
-                            Duration.ofNanos(System.nanoTime() - decisionStartedAt));
-                    return handleDecisionError(exchange, chain, error, decisionRequest, traceId, "REMOTE");
                 });
     }
 

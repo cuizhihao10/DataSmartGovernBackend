@@ -112,4 +112,12 @@ public class MetadataDiscoveryRequest {
     @Min(value = 1, message = "sampleRowLimit 不能小于 1")
     @Max(value = 50, message = "sampleRowLimit 不能大于 50")
     private Integer sampleRowLimit;
+
+    /**
+     * 是否跳过元数据缓存并重新访问外部数据源。
+     *
+     * <p>该开关主要用于受治理故障恢复。它只刷新只读结构事实，不修改数据源、表结构或任务定义；
+     * 权限、返回上限和禁止样本行等原有规则仍然全部生效。</p>
+     */
+    private Boolean forceRefresh;
 }

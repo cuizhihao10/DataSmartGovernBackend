@@ -12,16 +12,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.Set;
+
 /**
- * Applies a Kafka recovery trigger to the Autopilot planning and execution flow.
+ * 将 Kafka 恢复触发事件接入 Autopilot 规划与执行流程。
  *
- * <p>Invalid JSON and rejected authorization are permanent message outcomes. Python, HTTP, Kafka,
- * database, and other downstream infrastructure failures intentionally remain visible to Spring Kafka
- * so its retry and dead-letter policy can decide how to redeliver the message.</p>
+ * <p>无效 JSON 和授权拒绝属于确定性消息结果。Python、HTTP、Kafka、数据库以及其他下游基础设施
+ * 故障会有意继续向 Spring Kafka 暴露，使其重试和死信策略决定如何重新投递消息。</p>
  */
 @Service
 @RequiredArgsConstructor
 public class AgentAutopilotRecoveryTriggerConsumerService {
+
+    private static final Set<String> RETRYABLE_MODEL_FAILURES = Set.of(
+            "MODEL_TIMEOUT|MODEL_PROVIDER_TRANSPORT",
+            "MODEL_PROVIDER_ERROR|MODEL_PROVIDER_TRANSPORT");
 
     private final ObjectMapper objectMapper;
     private final AgentAutopilotRecoveryTriggerVerifier triggerVerifier;
@@ -31,29 +36,26 @@ public class AgentAutopilotRecoveryTriggerConsumerService {
     private final AgentAutopilotRecoveryMetrics metrics;
 
     /**
-     * Consumes one data-sync durable-outbox recovery trigger and separates permanent rejection from a retryable delivery failure.
+     * 消费一条 data-sync 持久 outbox 恢复触发事件，并区分确定性拒绝与可重试投递失败。
      *
-     * <p>For a beginner, the key Kafka rule is that a listener normally commits its offset after this method returns,
-     * while an exception reaches Spring Kafka's retry or dead-letter policy. Malformed JSON has no usable event ID, so
-     * it is the only permanent poison message that returns without a data-sync callback. A parsed event that the
-     * verifier permanently rejects, a Python attention outcome, or a normal execution outcome is first written back
-     * through {@link AgentAutopilotRecoveryDataSyncClient#recordTriggerResult(AgentAutopilotRecoveryExecutionResult)}.
-     * Only after that durable callback succeeds may this method return normally and allow the offset to be committed.</p>
+     * <p>对初学者而言，Kafka 的关键规则是：监听方法正常返回后通常会提交 offset；如果抛出异常，消息
+     * 才会进入 Spring Kafka 的重试或死信策略。格式损坏的 JSON 没有可用 event ID，因此它是唯一一种
+     * 可以不调用 data-sync 回调就返回的确定性毒消息。对于解析成功但被校验器永久拒绝的事件、Python
+     * 返回的人工关注结果或正常执行结果，必须先通过
+     * {@link AgentAutopilotRecoveryDataSyncClient#recordTriggerResult(AgentAutopilotRecoveryExecutionResult)}
+     * 写回持久控制面，只有回调成功后本方法才能正常返回并允许提交 offset。</p>
      *
-     * <p>Once verification succeeds, the Python planner and Java/data-sync execution path are external dependency
-     * boundaries. Timeouts, unavailable services, invalid downstream responses, and persistence failures must not be
-     * caught here. The same is true for a failed result callback. Letting those exceptions propagate tells the Kafka
-     * listener that durable processing is incomplete and allows a later retry. The verifier call has its own narrow
-     * {@code try/catch} for exactly this reason: do not accidentally classify a downstream
-     * {@link PlatformBusinessException} as a permanent authorization rejection.</p>
+     * <p>校验通过后，Python 规划器以及 Java/data-sync 执行链路属于外部依赖边界。超时、服务不可用、
+     * 下游响应无效和持久化失败不能在这里吞掉，结果回调失败也同样不能吞掉。让这些异常继续抛出，
+     * 才能告诉 Kafka 监听器持久处理尚未完成，并允许后续重试。校验器调用单独保留窄范围
+     * {@code try/catch} 正是为了避免把下游的 {@link PlatformBusinessException} 误判为永久授权拒绝。</p>
      *
-     * <p>The Python client validates the HTTP response before returning it, and this method repeats the finite-status
-     * check before recording planning metrics. That defensive check ensures an accidental client bypass cannot count an
-     * unknown status as planning success. An unsupported status is a technical contract failure, so it increments
-     * planning failure and escapes to Kafka retry without invoking execution or the durable callback.</p>
+     * <p>Python 客户端在返回前已经校验 HTTP 响应，本方法在记录规划指标前还会重复检查有限状态集合。
+     * 这道防御性校验可以避免客户端未来被错误绕过时把未知状态计为规划成功。未支持的状态属于技术
+     * 合同故障，因此先增加规划失败指标，再抛出异常进入 Kafka 重试，不调用执行服务或持久回调。</p>
      *
-     * @param payload raw JSON text published by the data-sync durable outbox
-     * @return a low-sensitivity terminal result for a permanent input or authorization rejection, or the execution result on success
+     * @param payload data-sync 持久 outbox 发布的原始 JSON 文本
+     * @return 确定性输入/授权拒绝时的低敏终态结果，或成功执行时的执行结果
      */
     public AgentAutopilotRecoveryExecutionResult consume(String payload) {
         AgentAutopilotRecoveryTriggerEvent event;
@@ -92,21 +94,18 @@ public class AgentAutopilotRecoveryTriggerConsumerService {
     }
 
     /**
-     * Records the planner metric only for statuses that belong to the versioned Java/Python recovery protocol.
+     * 只为版本化 Java/Python 恢复协议中的状态记录规划指标。
      *
-     * <p>The input is the response returned by the Python client. {@code CANDIDATE_READY} and
-     * {@code ATTENTION_REQUIRED} mean Python completed planning and are counted as successful planning attempts;
-     * {@code FAILED} is a completed but unsuccessful planning attempt and is counted as failed. Any null response or
-     * other status is an invalid technical contract, not a new business state. This method then throws a fixed
-     * {@link IllegalStateException} so {@link #consume(String)} can leave the Kafka record unacknowledged for bounded
-     * retry.</p>
+     * <p>输入是 Python 客户端返回的响应。{@code CANDIDATE_READY} 与 {@code ATTENTION_REQUIRED} 表示
+     * Python 已经完成规划，计为规划尝试成功；{@code FAILED} 表示规划尝试已结束但失败，计为失败。空响应
+     * 或其他状态属于技术合同无效，不是新的业务状态。本方法随后抛出固定的
+     * {@link IllegalStateException}，使 {@link #consume(String)} 不确认 Kafka 记录并进入有界重试。</p>
      *
-     * <p>This method has no durable side effect beyond its low-cardinality metric. It does not execute recovery or
-     * call data-sync, which keeps a malformed planner outcome from creating a callback that would incorrectly close a
-     * recoverable Kafka delivery.</p>
+     * <p>除低基数指标外，本方法没有持久副作用。它不会执行恢复或调用 data-sync，因此格式错误的规划
+     * 结果不会创建错误关闭可恢复 Kafka 投递的回调。</p>
      *
-     * @param response planner response received after the verified trigger was sent to Python
-     * @throws IllegalStateException when the response is missing or its status is outside the finite protocol set
+     * @param response 已校验触发事件发送到 Python 后收到的规划响应
+     * @throws IllegalStateException 响应缺失或状态不在有限协议集合中时抛出
      */
     private void recordPlanningOutcome(AgentAutopilotRecoveryPlanResponse response) {
         String status = normalizeStatus(response == null ? null : response.status());
@@ -115,10 +114,43 @@ public class AgentAutopilotRecoveryTriggerConsumerService {
             return;
         }
         if ("FAILED".equals(status)) {
+            if (retryableModelFailure(response)) {
+                /*
+                 * 不在这里写回 data-sync，也不把模型失败伪装成业务终态。固定异常继续到 Kafka 监听器后，
+                 * Spring Kafka 才能按已配置次数重投同一 eventId；Python checkpoint 会保留失败尝试，
+                 * 但允许下一次投递重新调用模型。
+                 */
+                throw new IllegalStateException("PYTHON_AUTOPILOT_RECOVERY_PLANNER_TRANSIENT_FAILURE");
+            }
             metrics.recordPlanningFailed();
             return;
         }
         throw new IllegalStateException("PYTHON_AUTOPILOT_RECOVERY_PLANNER_STATUS_INVALID");
+    }
+
+    /**
+     * 判断 Python 返回的模型故障是否属于允许 Kafka 有界重投的瞬态类别。
+     *
+     * <p>输入只包含 Python 适配器生成的固定低敏枚举，不包含异常消息、Provider URL 或响应正文。只有
+     * 超时以及 Provider 传输层故障进入白名单；JSON 解析、响应契约、越权输出、结果读取和适配器错误
+     * 都是确定性失败，再次投递不会自然修复，因此返回 {@code false}。</p>
+     *
+     * <p>是否可重试由 Java 平台目录重新计算，而不是采信 Python 布尔值或模型输出。这可以防止模型通过
+     * 自行声明 retryable 扩大 Loop 次数；即使命中白名单，Spring Kafka 仍受固定 attempts、退避和 DLT
+     * 约束，不会形成无限循环。</p>
+     *
+     * @param response 已通过 Python 客户端版本、范围和字段白名单校验的规划响应
+     * @return 固定原因码与来源码组合命中瞬态白名单时返回 {@code true}
+     */
+    private boolean retryableModelFailure(AgentAutopilotRecoveryPlanResponse response) {
+        if (response == null || !"RECOVERY_PLANNING_MODEL_FAILED".equals(response.reasonCode())) {
+            return false;
+        }
+        String reasonCode = response.modelFailureReasonCode() == null
+                ? "" : response.modelFailureReasonCode().trim().toUpperCase();
+        String source = response.modelFailureSource() == null
+                ? "" : response.modelFailureSource().trim().toUpperCase();
+        return RETRYABLE_MODEL_FAILURES.contains(reasonCode + "|" + source);
     }
 
     /**

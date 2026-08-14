@@ -77,7 +77,11 @@ class RagPipelineTest(unittest.TestCase):
             self.assertEqual(retrieval_summary["queryDigest"], evidence["queryDigest"])
             self.assertIn(evidence["sourceType"], {"document", "rule", "metadata", "runbook", "memory_export", "wiki", "git_history"})
             self.assertTrue(evidence["sourceUri"])
+            self.assertEqual(evidence["sourceUri"], evidence["sourceRef"])
             datetime.fromisoformat(evidence["retrievedAt"].replace("Z", "+00:00"))
+            self.assertGreaterEqual(evidence["confidence"], 0.0)
+            self.assertLessEqual(evidence["confidence"], 1.0)
+            self.assertEqual("HYBRID_RETRIEVAL_SCORE", evidence["confidenceBasis"])
 
     def test_scope_filter_blocks_other_tenant_documents_before_ranking(self) -> None:
         """其他租户文档即使命中关键词，也不能进入候选和引用。"""

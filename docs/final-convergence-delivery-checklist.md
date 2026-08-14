@@ -388,3 +388,33 @@ Provider 切换到 `https://qa.dashun9527.com/v1` 后，容器内 `/models` 与 
 同一 execution 自动重排后最终 `SUCCEEDED`，`read=20/write=20/failed=0`，对象账本为 `SUCCEEDED`。MySQL 源端与 PostgreSQL 目标端聚合一致：行数 `20`、唯一 ID `20`、ID 合计 `210`、金额合计 `2210.00`。Gateway 公开 API 随后复核 execution、对象、19 条运行日志和 recovery 快照均成功；两个生命周期 session 共查询到 8 条 durable facts，覆盖 `DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`，全部为 `COMPLETED`。本轮模型选择 `SKIP`，因此没有机械执行 `KNOWLEDGE_AGENT`；task `106` 已保留真实 `SEARCH / EXACT_SEARCH / 2 evidence` 证据，两类分支共同证明检索由模型按证据自主决定。
 
 主 E2E 脚本在系统已经 `RECOVERED` 后遇到一次 Gateway 对 execution 只读查询的权限中心瞬时不可用并以非零退出，这是最终验证读取失败，不是恢复链路回滚。permission-admin 恢复健康后，使用同一 project-owner 身份重新通过 Gateway 查询上述 execution、对象、日志、Recovery 和 durable facts 均成功。因此真实 `FAILED -> Kafka -> Recovery -> retry -> SUCCEEDED -> RECOVERED -> PRECHECK/MONITOR` 门禁现已由运行证据关闭。脚本随后补充了只读 GET 的 3 次有界重试，只接受 502/503/504 和明确“权限中心暂时不可用”的 403；POST 与普通权限拒绝仍单次 fail-closed，离线合同和退出码回归均已通过。
+
+## 15. 2026-08-14 受治理修复动作与统一证据合同增量
+
+本轮把 Autopilot Loop 从“只会重试”扩展为受治理修复动作目录。Recovery 在提出动作前会读取结构化错误样本、execution 与对象统计、当前运行策略、最近一次成功 execution 的策略快照、连接器运行时版本与来源、当前 channel/batch/timeout 限制，以及 runbook/历史事故检索结果。连接器没有声明硬容量时，诊断明确返回“未声明”，不会由模型编造容量上限。RAG 仍由模型基于现有证据自主选择 `SEARCH` 或 `SKIP`；`SEARCH` 只允许一次受控检索，`SKIP` 也必须通过 Java/data-sync 的事实、授权和风险复核。
+
+所有进入恢复决策的检索证据现在统一携带 `sourceType`、`sourceRef`、`retrievedAt`、`confidence` 和 `confidenceBasis`。Python 负责形成有界证据，Java 对来源、引用、时间和置信度再次 fail-closed 校验；缺少来源或无法解释置信度的结果不能成为自动修复授权。该合同回答了“证据是否有准确来源”的问题：来源不再只是展示文本，而是控制面可验证字段。
+
+授权盒内新增的低风险动作包括：回滚到最近一次成功运行策略、仅降低并发/批量或在硬上限内增加 timeout、刷新元数据并重新预检、从持久 checkpoint 恢复、只重放已失败分片，以及应用元数据能够唯一证明的字段映射修复。字段修复允许大小写归一化；也允许把失效映射改到唯一候选目标列，但必须同时满足目标列尚未被占用、源目标类型兼容、主键属性一致、双方都提供序号时序号一致且候选只有一个。只有目标列可空、有数据库默认值、自动生成并且不是主键时，系统才允许删除已经失效的映射。目标端非空且无默认值的字段必须存在唯一源字段映射，否则以 `METADATA_REQUIRED_TARGET_FIELD_NOT_MAPPED` 停止。系统不会发明默认值、修改 DDL、绕过外键、改凭据、覆盖数据或扩大同步范围。
+
+涉及凭据、权限、DDL、外键关系、覆盖/删除数据或扩大范围时，Loop 退出授权盒并返回根因、证据、所需权限、人工步骤、影响、回滚和验证方法。当前元数据合同尚未提供完整外键关系，因此外键修复仍属于受治理人工停点；不能因为模型能够解释错误就自动禁用约束。临时运行策略 override 在 Recovery 成功后自动停用，审计记录保留，避免一次故障调参永久改变后续调度。
+
+最新门禁结果为：JDK 21 全 Reactor `1544 tests / 0 failures / 0 errors / 9 skipped`；Python 全量 `1174 passed, 1 skipped`；Frontend 六项 Agent/API/data-sync 合同脚本、lint 和生产构建全部通过。全量 Java 回归还发现并修复了普通 `CUSTOM_SQL` 在没有 Recovery plan 时误走五参数恢复重载的兼容性问题；普通执行恢复使用历史四参数合同，只有真实恢复调用才携带修复计划。四个最新镜像 `datasource-management`、`data-sync`、`agent-runtime`、`python-ai-runtime` 均健康，Kafka 主 topic、两级 retry 和 DLT listener 就绪；严格只读 smoke 为 `PASS=89, WARN=0, FAIL=0`，覆盖 OIDC、Gateway、permission-admin 与两个 Runtime 的认证诊断路由。
+
+证据边界必须保持准确：task `109` 已真实证明无人值守 transport failure 重试与 `RECOVERED` 主链路；本节新增的策略回滚、限界调参、元数据刷新、checkpoint、失败分片和字段映射修复已由源码及聚焦/全量回归覆盖，但尚未逐动作完成独立真实故障注入。后续 E2E 应按动作分别准备隔离夹具，不得把 task `109` 的重试证据泛化成所有修复动作都已做过真实黑盒演练。
+
+## 16. 2026-08-15 字段映射自治修复真实验收
+
+task `117` 首次证明模型能够从字段约束错误进入 `REPAIR_FIELD_MAPPING` 候选，但当时确定性修复器只覆盖大小写归一化和安全删除，尚不能处理 `customer_name -> name` 这类有唯一元数据证据的重命名。实现随后补充了严格候选判定：目标列未被占用、类型兼容、主键属性一致、双方有序号时序号一致，并且只能存在一个候选；任何歧义都不猜测。对应 metadata precheck 聚焦回归 `18 tests` 通过。
+
+task `118` 继续进入真实第二轮字段映射修复，但暴露出持久化 SQL 使用逻辑属性名 `id`，而 `data_sync_task_definition` 的真实主键列是 `task_id`。数据库正确拒绝该更新，Kafka 经有界重试后进入 DLT，没有形成虚假成功。新增最小回归先捕获 MyBatis-Plus `UpdateWrapper` 的 SQL 片段并复现 `(id = ?)`，再把更新条件改为 `task_id`；包括修复服务、策略、触发、worker、事实与诊断在内的 data-sync 聚焦组 `58 tests / 0 failures / 0 errors` 通过。
+
+新镜像上的 task `119` / root execution `2860` 完成了字段映射真实黑盒闭环。任务初始映射为 `customer_name -> customer_name`，随后目标列被隔离夹具改名为 `name`。首轮执行产生 20 条写入失败；outbox `28` 在 cycle 1 执行 `REFRESH_METADATA`，结果为 `AUTOPILOT_REFRESHED_METADATA_PRECHECK_FAILED`；outbox `29` 在 cycle 2 执行 `REPAIR_FIELD_MAPPING`，结果为 `RECOVERY_STARTED / AUTOPILOT_GOVERNED_REPAIR_APPLIED_AND_REQUEUED`。两次 outbox 均为 `DELIVERED`，模型均自主选择 `SKIP / STRUCTURED_DIAGNOSTIC / evidence=0`，未机械调用 RAG。
+
+最终 case `14` 以 `REPAIR_FIELD_MAPPING`、`LOW` 风险、cycle `2/4` 收敛为 `RECOVERED`；execution `2860` 为 `SUCCEEDED`，读 `20`、写 `20`、失败 `0`，对象账本为 `SUCCEEDED`，目标表实际有 20 行，持久任务映射已更新为 `customer_name -> name`。Gateway 公开 API 复核 execution、对象、Recovery 快照和 Specialist durable facts 成功；初始 `DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`MONITOR_AGENT` 以及恢复阶段 `RECOVERY_AGENT`、动作后 `PRECHECK_AGENT`/`MONITOR_AGENT` 均存在完成事实。全过程在首次授权盒建立后没有人工调用 retry、repair 或 replay 接口。
+
+演练期间 E2E 脚本的一次查询失败来自主动重建 data-sync 容器后 Nacos 仍短暂保留旧实例地址。旧 Gateway 过滤器把已经通过授权后的下游连接异常也捕获成“权限中心暂时不可用”，造成错误归因。新增回归先证明下游异常被改写，再将 permission-admin 调用结果物化，使授权客户端异常继续 fail-closed，而放行后的下游异常保持原始语义；Gateway 聚焦回归 `33 tests` 通过。Nacos 稳定后，相同身份通过 Gateway 的公开查询全部成功。
+
+证据解释还需保持精确：动作后 `PRECHECK_AGENT`/`MONITOR_AGENT` 在 data-sync 接受重排回执后立即执行，用于证明修复已进入受治理执行面并持久登记观察事实；它们不等待长任务终态。task `119` 的终态成功由 data-sync case、repair receipt、execution、对象账本、目标行数和 Gateway 公开查询共同证明。后续若产品要求 Specialist 自身输出终态成功摘要，应增加独立的 worker 终态事件驱动 finalization，不能通过阻塞 Kafka 消费线程等待长任务实现。
+
+本次最终重复门禁为：JDK 21 全 Reactor `1563 tests / 0 failures / 0 errors / 9 skipped`；Python `1178 passed, 1 skipped`；Frontend 六项 Agent/API/data-sync 合同、lint、TypeScript 和 Vite build 全部通过；六 Agent 离线退出码回归全部通过；严格认证与只读诊断 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。Compose 中 Gateway、Kafka、PostgreSQL、data-sync、agent-runtime、python-ai-runtime 及其依赖保持运行，声明健康检查的核心服务均为 healthy。

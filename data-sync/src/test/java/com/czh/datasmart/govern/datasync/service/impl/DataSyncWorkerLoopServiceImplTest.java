@@ -178,6 +178,53 @@ class DataSyncWorkerLoopServiceImplTest {
     }
 
     /**
+     * 普通 checkpoint replay 也必须先消费恢复计划，并把计划继续传给离线 Runner。
+     *
+     * <p>如果这里只调用旧的五参数派发入口，恢复计划中的 sourceCheckpointId 会在 worker 层丢失，
+     * 后续 connector runtime 就只能从头读取。该测试锁定“持久恢复计划 -> worker -> Runner”的传递合同。</p>
+     */
+    @Test
+    void runOnceShouldPassCheckpointRecoveryPlanToOfflineRunner() {
+        DataSyncExecutorLeaseService leaseService = mock(DataSyncExecutorLeaseService.class);
+        SyncTaskDefinitionMapper taskDefinitionMapper = mock(SyncTaskDefinitionMapper.class);
+        SyncOfflineRunnerDispatchService dispatchService = mock(SyncOfflineRunnerDispatchService.class);
+        DataSyncRecoveryPlanWorkerService recoveryPlanWorkerService = mock(DataSyncRecoveryPlanWorkerService.class);
+        SyncDirtyRecordReplayExecutionSupport dirtyReplaySupport = mock(SyncDirtyRecordReplayExecutionSupport.class);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncExecution execution = execution();
+        execution.setTriggerType(SyncTriggerType.REPLAY.name());
+        SyncTask task = task();
+        SyncTaskDefinition definition = definition();
+        SyncWorkerExecutionPlanView plan = workerPlan();
+        SyncRecoveryPlanWorkerResult recoveryPlan = new SyncRecoveryPlanWorkerResult(
+                true, 7L, 101L, 301L, 11L, 88L, 7002L,
+                "REPLAY", 77L, 9001L, null, null, null, null,
+                "AUTOPILOT_PREAUTHORIZED_CHECKPOINT_RESUME", "CLAIMED", "恢复计划已认领");
+        when(leaseService.claimNext(any(SyncExecutionClaimRequest.class), any(SyncActorContext.class)))
+                .thenReturn(new SyncExecutionClaimResult(true, "claimed", execution, task, plan));
+        when(taskDefinitionMapper.selectById(11L)).thenReturn(definition);
+        when(recoveryPlanWorkerService.claimPlan(eq(88L), any(), any())).thenReturn(recoveryPlan);
+        when(dirtyReplaySupport.supports(recoveryPlan)).thenReturn(false);
+        when(dispatchService.dispatchOffline(eq(execution), eq(task), eq(definition), eq(plan),
+                any(SyncActorContext.class), eq(recoveryPlan)))
+                .thenReturn(new SyncOfflineRunnerDispatchResult(true, true, false,
+                        "CHECKPOINT_REPLAY_COMPLETED", 88L, "SOURCE_EXHAUSTED_COMPLETE_REQUIRED",
+                        "RECOVERY_CHECKPOINT_HANDOFF", List.of("CHECKPOINT_BOUND_REPLAY_COMPLETED"),
+                        SyncOfflineRunnerDispatchResult.PAYLOAD_POLICY));
+        DataSyncWorkerLoopServiceImpl service = service(leaseService, taskDefinitionMapper, dispatchService,
+                recoveryPlanWorkerService, dirtyReplaySupport, lifecycleSupport);
+
+        SyncWorkerLoopRunResult result = service.runOnce(request(), actor());
+
+        assertThat(result.completedCount()).isEqualTo(1);
+        verify(recoveryPlanWorkerService).claimPlan(eq(88L), any(), any());
+        verify(recoveryPlanWorkerService).consumePlan(eq(88L), any(), any());
+        verify(dispatchService).dispatchOffline(eq(execution), eq(task), eq(definition), eq(plan),
+                any(SyncActorContext.class), eq(recoveryPlan));
+        verify(dispatchService, never()).dispatchOffline(any(), any(), any(), any(), any());
+    }
+
+    /**
      * 模板缺失属于结构性配置问题；worker loop 应立即 fail-closed，不能等待租约过期才恢复。
      */
     @Test

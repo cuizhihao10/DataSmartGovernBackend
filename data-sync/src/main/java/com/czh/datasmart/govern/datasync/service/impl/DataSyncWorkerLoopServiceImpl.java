@@ -182,6 +182,11 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
             return dirtyRecordReplayExecutionSupport.dispatchDirtyRecordReplay(
                     execution, task, definition, workerPlan, recoveryPlan, actorContext);
         }
+        if (recoveryPlan != null && recoveryPlan.hasRecoveryPlan()) {
+            consumeRecoveryPlan(execution, actorContext);
+            return dispatchService.dispatchOffline(
+                    execution, task, definition, workerPlan, actorContext, recoveryPlan);
+        }
         return dispatchService.dispatchOffline(execution, task, definition, workerPlan, actorContext);
     }
 

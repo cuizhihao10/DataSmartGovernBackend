@@ -827,7 +827,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                             SyncActorContext actorContext) {
         SyncTask task = getTask(taskId, actorContext);
         SyncTaskDefinition definition = getDefinitionForTask(task);
-        return agentExecutionDiagnosisSupport.diagnose(task, definition, executionId);
+        return agentExecutionDiagnosisSupport.diagnose(task, definition, executionId, actorContext);
     }
 
     @Override
@@ -996,9 +996,9 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         if (SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE.equals(groupCode)) {
             /*
-             * MyBatis-Plus can be configured to ignore empty-string equality conditions.
-             * Use one explicit SQL expression so legacy '' and NULL rows are guaranteed
-             * to be treated exactly like DEFAULT on PostgreSQL and MySQL.
+             * MyBatis-Plus 可能被配置为忽略空字符串相等条件。
+             * 这里使用一个明确的 SQL 表达式，保证 PostgreSQL 和 MySQL 中历史的 '' 与 NULL
+             * 都与 DEFAULT 分组完全等价。
              */
             wrapper.and(groupWrapper -> groupWrapper.apply(
                     "COALESCE(NULLIF(group_code, ''), {0}) = {0}",
@@ -1009,12 +1009,11 @@ public class DataSyncServiceImpl implements DataSyncService {
     }
 
     /**
-     * Normalize legacy default-group storage before returning task records.
+     * 返回任务记录前规范化历史默认分组存储值。
      *
-     * <p>Older task rows may store the default group as {@code NULL} or an empty string.
-     * The query layer already treats those rows as DEFAULT; the response should do the same
-     * so table rendering, export previews, and keyword search do not show an apparently
-     * ungrouped task after the user has selected "默认分组".</p>
+     * <p>较早创建的任务可能把默认分组存成 {@code NULL} 或空字符串。查询层已经把这些记录当作
+     * DEFAULT，响应层也必须保持同样语义，避免用户选择“默认分组”后，表格、导出预览和关键词
+     * 搜索仍把任务显示成未分组。</p>
      */
     private void normalizeDefaultGroupForResponse(SyncTask task) {
         if (task == null || hasText(task.getGroupCode())) {
@@ -1027,7 +1026,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     }
 
     /**
-     * Apply the list search box as a backend filter so pagination and search share one total.
+     * 将列表搜索框作为后端过滤条件，使分页和搜索共用同一个总数。
      */
     private void applyTaskKeywordFilter(LambdaQueryWrapper<SyncTask> wrapper, String rawKeyword) {
         String keyword = querySupport.trimToNull(rawKeyword);

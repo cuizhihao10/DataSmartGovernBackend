@@ -6,20 +6,29 @@
  */
 package com.czh.datasmart.govern.datasync.controller;
 
+import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncAutopilotRecoveryRepairRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAutopilotRecoveryTriggerConsumerResultRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAutopilotRecoveryDeadLetterRequest;
 import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryCaseService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryAutonomousQuarantineService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryDeadLetterService;
+import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryRepairCommand;
+import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryRepairReceiptView;
+import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryRepairService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryTriggerConsumerResultCommand;
 import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryTriggerConsumerResultService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAutopilotRecoveryTriggerConsumerResultView;
 import com.czh.datasmart.govern.datasync.support.SyncAutopilotRecoveryConsumerResultStatus;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpHeaders;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -31,19 +40,18 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Focused HTTP-boundary tests for the fixed Autopilot consumer-result callback contract.
+ * 面向 Autopilot 固定消费结果回调契约的 HTTP 边界测试。
  */
 class DataSyncAutopilotRecoveryControllerTest {
 
-    /** Test-only credential used to exercise the same configured-token branch as a deployment. */
+    /** 仅供测试使用的凭据，用于覆盖与真实部署一致的内部令牌校验分支。 */
     private static final String TEST_INTERNAL_TOKEN = "unit-test-internal-token";
 
     /**
-     * The route must normalize documented enum text and delegate only the narrow result facts to the service.
+     * 路由必须规范化契约中声明的枚举文本，并且只向服务层传递最小化的结果事实。
      *
-     * <p>The test passes the configured token value when one exists, so it remains valid in local environments
-     * where internal-token protection is intentionally enabled. It also proves that response data is the restricted
-     * view returned by the durable service rather than an echoed request or outbox payload.</p>
+     * <p>测试会传入与部署配置相同的内部令牌，因此在本地启用内部接口保护时也能稳定执行。
+     * 同时验证响应数据来自持久化服务返回的受限视图，而不是原样回显请求或 outbox 载荷。</p>
      */
     @Test
     void shouldRecordTheFixedTriggerConsumerResultContract() {
@@ -54,9 +62,11 @@ class DataSyncAutopilotRecoveryControllerTest {
                 mock(SyncAutopilotRecoveryAutonomousQuarantineService.class);
         SyncAutopilotRecoveryDeadLetterService deadLetterService =
                 mock(SyncAutopilotRecoveryDeadLetterService.class);
+        SyncAutopilotRecoveryRepairService repairService = mock(SyncAutopilotRecoveryRepairService.class);
         DataSyncAutopilotRecoveryController controller =
                 new DataSyncAutopilotRecoveryController(
-                        caseService, consumerResultService, quarantineService, deadLetterService, TEST_INTERNAL_TOKEN);
+                        caseService, consumerResultService, quarantineService, repairService,
+                        deadLetterService, TEST_INTERNAL_TOKEN);
         SyncAutopilotRecoveryTriggerConsumerResultView expected =
                 new SyncAutopilotRecoveryTriggerConsumerResultView(
                         "autopilot-trigger:" + "a".repeat(64),
@@ -103,7 +113,7 @@ class DataSyncAutopilotRecoveryControllerTest {
     }
 
     /**
-     * Free-form reason text must be rejected at the HTTP boundary before the durable service is invoked.
+     * 任意自由文本原因必须在 HTTP 边界被拒绝，不能进入负责持久化的服务层。
      */
     @Test
     void shouldRejectFreeFormConsumerReasonText() {
@@ -114,9 +124,11 @@ class DataSyncAutopilotRecoveryControllerTest {
                 mock(SyncAutopilotRecoveryAutonomousQuarantineService.class);
         SyncAutopilotRecoveryDeadLetterService deadLetterService =
                 mock(SyncAutopilotRecoveryDeadLetterService.class);
+        SyncAutopilotRecoveryRepairService repairService = mock(SyncAutopilotRecoveryRepairService.class);
         DataSyncAutopilotRecoveryController controller =
                 new DataSyncAutopilotRecoveryController(
-                        caseService, consumerResultService, quarantineService, deadLetterService, TEST_INTERNAL_TOKEN);
+                        caseService, consumerResultService, quarantineService, repairService,
+                        deadLetterService, TEST_INTERNAL_TOKEN);
 
         assertThatThrownBy(() -> controller.recordTriggerConsumerResult(
                 "autopilot-trigger:" + "a".repeat(64),
@@ -136,7 +148,7 @@ class DataSyncAutopilotRecoveryControllerTest {
     }
 
     /**
-     * The DLT route must delegate only event and execution identity to the persistence-owned convergence service.
+     * DLT 路由只能把事件与执行身份传给负责持久化收敛的服务，避免扩大内部接口能力。
      */
     @Test
     void shouldRecordTheFixedDeadLetterContract() {
@@ -147,9 +159,11 @@ class DataSyncAutopilotRecoveryControllerTest {
                 mock(SyncAutopilotRecoveryAutonomousQuarantineService.class);
         SyncAutopilotRecoveryDeadLetterService deadLetterService =
                 mock(SyncAutopilotRecoveryDeadLetterService.class);
+        SyncAutopilotRecoveryRepairService repairService = mock(SyncAutopilotRecoveryRepairService.class);
         DataSyncAutopilotRecoveryController controller =
                 new DataSyncAutopilotRecoveryController(
-                        caseService, consumerResultService, quarantineService, deadLetterService, TEST_INTERNAL_TOKEN);
+                        caseService, consumerResultService, quarantineService, repairService,
+                        deadLetterService, TEST_INTERNAL_TOKEN);
         SyncAutopilotRecoveryTriggerConsumerResultView expected =
                 new SyncAutopilotRecoveryTriggerConsumerResultView(
                         "event-4", 1004L, "ATTENTION_REQUIRED",
@@ -169,7 +183,7 @@ class DataSyncAutopilotRecoveryControllerTest {
     }
 
     /**
-     * A missing deployment credential must stop the request before any recovery service can mutate state.
+     * 缺少部署凭据时必须在任何恢复服务修改状态前停止请求。
      */
     @Test
     void shouldRejectAnInternalRouteWhenServiceTokenIsNotConfigured() {
@@ -180,14 +194,68 @@ class DataSyncAutopilotRecoveryControllerTest {
                 mock(SyncAutopilotRecoveryAutonomousQuarantineService.class);
         SyncAutopilotRecoveryDeadLetterService deadLetterService =
                 mock(SyncAutopilotRecoveryDeadLetterService.class);
+        SyncAutopilotRecoveryRepairService repairService = mock(SyncAutopilotRecoveryRepairService.class);
         DataSyncAutopilotRecoveryController controller = new DataSyncAutopilotRecoveryController(
-                caseService, consumerResultService, quarantineService, deadLetterService, " ");
+                caseService, consumerResultService, quarantineService, repairService, deadLetterService, " ");
 
         assertThatThrownBy(() -> controller.recordTriggerDeadLetter(
                 "event-4", new SyncAutopilotRecoveryDeadLetterRequest(1004L), null, "trace-missing-token"))
                 .isInstanceOf(PlatformBusinessException.class)
                 .hasMessageContaining("authentication is not configured");
-        verifyNoInteractions(caseService, consumerResultService, quarantineService, deadLetterService);
+        verifyNoInteractions(caseService, consumerResultService, quarantineService, repairService, deadLetterService);
+    }
+
+    /**
+     * 受治理修复路由必须保留动作参数和双主体，且不能把请求当作已经获得执行许可。
+     */
+    @Test
+    void shouldDelegateGovernedRepairWithDualPrincipalFacts() {
+        SyncAutopilotRecoveryCaseService caseService = mock(SyncAutopilotRecoveryCaseService.class);
+        SyncAutopilotRecoveryTriggerConsumerResultService consumerResultService =
+                mock(SyncAutopilotRecoveryTriggerConsumerResultService.class);
+        SyncAutopilotRecoveryAutonomousQuarantineService quarantineService =
+                mock(SyncAutopilotRecoveryAutonomousQuarantineService.class);
+        SyncAutopilotRecoveryRepairService repairService = mock(SyncAutopilotRecoveryRepairService.class);
+        SyncAutopilotRecoveryDeadLetterService deadLetterService =
+                mock(SyncAutopilotRecoveryDeadLetterService.class);
+        DataSyncAutopilotRecoveryController controller = new DataSyncAutopilotRecoveryController(
+                caseService, consumerResultService, quarantineService, repairService,
+                deadLetterService, TEST_INTERNAL_TOKEN);
+        SyncAutopilotRecoveryRepairReceiptView expected = new SyncAutopilotRecoveryRepairReceiptView(
+                "event-5:repair-apply", 91L, 41L, 1001L, 1001L,
+                "REPAIR_FIELD_MAPPING", true, 1, "RETRYING", "RETRYING",
+                "AUTOPILOT_FIELD_MAPPING_REPAIRED", List.of(), "f".repeat(64),
+                "AUTO_APPROVED", false, null, null);
+        when(repairService.apply(any(), any(), any())).thenReturn(expected);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(PlatformContextHeaders.PROJECT_ID, "30");
+        headers.set(PlatformContextHeaders.DATA_SCOPE_LEVEL, "PROJECT");
+        headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, "30");
+        headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, "30:OWNER");
+
+        var response = controller.applyGovernedRepair(
+                91L,
+                new SyncAutopilotRecoveryRepairRequest(
+                        0L, 10L, 30L, 41L, 1001L, 1,
+                        "a".repeat(64), "b".repeat(64), "repair-field-mapping",
+                        "f".repeat(64), "event-5:repair-apply",
+                        Map.of("repairMode", "METADATA_PROVEN_SAFE")),
+                TEST_INTERNAL_TOKEN, "501", "OWNER", "RECOVERY_AGENT", "delegation-1", "trace-repair",
+                headers);
+
+        ArgumentCaptor<SyncAutopilotRecoveryRepairCommand> command =
+                ArgumentCaptor.forClass(SyncAutopilotRecoveryRepairCommand.class);
+        ArgumentCaptor<SyncActorContext> actor = ArgumentCaptor.forClass(SyncActorContext.class);
+        verify(repairService).apply(command.capture(), any(), actor.capture());
+        assertThat(command.getValue().action().name()).isEqualTo("REPAIR_FIELD_MAPPING");
+        assertThat(command.getValue().repairParameters())
+                .containsEntry("repairMode", "METADATA_PROVEN_SAFE");
+        assertThat(actor.getValue().projectId()).isEqualTo(30L);
+        assertThat(actor.getValue().authorizedProjectRoles())
+                .extracting(item -> item.projectRole())
+                .containsExactly("OWNER");
+        assertThat(response.getData()).isEqualTo(expected);
+        assertThat(response.getTraceId()).isEqualTo("trace-repair");
     }
 
 }

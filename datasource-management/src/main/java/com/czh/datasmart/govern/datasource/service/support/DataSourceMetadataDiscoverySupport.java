@@ -110,8 +110,9 @@ public class DataSourceMetadataDiscoverySupport {
         }
 
         String cacheKey = buildDiscoveryCacheKey(config, request);
-        DataSourceMetadataDiscoveryResult cachedResult =
-                metadataDiscoveryCacheSupport.getCachedDiscoveryResult(cacheKey,
+        DataSourceMetadataDiscoveryResult cachedResult = Boolean.TRUE.equals(request.getForceRefresh())
+                ? null
+                : metadataDiscoveryCacheSupport.getCachedDiscoveryResult(cacheKey,
                         metadataDiscoveryProperties.getCacheTtlSeconds());
         if (cachedResult != null) {
             return cachedResult;

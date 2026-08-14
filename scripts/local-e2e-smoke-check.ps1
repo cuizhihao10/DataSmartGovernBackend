@@ -422,6 +422,28 @@ function Invoke-HttpProbe {
     }
 }
 
+function Invoke-AgentRuntimeAnonymousProtectionProbe {
+    <#
+        验证 Java Agent Runtime 的控制面端点不会被匿名直连访问。
+
+        这里把 HTTP 401/403 视为通过，而不是把端点存在误写成必须匿名返回 200：
+        - 401 表示请求尚未完成身份认证；
+        - 403 表示身份或授权上下文不满足访问要求；
+        - 认证后的成功访问由 -CheckAgentGatewayDiagnostics 通过统一 Gateway 入口另行验证。
+
+        该拆分能同时证明“路由已经挂载”和“安全边界仍然关闭”，也避免为了让本地烟测通过而
+        错误放宽 Java Agent Runtime 的 Spring Security 配置。
+    #>
+    param(
+        [string]$Name,
+        [string]$Path
+    )
+
+    Invoke-HttpProbe -Name $Name -Url "$AgentRuntimeBaseUrl$Path" `
+        -ExpectedStatusCodes @(401, 403) `
+        -ExpectedStatusDetail "匿名直连被正确拒绝；认证后的 HTTP 200 由 -CheckAgentGatewayDiagnostics 经 Gateway 验证"
+}
+
 Set-Location $script:RepoRoot
 Write-Host "DataSmart Govern 本地端到端闭环 Smoke Check" -ForegroundColor Cyan
 Write-Host "仓库根目录：$script:RepoRoot" -ForegroundColor Cyan
@@ -478,16 +500,14 @@ Invoke-HttpProbe -Name "Data Sync health" -Url "$DataSyncBaseUrl/actuator/health
 Invoke-HttpProbe -Name "Data Sync connector capabilities" -Url "$DataSyncBaseUrl/sync-connectors/capabilities"
 Invoke-HttpProbe -Name "Permission Admin health" -Url "$PermissionAdminBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Agent Runtime health" -Url "$AgentRuntimeBaseUrl/actuator/health"
-Invoke-HttpProbe -Name "Agent Runtime sessions anonymous direct protection" -Url "$AgentRuntimeBaseUrl/agent-runtime/sessions" `
-    -ExpectedStatusCodes @(401, 403) `
-    -ExpectedStatusDetail "匿名直连被正确拒绝，受保护入口通过；会话成功态 E2E 请使用 project-owner 的 OIDC 用户 token 与已授权项目上下文，期望 HTTP 200"
-Invoke-HttpProbe -Name "Agent Runtime tool descriptors" -Url "$AgentRuntimeBaseUrl/agent-runtime/tools/descriptors"
-Invoke-HttpProbe -Name "Agent Runtime Skill publication manifest" -Url "$AgentRuntimeBaseUrl/agent-runtime/skills/publication/manifest"
-Invoke-HttpProbe -Name "Agent Runtime model routes" -Url "$AgentRuntimeBaseUrl/agent-runtime/models/routes"
-Invoke-HttpProbe -Name "Agent Runtime runtime event diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/runtime-events/diagnostics"
-Invoke-HttpProbe -Name "Agent Runtime Skill visibility diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics"
-Invoke-HttpProbe -Name "Agent Runtime tool event outbox diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/tool-execution-events/outbox/diagnostics"
-Invoke-HttpProbe -Name "Agent Runtime async command outbox diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/async-task-commands/outbox/diagnostics"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime sessions anonymous direct protection" -Path "/agent-runtime/sessions"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime tool descriptors anonymous direct protection" -Path "/agent-runtime/tools/descriptors"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime Skill publication manifest anonymous direct protection" -Path "/agent-runtime/skills/publication/manifest"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime model routes anonymous direct protection" -Path "/agent-runtime/models/routes"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime runtime event diagnostics anonymous direct protection" -Path "/agent-runtime/runtime-events/diagnostics"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime Skill visibility diagnostics anonymous direct protection" -Path "/agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime tool event outbox diagnostics anonymous direct protection" -Path "/agent-runtime/tool-execution-events/outbox/diagnostics"
+Invoke-AgentRuntimeAnonymousProtectionProbe -Name "Agent Runtime async command outbox diagnostics anonymous direct protection" -Path "/agent-runtime/async-task-commands/outbox/diagnostics"
 Invoke-HttpProbe -Name "Observability health" -Url "$ObservabilityBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Observability platform closure readiness" -Url "$ObservabilityBaseUrl/observability/platform/closure-readiness"
 Invoke-HttpProbe -Name "Observability service health snapshots" -Url "$ObservabilityBaseUrl/observability/platform/service-health-snapshots"

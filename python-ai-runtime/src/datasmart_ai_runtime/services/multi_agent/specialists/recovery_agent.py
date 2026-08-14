@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Iterable, Mapping
@@ -340,6 +341,7 @@ class RecoverySpecialistAgent:
         {
             "cachedPromptTokens",
             "completionTokens",
+            "deterministicGovernanceNarrowingCount",
             "deterministicPreviewFallbackCount",
             "errorCode",
             "latencyMs",
@@ -1051,9 +1053,9 @@ class RecoverySpecialistAgent:
         """把 Java 已验证的循环事实叠加到结构化诊断结果中。
 
         普通 Recovery turn 不携带 ``trustedAutopilotRecovery``，因此保持原诊断不变。Autopilot
-        内部入口只允许叠加当前错误指纹、重复次数和上一轮修复指纹三个固定字段；这些值用于判断
-        同一错误是否重复采用了同一方案。方法不会读取 objective、模型输出、RAG 文档或任意顶层字段，
-        从而防止不可信文本伪造循环次数并强迫 Agent 改变策略。
+        内部入口只允许叠加当前错误指纹、重复次数、上一轮修复指纹和有界问题码；这些值用于判断
+        同一错误是否重复采用了同一方案，并让下一轮模型看见上一动作新发现的结构化事实。方法不会读取
+        objective、模型输出、RAG 文档或任意顶层字段，从而防止不可信文本伪造循环次数并强迫 Agent 改变策略。
 
         ``FailureDiagnosticResult`` 是冻结 dataclass，所以这里创建一份新快照而不是修改原对象；原始
         日志引用、证据引用、公开摘要和 evidence records 都原样保留。
@@ -1087,6 +1089,17 @@ class RecoverySpecialistAgent:
         if previous_repair_fingerprint and not sha256_pattern.fullmatch(previous_repair_fingerprint):
             raise ValueError("trusted previousRepairFingerprint 必须是 SHA-256")
 
+        raw_issue_codes = _lookup(trusted, "issueCodes", "issue_codes") or ()
+        if not isinstance(raw_issue_codes, (list, tuple)):
+            raise ValueError("trusted issueCodes 必须是数组")
+        normalized_issue_codes: list[str] = []
+        for value in raw_issue_codes[:20]:
+            code = str(value).strip().upper()
+            if not re.fullmatch(r"[A-Z0-9_.:\-]{1,96}", code):
+                raise ValueError("trusted issueCodes 包含非法问题码")
+            if code not in normalized_issue_codes:
+                normalized_issue_codes.append(code)
+
         facts = dict(diagnostic.facts)
         facts["errorFingerprint"] = error_fingerprint.removeprefix("sha256:").lower()
         facts["repeatedErrorCount"] = normalized_repeated_count
@@ -1095,6 +1108,8 @@ class RecoverySpecialistAgent:
             # 不会因 Java/data-sync 使用纯 64 位十六进制而产生假阴性。
             previous_hex = previous_repair_fingerprint.removeprefix("sha256:").lower()
             facts["previousRepairFingerprint"] = f"sha256:{previous_hex}"
+        if normalized_issue_codes:
+            facts["autopilotIssueCodes"] = tuple(normalized_issue_codes)
         return FailureDiagnosticResult(
             failure_code=diagnostic.failure_code,
             failure_reason=diagnostic.failure_reason,
@@ -1206,7 +1221,17 @@ class RecoverySpecialistAgent:
         }
         records: list[dict[str, Any]] = []
 
-        def add(source_type: str, source_ref: Any, *, evidence_id: Any = None, source_time: Any = None) -> None:
+        def add(
+            source_type: str,
+            source_ref: Any,
+            *,
+            evidence_id: Any = None,
+            source_time: Any = None,
+            confidence: Any = None,
+            confidence_basis: Any = None,
+        ) -> None:
+            """追加一条同时包含来源、取得时间和可信度的低敏证据记录。"""
+
             reference = _bounded_text(source_ref, 220).strip()
             if not reference:
                 return
@@ -1215,6 +1240,11 @@ class RecoverySpecialistAgent:
                 "diagnostic-evidence:"
                 + hashlib.sha256(f"{normalized_type}|{reference}|{query_digest}".encode("utf-8")).hexdigest()
             )
+            normalized_confidence, normalized_basis = _evidence_confidence(
+                normalized_type,
+                confidence,
+                confidence_basis,
+            )
             records.append({
                 "evidenceId": stable_id,
                 "sourceType": normalized_type,
@@ -1222,6 +1252,8 @@ class RecoverySpecialistAgent:
                 "retrievedAt": _bounded_text(source_time, 64).strip() or retrieved_at,
                 "queryDigest": query_digest,
                 "querySummary": query_summary,
+                "confidence": normalized_confidence,
+                "confidenceBasis": normalized_basis,
             })
 
         for record in diagnostic.evidence_records:
@@ -1230,6 +1262,8 @@ class RecoverySpecialistAgent:
                 _lookup(record, "sourceRef", "source_ref", "reference", "sourceUri", "source_uri"),
                 evidence_id=_lookup(record, "evidenceId", "evidence_id"),
                 source_time=_lookup(record, "retrievedAt", "retrieved_at"),
+                confidence=_lookup(record, "confidence", "confidenceScore", "confidence_score"),
+                confidence_basis=_lookup(record, "confidenceBasis", "confidence_basis"),
             )
         for reference in diagnostic.log_references:
             add("EXECUTION_LOG", reference)
@@ -2312,6 +2346,39 @@ def _bounded_text(value: Any, limit: int) -> str:
         text,
     )
     return text[: max(0, int(limit))]
+
+
+def _evidence_confidence(
+    source_type: str,
+    value: Any,
+    basis: Any,
+) -> tuple[float, str]:
+    """将证据可信度规范为 0 到 1，并附上可解释的校准依据。
+
+    可信度描述的是“这条引用适合支持当前诊断”的程度，而不是模型对答案的
+    主观自信。权威平台事实、运行日志、历史事故和 RAG 引用分别使用保守基线；
+    上游只有提供有限数值时才会覆盖基线，NaN、无穷大和越界值都会被收敛。
+    """
+
+    defaults = {
+        "STRUCTURED_API": (0.95, "AUTHORITATIVE_PLATFORM_FACT"),
+        "EXECUTION_LOG": (0.95, "AUTHORITATIVE_EXECUTION_LOG"),
+        "MONITORING_API": (0.90, "AUTHORITATIVE_MONITORING_FACT"),
+        "CASE_HISTORY": (0.85, "RESOLVED_CASE_HISTORY"),
+        "RAG": (0.75, "GOVERNED_RETRIEVAL_REFERENCE"),
+    }
+    default_confidence, default_basis = defaults.get(
+        source_type,
+        (0.70, "GOVERNED_SOURCE_METADATA"),
+    )
+    normalized_basis = _bounded_text(basis, 96).strip() or default_basis
+    try:
+        normalized_value = float(value)
+    except (TypeError, ValueError):
+        normalized_value = default_confidence
+    if not math.isfinite(normalized_value):
+        normalized_value = default_confidence
+    return round(max(0.0, min(1.0, normalized_value)), 6), normalized_basis
 
 
 def _sanitize_text(value: Any) -> str:
