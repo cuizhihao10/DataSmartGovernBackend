@@ -212,6 +212,36 @@ class PermissionRoutePolicyMigrationContractTest {
                 .doesNotContain("'CALLBACK'");
     }
 
+    /**
+     * 统一生命周期图必须在 permission-admin 中拥有精确的只读策略。
+     *
+     * <p>Gateway 的本地路由元数据只能决定“应当按什么资源和动作询问权限中心”，不能代替权限中心的
+     * 最终 ALLOW 策略。若迁移缺失，真实用户即使能够查看同步任务，也会被 fail-closed 拒绝。该合同同时
+     * 禁止把执行、恢复或 worker 回调动作混入图查询策略。</p>
+     */
+    @Test
+    void executionLifecycleGraphRouteIsExplicitlyReadOnly() throws IOException {
+        String sql = Files.readString(MIGRATION_DIRECTORY.resolve(
+                "V56__data_sync_execution_lifecycle_graph_route_policy.sql"));
+
+        assertThat(sql)
+                .contains("'/api/sync/sync-tasks/*/executions/*/lifecycle-graph'")
+                .contains("'SYNC_EXECUTION'")
+                .contains("'GET'")
+                .contains("'VIEW'")
+                .contains("'ORDINARY_USER'")
+                .contains("'PROJECT_OWNER'")
+                .contains("'OPERATOR'")
+                .contains("'AUDITOR'")
+                .contains("'TENANT_ADMINISTRATOR'")
+                .contains("'PLATFORM_ADMINISTRATOR'")
+                .contains("ON CONFLICT DO NOTHING")
+                .doesNotContain("'POST'")
+                .doesNotContain("'EXECUTE'")
+                .doesNotContain("'RECOVER'")
+                .doesNotContain("'CALLBACK'");
+    }
+
     private boolean containsLegacyRoutePolicyColumn(Path path) {
         try {
             String sql = Files.readString(path);

@@ -73,6 +73,8 @@ datasmart:
       shared-token: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:}
       allowed-read-source-services:
         - python-ai-runtime
+        # data-sync 仅为统一生命周期图读取工具审计快照，不具备自动执行或审批权限。
+        - data-sync
       # 这里只允许触发 LOW + 只读 + 幂等工具的受控自动执行，不授予审批、任意写入或跨会话权限。
       allowed-automated-execution-source-services:
         - python-ai-runtime

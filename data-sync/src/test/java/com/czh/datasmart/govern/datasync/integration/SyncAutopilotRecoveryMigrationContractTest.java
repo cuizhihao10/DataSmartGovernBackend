@@ -139,4 +139,19 @@ class SyncAutopilotRecoveryMigrationContractTest {
             assertThat(migration).doesNotContain("model_reasoning");
         }
     }
+
+    /** V27 必须区分异步命令和直接工具入口，且直接入口不能伪造 commandId。 */
+    @Test
+    void v27ShouldSupportDirectAgentToolCorrelationWithoutFakeCommand() throws IOException {
+        try (InputStream input = getClass().getResourceAsStream(
+                "/db/migration/postgresql/data-sync/V27__direct_agent_tool_execution_correlation.sql")) {
+            assertThat(input).isNotNull();
+            String migration = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+
+            assertThat(migration).contains("ALTER COLUMN command_id DROP NOT NULL");
+            assertThat(migration).contains("entry_mode VARCHAR(32)");
+            assertThat(migration).contains("ASYNC_AGENT_COMMAND");
+            assertThat(migration).contains("DIRECT_AGENT_TOOL");
+        }
+    }
 }

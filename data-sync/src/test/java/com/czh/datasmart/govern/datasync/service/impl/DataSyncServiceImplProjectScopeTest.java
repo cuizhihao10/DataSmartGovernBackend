@@ -20,6 +20,8 @@ import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionDiagnosisSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionCorrelationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentInvocationAuthoritySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordQuarantineSupport;
@@ -171,7 +173,9 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncDirtyRecordReplaySupport.class),
                 mock(SyncDirtyRecordQuarantineSupport.class),
                 mock(SyncAgentExecutionDiagnosisSupport.class),
-                mock(SyncTaskCreateWizardDraftSupport.class)
+                mock(SyncTaskCreateWizardDraftSupport.class),
+                mock(SyncAgentExecutionCorrelationSupport.class),
+                mock(SyncAgentInvocationAuthoritySupport.class)
         );
     }
 

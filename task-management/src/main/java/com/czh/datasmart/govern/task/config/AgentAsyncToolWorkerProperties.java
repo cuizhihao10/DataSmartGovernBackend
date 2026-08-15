@@ -62,6 +62,14 @@ public class AgentAsyncToolWorkerProperties {
     private String dataSyncBaseUrl = "http://localhost:8086";
 
     /**
+     * task-management 调用 data-sync 内部 Agent 执行入口时使用的服务凭证。
+     *
+     * <p>该值只能由环境变量或 Secret Manager 注入，不得进入任务参数、日志、响应或数据库。空值会让
+     * data-sync fail-closed 拒绝真实副作用，避免仅凭可伪造的 SOURCE_SERVICE 获得平台级执行能力。</p>
+     */
+    private String dataSyncInternalServiceToken;
+
+    /**
      * DataSync worker outbox 单条命令允许的最大投递次数。
      *
      * <p>该配置保护的是 task-management 到 datasource-management 的跨服务投递账本。

@@ -72,6 +72,11 @@ public class HttpDataSyncAgentExecuteClient implements DataSyncAgentExecuteClien
         headers.set(PlatformContextHeaders.SOURCE_SERVICE, "task-management");
         headers.set(PlatformContextHeaders.ACTOR_ROLE, "SERVICE_ACCOUNT");
         headers.set(PlatformContextHeaders.ACTOR_TYPE, "SERVICE_ACCOUNT");
+        if (properties.getDataSyncInternalServiceToken() != null
+                && !properties.getDataSyncInternalServiceToken().isBlank()) {
+            headers.set(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN,
+                    properties.getDataSyncInternalServiceToken().trim());
+        }
         if (request.getTraceId() != null && !request.getTraceId().isBlank()) {
             headers.set(PlatformContextHeaders.TRACE_ID, request.getTraceId());
         }

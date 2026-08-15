@@ -755,3 +755,86 @@ task `118` 是必须保留的失败证据：旧实现更新任务定义时使用
 动作后 `PRECHECK_AGENT`/`MONITOR_AGENT` 在重排回执后立即执行，不阻塞 Kafka 等待长任务结束。它们证明修复已被受治理执行面接收并形成持久观察事实；最终成功必须另外核对 `case=RECOVERED`、repair receipt、`execution=SUCCEEDED`、对象账本、读写统计和目标数据。若将来要求 Specialist 输出终态成功摘要，应新增 worker 终态事件驱动的 finalization，而不是延长 Kafka 消费事务。
 
 本次演练后的完整重复门禁结果为：JDK 21 Reactor `1563 tests / 0 failures / 0 errors / 9 skipped`，Python `1178 passed / 1 skipped`，Frontend 六项合同、lint 和 build 全部通过，离线 E2E 退出码合同全部通过，严格只读 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。这些数字应和演练 task/execution/case 标识一并记录，不能只保留“测试通过”的笼统结论。
+
+### 8.10 统一全链路状态图验收
+
+查询某次已授权可见的 execution：
+
+```powershell
+$taskId = 119
+$executionId = 2860
+Invoke-RestMethod `
+  -Headers @{ Authorization = "Bearer $accessToken" } `
+  -Uri "http://localhost:8080/api/sync/sync-tasks/$taskId/executions/$executionId/lifecycle-graph"
+```
+
+响应必须满足以下约束：
+
+1. `graphType=SYNC_EXECUTION_LIFECYCLE`，节点顺序覆盖用户目标、Agent、命令投递、Java 审计、根 worker、Recovery Kafka、Recovery、当前 worker 重放和最终验证；没有恢复重放时根 worker 与当前 worker 是同一个节点。
+2. 每条 evidence 都有 `source`、`occurredAt`（尚未发生时允许为空）、`confidence` 和低敏 `reference`；不得出现 prompt、SQL、凭据、工具参数、命令 payload 或原始错误正文。
+3. Agent 触发的新 execution 应能通过 V26/V27 关联找到精确 `entryMode/sessionId/runId/auditId`。`ASYNC_AGENT_COMMAND` 还必须有 `commandId`；`DIRECT_AGENT_TOOL` 的 `commandId` 必须为空。两种入口都必须回查到同一条权威 Java 工具审计。
+4. Agent command outbox 节点类型必须为 `COMMAND_DISPATCH`。其 `PUBLISHED` 只证明 dispatcher 已投递，不能作为 Kafka 消费成功证据。只有 Recovery trigger outbox/consumer 的持久事实才能形成 `KAFKA_EVENT`；没有触发 Recovery 时该节点应明确显示未发生。
+5. 手工执行或 V26 之前的历史 execution 允许返回 `sourceStatus=NOT_LINKED`；Agent Runtime 暂不可用、异步入口 command/audit 缺失时允许返回 `PARTIAL`。直接入口只要求 audit，不得因为没有初始 command 被误判为 `PARTIAL`。这些观察状态不能使 worker 主流程失败。
+6. `overallState=VERIFIED` 只在当前 worker 为 `SUCCEEDED`，且存在 Recovery 时 case 已为 `RECOVERED` 后出现；根 execution 的首次失败必须在 Recovery 之前保留，不能被当前成功 execution 覆盖。
+7. 前端必须使用服务端 `edges` 展示上游关系；`PARTIAL` 按低频间隔继续轮询，`NOT_LINKED` 停止轮询，避免稳定历史数据造成永久请求。
+
+数据库可使用下列低敏查询核对关联是否存在，禁止在排障记录中导出其他业务正文：
+
+```sql
+SELECT tenant_id, project_id, sync_task_id, sync_execution_id,
+       entry_mode, command_id, session_id, run_id, audit_id, trace_id, create_time
+FROM data_sync.data_sync_agent_execution_correlation
+WHERE sync_task_id = :task_id
+  AND sync_execution_id = :execution_id;
+```
+
+本接口是只读聚合，不替代现有规划图、Specialist 图、RAG 图、执行门禁图或 Recovery 图。验收时应把统一图作为总览，再按 evidence/reference 下钻专用页面；不得通过修改图响应来推进业务状态。
+
+### 8.11 2026-08-15 本机复验结果与待补证项
+
+本轮在 Docker Desktop 恢复后，按 `docker-compose.yml + docker-compose.application.yml + docker-compose.local-e2e.yml` 重建并启动 `data-sync`、`agent-runtime`、`gateway` 和 `frontend`。四个服务均为 healthy，PostgreSQL 已存在 `data_sync.data_sync_agent_execution_correlation`。严格只读 smoke 结果为 `PASS=89 / WARN=0 / FAIL=0`。
+
+由于 V26 上线前的历史 execution 没有关联行，本轮先直连 data-sync 验证兼容路径。task `8` / execution `2882` 的实际响应为：
+
+- `graphType=SYNC_EXECUTION_LIFECYCLE`；
+- `overallState=VERIFIED`；
+- `sourceStatus=NOT_LINKED`，`missingReason=AGENT_EXECUTION_NOT_LINKED`；
+- Agent、初始 Kafka 和 Java 审计节点为 `NOT_APPLICABLE`；
+- worker 为 `SUCCEEDED`，最终验证为 `VERIFIED`；
+- evidence 只包含 `WORKER_EXECUTION` 的权威低敏引用。
+
+这个结果是历史兼容成功证据，不是 Agent 完整链成功证据。随后使用两个新 RequestId 通过 Keycloak、Gateway 和真实模型执行 Success 规划，两次都在 Planning 阶段以 `DATA_SYNC_SPECIALIST_MODEL_FAILED` 停止；脚本真实退出码为 `1`，低敏 Provider 诊断显示实际模型为 `gpt-5.6-sol` 且当前路由为 `degraded`。两次请求都没有进入确认、Kafka、worker，也没有创建可供关联的新 execution，因而不得把当前关联表为空解释为代码漏写。
+
+Provider 恢复后按以下顺序补证：
+
+1. 使用新的 RequestId 运行 Success 场景并显式确认；不要复用这两次失败请求冒充新调用。
+2. 记录新 task、root execution、current execution、session、run、command 和 audit 的稳定 ID，不记录 prompt、模型正文或工具参数。
+3. 查询关联表，确认同一租户、任务、execution 和 audit 只存在一条关联。
+4. 通过 Gateway 查询 lifecycle graph，要求 `sourceStatus=COMPLETE`。若六 Specialist 主流程经 `sync.task.run` 直接执行，应得到 `entryMode=DIRECT_AGENT_TOOL`、`commandId=null` 和 `COMMAND_DISPATCH=NOT_APPLICABLE`；若使用异步 `data-sync.execute`，则逐项核对对象级 command outbox、Java audit、worker、Recovery Kafka（若发生）、Recovery case 和最终验证。
+5. 若 Agent Runtime 暂不可用，期望结果是 `PARTIAL`；不得通过手工插入关联行、修改图响应或放宽内部令牌检查取得假成功。
+
+本轮重复门禁为 Java `1569/0/0/9`、Python `1178 passed / 1 skipped`、Frontend 全合同/类型/lint/build 通过。完整关联 E2E 的唯一剩余项是外部 Provider 恢复后的第 1 至 4 步；它不影响已通过的历史兼容、权限、迁移和低敏合同，但在补证前不能宣称本轮 `COMPLETE` 黑盒门禁已关闭。
+
+### 8.12 2026-08-15 V27 与 Recovery 证据复验
+
+使用完整 local-e2e Compose 叠加文件重建 `data-sync` 与 `frontend` 后，先确认 `data-sync`、`frontend`、`task-management`、`agent-runtime`、`gateway`、`permission-admin` 均为 healthy，并确认宿主机只通过 `127.0.0.1:8086` 暴露 data-sync。随后执行低敏数据库核对：
+
+```sql
+SELECT version, success
+FROM data_sync.flyway_schema_history
+WHERE version IN ('26', '27')
+ORDER BY installed_rank;
+
+SELECT column_name, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = 'data_sync'
+  AND table_name = 'data_sync_agent_execution_correlation'
+  AND column_name IN ('command_id', 'entry_mode')
+ORDER BY column_name;
+```
+
+本机结果为 V26、V27 均成功，`command_id` 可空，`entry_mode` 非空且默认 `ASYNC_AGENT_COMMAND`。直接入口应写 `DIRECT_AGENT_TOOL` 且不创建初始 command；异步入口必须写 commandId，并使用 session/run/command 对象级观察接口核对命令。两种入口都必须命中同一条权威 Java 工具审计。
+
+Recovery 取证必须分别检查 trigger outbox/consumer 和 recovery case。仅查到 case 时，期望图节点为 `KAFKA_EVENT=NOT_RECORDED`、`reasonCode=RECOVERY_KAFKA_NOT_RECORDED`，`occurredAt` 为空且没有 Kafka evidence；不得从 case 创建时间推断消息投递时间。查到真实 outbox/consumer 后，才允许生成 `AUTOPILOT_RECOVERY_KAFKA` 证据；case 自身使用独立的 `AUTOPILOT_RECOVERY_CASE` 证据。初始 command outbox 无论状态为何都只属于 `COMMAND_DISPATCH`。
+
+本轮最终回归为 Java `1583 tests / 0 failures / 0 errors / 9 skipped`，Python `1178 passed / 1 skipped`，Frontend 六项合同、API adapter、类型检查、lint 和生产构建全部通过，严格 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。历史 task `8` / execution `2882` 继续返回 8 个节点、7 条边、`overallState=VERIFIED`、`sourceStatus=NOT_LINKED`，只包含 worker 权威证据。Provider degraded 期间不要反复复用失败 RequestId；恢复后按 8.11 的步骤创建全新任务补齐 `sourceStatus=COMPLETE`。

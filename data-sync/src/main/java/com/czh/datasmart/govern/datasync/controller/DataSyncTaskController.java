@@ -34,6 +34,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperati
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirectAgentInvocationContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
@@ -42,6 +43,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskWizardStepValida
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskWizardStepValidationResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
+import com.czh.datasmart.govern.datasync.controller.support.DataSyncAgentRuntimeTrustedAccessSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
@@ -84,6 +86,7 @@ public class DataSyncTaskController {
     private final DataSyncService dataSyncService;
     private final SyncTaskCreateWizardContractSupport createWizardContractSupport;
     private final SyncTaskCustomSqlCheckSupport customSqlCheckSupport;
+    private final DataSyncAgentRuntimeTrustedAccessSupport agentRuntimeTrustedAccessSupport;
 
     /**
      * 查询同步任务创建向导合同。
@@ -702,8 +705,10 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
+        SyncDirectAgentInvocationContext invocation =
+                agentRuntimeTrustedAccessSupport.resolveDirectInvocation(headers, traceId);
         return PlatformApiResponse.success("同步任务已提交运行",
-                dataSyncService.runTask(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+                dataSyncService.runTask(id, actorContext(tenantId, actorId, actorRole, traceId, headers), invocation), traceId);
     }
 
     /**

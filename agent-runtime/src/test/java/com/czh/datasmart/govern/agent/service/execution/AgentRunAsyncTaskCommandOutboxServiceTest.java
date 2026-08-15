@@ -92,6 +92,24 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
         assertEquals(1, fixture.store.list("run-outbox-001", null, 10).size());
     }
 
+    /** 单条观察必须按完整 session/run/command 身份命中，不能依赖前 100 条分页扫描。 */
+    @Test
+    void commandObservationShouldFailClosedAcrossSessionBoundary() {
+        TestFixture fixture = newFixture();
+        fixture.store.append(existingRecord(
+                "command-observe-001", "run-outbox-001", AgentAsyncTaskCommandOutboxStatus.PUBLISHED));
+
+        var matched = fixture.service.observe(
+                "session-outbox-001", "run-outbox-001", "command-observe-001");
+        var foreign = fixture.service.observe(
+                "foreign-session", "run-outbox-001", "command-observe-001");
+
+        assertTrue(matched.found());
+        assertEquals("PUBLISHED", matched.status());
+        assertFalse(foreign.found());
+        assertEquals("COMMAND_NOT_FOUND", foreign.sourceStatus());
+    }
+
     /**
      * selected-node 入箱应把 confirmation 与授权证据写入 command payload。
      *

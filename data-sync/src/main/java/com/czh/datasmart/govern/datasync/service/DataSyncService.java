@@ -46,6 +46,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperati
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirectAgentInvocationContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
@@ -204,6 +205,16 @@ public interface DataSyncService {
                                                                 SyncActorContext actorContext);
 
     SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext);
+
+    /**
+     * 运行任务并在同一事务内记录受信 Agent 直接工具调用关联。
+     *
+     * <p>普通用户调用传 null；只有 Controller 完成来源服务与内部令牌校验后才能构造 invocation。
+     * 该上下文不扩大 actorContext 的权限，只补充统一生命周期图需要的低敏审计关联。</p>
+     */
+    SyncTaskOperationResult runTask(Long id,
+                                    SyncActorContext actorContext,
+                                    SyncDirectAgentInvocationContext invocation);
 
     /**
      * 手工调度同步任务立即执行一次。

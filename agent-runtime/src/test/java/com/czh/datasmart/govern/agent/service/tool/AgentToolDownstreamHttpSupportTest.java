@@ -39,6 +39,7 @@ class AgentToolDownstreamHttpSupportTest {
         assertEquals("USER", headers.getFirst(PlatformContextHeaders.ACTOR_TYPE));
         assertEquals("101:MANAGER", headers.getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES));
         assertEquals("agent-runtime", headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE));
+        assertEquals("audit-delegation", headers.getFirst(PlatformContextHeaders.AGENT_AUDIT_ID));
         assertEquals("PROJECT", headers.getFirst(PlatformContextHeaders.DATA_SCOPE_LEVEL));
         assertEquals("3001", headers.getFirst(PlatformContextHeaders.APPLICATION_ID));
         assertEquals("tenant:10:project:101", headers.getFirst(PlatformContextHeaders.WORKSPACE_ID));

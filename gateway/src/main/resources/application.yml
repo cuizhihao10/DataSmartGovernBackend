@@ -890,6 +890,14 @@ datasmart:
           method-actions:
             GET: VIEW
 
+        # 统一全链路图只聚合低敏执行事实，不触发 Agent、Kafka、worker 或 Recovery 状态迁移。
+        - path-pattern: /api/sync/sync-tasks/*/executions/*/lifecycle-graph
+          resource-type: SYNC_EXECUTION
+          default-action: VIEW
+          description: 查看用户目标、六类 Agent、Kafka、Java 审计、worker、Recovery 与最终验证的统一只读状态投影；来源缺失时显式返回 PARTIAL/NOT_LINKED。
+          method-actions:
+            GET: VIEW
+
         - path-pattern: /api/sync/sync-tasks/*/executions/*/objects/retry
           resource-type: SYNC_EXECUTION
           default-action: RECOVER

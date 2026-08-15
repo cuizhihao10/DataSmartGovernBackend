@@ -50,6 +50,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperati
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirectAgentInvocationContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
@@ -74,6 +75,8 @@ import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionDiagnosisSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionCorrelationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentInvocationAuthoritySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataVisibility;
 import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplaySupport;
@@ -147,6 +150,8 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncDirtyRecordQuarantineSupport dirtyRecordQuarantineSupport;
     private final SyncAgentExecutionDiagnosisSupport agentExecutionDiagnosisSupport;
     private final SyncTaskCreateWizardDraftSupport createWizardDraftSupport;
+    private final SyncAgentExecutionCorrelationSupport agentExecutionCorrelationSupport;
+    private final SyncAgentInvocationAuthoritySupport agentInvocationAuthoritySupport;
     private SyncRecoveryCasePublishSupport recoveryCasePublishSupport;
 
     @Autowired
@@ -444,8 +449,23 @@ public class DataSyncServiceImpl implements DataSyncService {
     @Override
     @Transactional
     public SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext) {
+        return runTask(id, actorContext, null);
+    }
+
+    /**
+     * 创建一次可执行队列记录，并可选绑定受信 Agent 直接工具调用。
+     *
+     * <p>execution、任务主状态、业务审计和 Agent 关联都位于同一事务：只要任一步失败，整次运行提交都会回滚。
+     * invocation 仅用于可观测关联，不绕过 getTask、项目角色、预检查或状态机。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskOperationResult runTask(Long id,
+                                           SyncActorContext actorContext,
+                                           SyncDirectAgentInvocationContext invocation) {
         SyncTask task = getTask(id, actorContext);
         assertTaskManageable(task, actorContext, "运行同步任务");
+        agentInvocationAuthoritySupport.verifyDirect(task, invocation, actorContext);
         SyncTaskDefinition definition = getDefinitionForTask(task);
         SyncTaskDefinitionExecutionPrecheckResponse precheck = taskDefinitionExecutionPrecheckSupport.precheck(definition);
         if (!canRunAfterPrecheck(precheck, task)) {
@@ -463,8 +483,10 @@ public class DataSyncServiceImpl implements DataSyncService {
         taskMapper.updateById(task);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(), SyncAuditActionType.RUN_TASK,
                 actorContext, "taskId=" + task.getId() + ",executionId=" + execution.getId());
+        agentExecutionCorrelationSupport.recordDirect(task, execution.getId(), actorContext, invocation);
         return new SyncTaskOperationResult(task.getId(), task.getCurrentState(),
-                "同步任务已进入待执行队列，执行记录 ID=" + execution.getId() + "；后续将接入执行器、checkpoint 和任务中心协议");
+                "同步任务已进入待执行队列，执行记录 ID=" + execution.getId() + "；后续将接入执行器、checkpoint 和任务中心协议",
+                execution.getId());
     }
 
     /**

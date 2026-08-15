@@ -129,6 +129,8 @@ datasmart:
       agent-runtime-base-url: ${DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL:http://localhost:8091}
       # data-sync 内部服务地址。data-sync.execute 白名单适配器只调用固定内部幂等入口，不会执行 Agent payload 中的任意 targetEndpoint。
       data-sync-base-url: ${DATASMART_DATA_SYNC_INTERNAL_BASE_URL:http://localhost:8086}
+      # 仅由部署 Secret 注入；用于证明调用方确为 task-management，而不是外部伪造 SOURCE_SERVICE。
+      data-sync-internal-service-token: ${DATASMART_DATA_SYNC_INTERNAL_SERVICE_TOKEN:${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:}}
       # DataSync outbox 自动调度开关。默认关闭，避免本地启动 task-management 后自动调用 datasource-management 产生同步任务副作用。
       data-sync-outbox-scheduler-enabled: ${DATASMART_TASK_DATA_SYNC_OUTBOX_SCHEDULER_ENABLED:false}
       # DataSync outbox 后台调度 fixed-delay 间隔，单位毫秒。与通用 worker scheduler 分开，便于按 data-sync 下游容量单独调优。

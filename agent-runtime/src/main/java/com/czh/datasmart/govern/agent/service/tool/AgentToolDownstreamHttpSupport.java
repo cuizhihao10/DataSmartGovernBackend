@@ -96,6 +96,7 @@ public class AgentToolDownstreamHttpSupport {
                 context.session(),
                 context.run(),
                 context.traceId() == null ? context.audit().getTraceId() : context.traceId());
+        headers.set(PlatformContextHeaders.AGENT_AUDIT_ID, context.audit().getAuditId());
     }
 
     /**

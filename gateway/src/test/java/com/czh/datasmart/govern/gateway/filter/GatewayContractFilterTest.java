@@ -66,6 +66,7 @@ class GatewayContractFilterTest {
                         .header(PlatformContextHeaders.AGENT_ID, "forged-agent")
                         .header(PlatformContextHeaders.AGENT_SESSION_ID, "forged-session")
                         .header(PlatformContextHeaders.AGENT_RUN_ID, "forged-run")
+                        .header(PlatformContextHeaders.AGENT_AUDIT_ID, "forged-audit")
                         .header(PlatformContextHeaders.AGENT_DELEGATION_ID, "forged-delegation")
                         .header(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, "forged-token")
                         .build()
@@ -78,6 +79,7 @@ class GatewayContractFilterTest {
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_ID)).isNull();
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_SESSION_ID)).isNull();
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_RUN_ID)).isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_AUDIT_ID)).isNull();
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_DELEGATION_ID)).isNull();
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN)).isNull();
     }

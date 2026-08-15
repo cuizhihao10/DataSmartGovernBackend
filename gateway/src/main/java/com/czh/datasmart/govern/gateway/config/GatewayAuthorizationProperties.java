@@ -368,6 +368,12 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/policy-snapshot", "SYNC_EXECUTION",
                 "data-sync 执行策略快照查询入口，用于解释某次 execution 实际采用的分片、channel、批大小、超时、重试和脏数据阈值",
                 Map.of("GET", "VIEW")));
+        defaults.add(route("/api/sync/sync-tasks/*/executions/*/autopilot-recovery", "SYNC_EXECUTION",
+                "data-sync Autopilot 有界恢复状态只读入口，不返回日志、样本、SQL、凭据、prompt 或模型正文",
+                Map.of("GET", "VIEW")));
+        defaults.add(route("/api/sync/sync-tasks/*/executions/*/lifecycle-graph", "SYNC_EXECUTION",
+                "data-sync 用户目标、Agent、Kafka、Java 审计、worker、Recovery 与最终验证统一只读状态投影",
+                Map.of("GET", "VIEW")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects/retry", "SYNC_EXECUTION",
                 "data-sync 失败对象选择性重试入口，会把 FAILED 对象重置为 PENDING 并重新排队父 execution，属于运维恢复动作",
                 Map.of("POST", "RECOVER")));

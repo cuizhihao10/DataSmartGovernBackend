@@ -17,6 +17,8 @@ import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.service.DataSyncAgentTaskExecutionService;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionCorrelationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentInvocationAuthoritySupport;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +42,8 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
 
     private final DataSyncService dataSyncService;
     private final SyncCallbackIdempotencySupport idempotencySupport;
+    private final SyncAgentExecutionCorrelationSupport correlationSupport;
+    private final SyncAgentInvocationAuthoritySupport invocationAuthoritySupport;
     private final ObjectMapper objectMapper;
 
     /**
@@ -72,6 +76,7 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
 
         SyncActorContext actorContext = actorContext(request);
         SyncTask task = dataSyncService.getTask(request.getSyncTaskId(), actorContext);
+        invocationAuthoritySupport.verifyAsync(task, request, actorContext);
         SyncTaskOperationResult operationResult = dataSyncService.runTask(task.getId(), actorContext);
         SyncTask queuedTask = dataSyncService.getTask(task.getId(), actorContext);
         AgentSyncTaskExecuteResponse response = new AgentSyncTaskExecuteResponse(
@@ -84,6 +89,11 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
                 false,
                 "Agent 工具 data-sync.execute 已幂等提交同步任务入队"
         );
+        /*
+         * 关联事实必须和 execution 在同一事务提交。它只记录跨服务 ID，不复制工具参数或模型正文；
+         * 后续统一状态图可以据此只读查询 Java 审计，而不需要猜测一次手工执行是否来自 Agent。
+         */
+        correlationSupport.record(request, queuedTask.getLastExecutionId());
         idempotencySupport.markSucceeded(tenantId, IDEMPOTENCY_ACTION, scopeKey, idempotencyKey, toJson(response));
         return response;
     }

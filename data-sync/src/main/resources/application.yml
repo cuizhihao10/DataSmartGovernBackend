@@ -85,6 +85,17 @@ logging:
 
 datasmart:
   data-sync:
+    agent-runtime-observation:
+      # 统一生命周期图只读查询 Agent Runtime 工具审计；失败时图降级为 PARTIAL，不影响 worker 主流程。
+      enabled: ${DATASMART_DATA_SYNC_AGENT_RUNTIME_OBSERVATION_ENABLED:true}
+      base-url: ${DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL:http://localhost:8091}
+      audit-path-template: /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions
+      command-outbox-path-template: /agent-runtime/sessions/{sessionId}/runs/{runId}/async-task-commands/{commandId}/observation
+      source-service: data-sync
+      # 只从部署 Secret/环境变量注入，禁止写入数据库、响应、日志或提交文件。
+      internal-service-token: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:}
+      connect-timeout-ms: ${DATASMART_DATA_SYNC_AGENT_RUNTIME_CONNECT_TIMEOUT_MS:800}
+      read-timeout-ms: ${DATASMART_DATA_SYNC_AGENT_RUNTIME_READ_TIMEOUT_MS:1500}
     datasource-capability:
       # 是否启用 datasource-management 的低敏能力快照读取。
       # 开启后，保存任务定义时如果调用方没有传 sourceConnectorType/targetConnectorType，

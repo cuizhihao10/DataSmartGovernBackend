@@ -418,3 +418,37 @@ task `118` 继续进入真实第二轮字段映射修复，但暴露出持久化
 证据解释还需保持精确：动作后 `PRECHECK_AGENT`/`MONITOR_AGENT` 在 data-sync 接受重排回执后立即执行，用于证明修复已进入受治理执行面并持久登记观察事实；它们不等待长任务终态。task `119` 的终态成功由 data-sync case、repair receipt、execution、对象账本、目标行数和 Gateway 公开查询共同证明。后续若产品要求 Specialist 自身输出终态成功摘要，应增加独立的 worker 终态事件驱动 finalization，不能通过阻塞 Kafka 消费线程等待长任务实现。
 
 本次最终重复门禁为：JDK 21 全 Reactor `1563 tests / 0 failures / 0 errors / 9 skipped`；Python `1178 passed, 1 skipped`；Frontend 六项 Agent/API/data-sync 合同、lint、TypeScript 和 Vite build 全部通过；六 Agent 离线退出码回归全部通过；严格认证与只读诊断 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。Compose 中 Gateway、Kafka、PostgreSQL、data-sync、agent-runtime、python-ai-runtime 及其依赖保持运行，声明健康检查的核心服务均为 healthy。
+
+## 17. 2026-08-15 统一全链路状态图增量
+
+当前新增 `GET /api/sync/sync-tasks/{taskId}/executions/{executionId}/lifecycle-graph`，用于把“用户目标 -> Agent 受治理调用 -> 初始命令投递（仅异步入口）-> Java 工具审计 -> 根 worker -> Recovery Kafka -> Recovery -> 当前 worker 重放 -> 最终验证”投影为一张按 execution 查询的有向状态图。Gateway 将该路由固定为 `SYNC_EXECUTION/VIEW`，Controller 先复用任务可见性校验，Recovery 查询服务再校验 execution 与任务、租户和项目归属；图接口本身没有任何执行、审批、重试或状态迁移副作用。
+
+该能力没有新增第二套状态机。Agent 工具状态继续以 Agent Runtime 审计为准，初始命令投递以 Agent Runtime command outbox 为准，worker 以 `data_sync_execution` 为准，Recovery Kafka 以 data-sync 的 trigger outbox 与 consumer result 为准，恢复结论以 Recovery case 为准。必须注意：command outbox 的 `PUBLISHED` 只表示 dispatcher 已完成投递，不能冒充 Kafka 消费成功；统一图中它属于 `COMMAND_DISPATCH`，只有存在 Recovery 持久 outbox/consumer 事实时才出现真正的 `KAFKA_EVENT` 语义。
+
+V26 新增 `data_sync_agent_execution_correlation`，V27 再把入口区分为 `ASYNC_AGENT_COMMAND` 与 `DIRECT_AGENT_TOOL`。异步入口在新 execution 创建事务中记录 `commandId/sessionId/runId/auditId/traceId`；六 Specialist 主流程的直接 `sync.task.run` 不经过初始 command outbox，因此 `commandId` 为空，但仍在同一业务事务记录 session、run、audit 与 execution。两种入口都不保存 prompt、工具参数、SQL、凭据、模型输出或原始日志。
+
+统一证据索引固定携带 `source`、`occurredAt`、`confidence` 和低敏 `reference`。数据库持久事实和成功读取的 Java 审计标为 `AUTHORITATIVE`；远端不可用标为 `UNAVAILABLE`，不会用模型主观概率替代事实可信度。历史手工 execution 或 V26 之前没有 Agent 关联的记录仍可展示 worker/Recovery 事实，但 `sourceStatus=NOT_LINKED`；Agent Runtime 暂不可用或 command/audit 未找到时返回 `PARTIAL`。这些状态是可观察性结论，不是业务失败，也不能被前端改写成成功。
+
+前端 DataSync 执行详情已增加纵向全链路图，直接消费服务端节点与边，并在每个节点展示上游关系、来源、时间、可信度、证据引用及稳定原因码。`PARTIAL` 会按低频间隔继续轮询，以便跨服务观察恢复后自动补齐；`NOT_LINKED` 是稳定历史结论，不做无意义轮询。现有规划图、Specialist 图、执行门禁图、RAG 图和 Recovery 图仍负责各自领域的细节；统一图只提供运维总览和下钻关联，避免复制并分叉已有业务规则。
+
+## 18. 2026-08-15 统一全链路状态图最终复验
+
+本轮已把统一图从静态契约推进到可运行的只读投影。data-sync 在 Agent 工具成功创建 execution 的同一事务中持久记录 `entryMode/session/run/audit/execution` 及异步入口的 `command` 关联；查询时分别读取对象级 Agent command outbox、Java 工具审计、根/当前 data-sync execution、Recovery Kafka outbox/consumer、Recovery case 和最终状态。根 execution 必须先于 Recovery，恢复产生的当前 execution 只能作为重放结果放在 Recovery 之后，不能用当前成功覆盖最初失败。关联表不保存 prompt、SQL、工具参数、连接信息、原始日志或模型输出，也不承担任何业务状态迁移。
+
+内部边界已按“调用身份 + 权威审计”双重收紧：Agent Runtime 查询命令时必须使用 session/run/command 三元组精确读取低敏投影，不再分页扫描同一 Run 的其他命令；data-sync 的内部 Agent 执行入口要求来源白名单和共享服务令牌，且必须回查 Agent Runtime 权威审计，核对 session、run、audit、工具名、租户与项目。Gateway 继续剥离浏览器伪造的 Agent audit Header，只开放 `SYNC_EXECUTION/VIEW`。部署中 data-sync 的宿主机端口仅绑定回环地址，避免内部执行入口直接暴露到外部网络。
+
+本轮门禁结果为：JDK 21 全 Reactor `1569 tests / 0 failures / 0 errors / 9 skipped`；新增聚焦组 `7 tests / 0 failures / 0 errors`；Python Runtime `1178 passed / 1 skipped`；Frontend 六项合同、API adapter 合同、TypeScript、lint 和生产构建全部通过。最新 `data-sync`、`agent-runtime`、`gateway`、`frontend` 镜像均构建成功并处于 healthy，V26 迁移已在 PostgreSQL 创建关联表；严格认证与只读诊断 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。
+
+真实历史兼容查询使用 task `8` / execution `2882`，接口返回 `overallState=VERIFIED`、`sourceStatus=NOT_LINKED`、worker `SUCCEEDED`、final verification `VERIFIED`，且仅给出 data-sync 权威 execution 证据。该结果证明 V26 之前的数据不会被伪造为 Agent/Kafka 已关联，也不会因为缺少新关联而失去 worker 终态。
+
+本轮又使用两个独立 RequestId 尝试创建 V26 上线后的真实 Agent execution，但都在 Planning 阶段由 `DATA_SYNC_AGENT` 以 `DATA_SYNC_SPECIALIST_MODEL_FAILED` fail-closed；低敏 Provider 诊断显示当前实际模型仍为 `gpt-5.6-sol`，路由处于 `degraded`，没有进入确认、Kafka 投递或 worker 执行。因此本轮尚未取得 `sourceStatus=COMPLETE` 的新黑盒样本。该项属于外部模型 Provider 阻塞，不是 Java/Python/Frontend 回归失败；Provider 恢复后必须用新 RequestId 重跑 Success，并同时核对关联行、command outbox、工具审计和统一图，才能关闭本轮 `COMPLETE` 运行证据门禁。
+
+## 19. 2026-08-15 V27 与证据边界复验
+
+本轮最终复验确认 V26、V27 已在真实 PostgreSQL `data_sync` schema 成功应用。`command_id` 允许为空，`entry_mode` 必填且默认 `ASYNC_AGENT_COMMAND`，从数据库约束层明确区分异步命令入口与直接 Agent 工具入口。最新 data-sync、frontend 镜像已重新部署；`data-sync`、`frontend`、`task-management`、`agent-runtime`、`gateway`、`permission-admin` 均为 healthy，data-sync 宿主机端口只绑定 `127.0.0.1:8086`。
+
+统一图的 Recovery 证据边界进一步收紧：Recovery trigger outbox/consumer 与 Recovery case 分别形成 `AUTOPILOT_RECOVERY_KAFKA`、`AUTOPILOT_RECOVERY_CASE` 证据。仅存在 case 不能反推出 Kafka 已投递或已消费；此时 `KAFKA_EVENT` 必须返回 `NOT_RECORDED / RECOVERY_KAFKA_NOT_RECORDED`，且不得伪造发生时间或证据引用。初始 Agent command 的 `PUBLISHED` 仍只表示 `COMMAND_DISPATCH`，不能替代 Recovery Kafka 消费事实。
+
+最终重复门禁为：JDK 21 全 Reactor `1583 tests / 0 failures / 0 errors / 9 skipped`；统一图最新聚焦组 `5 tests / 0 failures / 0 errors`；Python Runtime `1178 passed / 1 skipped`；Frontend 六项合同、API adapter、TypeScript、lint 和生产构建全部通过；严格认证与只读诊断 smoke 保持 `PASS=89 / WARN=0 / FAIL=0`。task `8` / execution `2882` 的历史兼容投影仍为 `overallState=VERIFIED`、`sourceStatus=NOT_LINKED`、8 个节点、7 条边和 1 条 worker 权威证据。
+
+当前唯一未关闭的统一图运行证据仍是新 Agent execution 的 `sourceStatus=COMPLETE` 黑盒样本。外部 Provider 在新规划阶段处于 degraded，系统已正确 fail-closed，未产生确认、命令、关联或 worker 副作用；在 Provider 恢复并得到真实新 execution 前，不得用历史 execution、手工关联行或离线测试替代该项证据。

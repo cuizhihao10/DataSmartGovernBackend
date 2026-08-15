@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutbox
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxOperationRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxOperationResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxQueryResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandObservationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandOutboxEnqueueResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueResponse;
@@ -99,11 +100,32 @@ public class AgentAsyncTaskCommandOutboxController {
      */
     @GetMapping("/async-task-commands/outbox")
     public PlatformApiResponse<AgentAsyncTaskCommandOutboxQueryResponse> query(
+            @RequestParam(value = "sessionId") String sessionId,
             @RequestParam(value = "runId", required = false) String runId,
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(outboxService.query(runId, status, limit), traceId);
+        requireReadAccess(sessionId, headers);
+        return PlatformApiResponse.success(
+                outboxService.queryForSession(sessionId, runId, status, limit), traceId);
+    }
+
+    /**
+     * 为统一生命周期图精确读取一条命令 outbox 事实。
+     *
+     * <p>该路由先按 session 恢复原用户边界并执行对象级读取校验，再按完整三元组查询；响应不会暴露通用
+     * outbox 诊断接口中的 endpoint、payloadReference 或 lastError。</p>
+     */
+    @GetMapping("/sessions/{sessionId}/runs/{runId}/async-task-commands/{commandId}/observation")
+    public PlatformApiResponse<AgentAsyncTaskCommandObservationView> observe(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @PathVariable("commandId") String commandId,
+            @RequestHeader HttpHeaders headers,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
+        return PlatformApiResponse.success(outboxService.observe(sessionId, runId, commandId), traceId);
     }
 
     /**
@@ -213,6 +235,22 @@ public class AgentAsyncTaskCommandOutboxController {
                 headers.getFirst(PlatformContextHeaders.ACTOR_ROLE)
         );
         sessionService.requireMutationAccess(sessionId, endpointAccessResolver.resolveAutomatedExecutionAccess(
+                sessionId,
+                requestAccess,
+                headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE),
+                headers.getFirst(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN)
+        ));
+    }
+
+    /** 读取单条命令前恢复可信内部服务对应的会话所有者，并复用现有会话对象级授权。 */
+    private void requireReadAccess(String sessionId, HttpHeaders headers) {
+        AgentSessionAccessContext requestAccess = new AgentSessionAccessContext(
+                longHeader(headers, PlatformContextHeaders.TENANT_ID),
+                longHeader(headers, PlatformContextHeaders.PROJECT_ID),
+                headers.getFirst(PlatformContextHeaders.ACTOR_ID),
+                headers.getFirst(PlatformContextHeaders.ACTOR_ROLE)
+        );
+        sessionService.getSession(sessionId, endpointAccessResolver.resolveReadAccess(
                 sessionId,
                 requestAccess,
                 headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE),

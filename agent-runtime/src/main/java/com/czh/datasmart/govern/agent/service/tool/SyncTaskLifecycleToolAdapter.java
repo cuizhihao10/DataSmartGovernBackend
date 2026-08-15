@@ -245,6 +245,7 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         );
         return AgentToolExecutionOutcome.succeeded("同步任务已提交 worker 队列。", Map.of(
                 "taskId", taskId,
+                "executionId", requiredPositiveLong(data.get("executionId"), "同步任务运行响应缺少 executionId"),
                 "state", safeText(data.get("state"), "QUEUED"),
                 "message", safeText(data.get("message"), "同步任务已提交运行")
         ));
@@ -727,7 +728,14 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                 .build()
                 .post()
                 .uri(uri, variables)
-                .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context));
+                .headers(headers -> {
+                    httpSupport.applyUserDelegationHeaders(headers, context);
+                    /*
+                     * 该 Adapter 只调用 data-sync 固定白名单路由。服务令牌与用户委托同时存在，
+                     * 让 data-sync 能确认“调用方确为 Agent Runtime”，但真正业务权限仍按原用户范围判断。
+                     */
+                    httpSupport.applyInternalServiceToken(headers);
+                });
         RestClient.ResponseSpec responseSpec = body == null ? spec.retrieve() : spec.body(body).retrieve();
         return responseSpec.body(new ParameterizedTypeReference<>() {
         });
@@ -739,7 +747,10 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                 .build()
                 .get()
                 .uri(uri, variables)
-                .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
+                .headers(headers -> {
+                    httpSupport.applyUserDelegationHeaders(headers, context);
+                    httpSupport.applyInternalServiceToken(headers);
+                })
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {
                 });

@@ -11,7 +11,9 @@ import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.AgentSyncTaskExecuteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.AgentSyncTaskExecuteResponse;
 import com.czh.datasmart.govern.datasync.service.DataSyncAgentTaskExecutionService;
+import com.czh.datasmart.govern.datasync.controller.support.DataSyncAgentRuntimeTrustedAccessSupport;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -30,6 +32,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class DataSyncAgentTaskExecutionController {
 
     private final DataSyncAgentTaskExecutionService executionService;
+    private final DataSyncAgentRuntimeTrustedAccessSupport trustedAccessSupport;
 
     /**
      * 幂等执行 Agent 数据同步工具。
@@ -41,7 +44,9 @@ public class DataSyncAgentTaskExecutionController {
     @PostMapping("/execute")
     public PlatformApiResponse<AgentSyncTaskExecuteResponse> execute(
             @RequestBody AgentSyncTaskExecuteRequest request,
-            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        trustedAccessSupport.requireService(headers, "task-management");
         if (request != null && (request.getTraceId() == null || request.getTraceId().isBlank())) {
             request.setTraceId(traceId);
         }

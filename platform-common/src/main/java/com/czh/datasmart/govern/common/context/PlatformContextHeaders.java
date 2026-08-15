@@ -47,6 +47,13 @@ public final class PlatformContextHeaders {
     public static final String AGENT_SESSION_ID = "X-DataSmart-Agent-Session-Id";
     /** Agent Run ID，用于关联一次模型与工具循环。 */
     public static final String AGENT_RUN_ID = "X-DataSmart-Agent-Run-Id";
+    /**
+     * 当前真实工具调用对应的 Java Agent 审计 ID。
+     *
+     * <p>该值只用于受信服务间链路建立低敏关联，不代表审批或授权本身。Gateway 会清理浏览器自报值，
+     * 下游服务还必须同时校验来源服务与内部令牌，不能仅凭 auditId 放行任何业务动作。</p>
+     */
+    public static final String AGENT_AUDIT_ID = "X-DataSmart-Agent-Audit-Id";
     /** 用户授予 Agent 的最小权限委托事实 ID。 */
     public static final String AGENT_DELEGATION_ID = "X-DataSmart-Agent-Delegation-Id";
     /** 仅供服务间可信入口校验的共享凭证 Header，浏览器请求会由 Gateway 清理。 */

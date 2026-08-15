@@ -108,6 +108,34 @@ class AgentAsyncTaskCommandOutboxControllerTest {
         verify(selectedNodeOutboxService, never()).enqueueSelectedAsyncNodes(any(), any(), any(), any());
     }
 
+    /** 单条命令观察必须先经过会话对象级读取校验，再触碰 outbox 查询服务。 */
+    @Test
+    void observationShouldResolveReadAccessBeforeQueryingCommand() {
+        HttpHeaders headers = userHeaders();
+        AgentSessionAccessContext resolvedAccess = new AgentSessionAccessContext(10L, 101L, "user-1", "USER");
+        when(endpointAccessResolver.resolveReadAccess(
+                eq("session-1"), any(), eq(null), eq(null))).thenReturn(resolvedAccess);
+
+        controller.observe("session-1", "run-1", "command-1", headers, "trace-1");
+
+        verify(sessionService).getSession("session-1", resolvedAccess);
+        verify(outboxService).observe("session-1", "run-1", "command-1");
+    }
+
+    /** 通用 outbox 列表也必须绑定 session 对象级读取范围。 */
+    @Test
+    void queryShouldRequireSessionReadAccess() {
+        HttpHeaders headers = userHeaders();
+        AgentSessionAccessContext resolvedAccess = new AgentSessionAccessContext(10L, 101L, "user-1", "USER");
+        when(endpointAccessResolver.resolveReadAccess(
+                eq("session-1"), any(), eq(null), eq(null))).thenReturn(resolvedAccess);
+
+        controller.query("session-1", "run-1", null, 20, headers, "trace-1");
+
+        verify(sessionService).getSession("session-1", resolvedAccess);
+        verify(outboxService).queryForSession("session-1", "run-1", null, 20);
+    }
+
     /** 构造模拟 Gateway 已认证并注入的普通用户范围 Header。 */
     private HttpHeaders userHeaders() {
         HttpHeaders headers = new HttpHeaders();

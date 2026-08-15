@@ -80,6 +80,7 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
             PlatformContextHeaders.AGENT_ID,
             PlatformContextHeaders.AGENT_SESSION_ID,
             PlatformContextHeaders.AGENT_RUN_ID,
+            PlatformContextHeaders.AGENT_AUDIT_ID,
             PlatformContextHeaders.AGENT_DELEGATION_ID,
             PlatformContextHeaders.INTERNAL_SERVICE_TOKEN
     );

@@ -210,6 +210,8 @@ services:
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL: http://agent-runtime:8091
       DATASMART_DATA_SYNC_INTERNAL_BASE_URL: http://data-sync:8086
+      # task-management -> data-sync 内部真实执行入口复用统一部署 Secret，避免再维护一套重复凭证。
+      DATASMART_DATA_SYNC_INTERNAL_SERVICE_TOKEN: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:-local-compose-agent-runtime-internal-token-change-before-production}
       DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-action-approvals/evaluate
       DATASMART_PERMISSION_ADMIN_EVALUATE_URL: http://permission-admin:8085/permissions/evaluate
       # 自动 worker 与真实受控提交保持关闭；部署成功不应自动消费或修改客户数据。
@@ -278,6 +280,7 @@ services:
       DATASMART_DATA_SYNC_DATASOURCE_CAPABILITY_BASE_URL: http://datasource-management:8082
       DATASMART_DATA_SYNC_DATASOURCE_RUN_ONCE_BASE_URL: http://datasource-management:8082
       DATASMART_DATA_SYNC_TASK_MANAGEMENT_RECEIPT_BASE_URL: http://task-management:8081
+      DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL: http://agent-runtime:8091
       # Agent Runtime 只通过固定内部 API 回写 Autopilot decision/transition。显式注入同一服务令牌，
       # 避免 data-sync 因“未配置即放行”的本地源码测试兼容行为而在 Compose 网络中失去认证边界。
       DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:-local-compose-agent-runtime-internal-token-change-before-production}
@@ -295,7 +298,8 @@ services:
       DATASMART_DATA_SYNC_WORKER_LOOP_FIXED_DELAY_MS: ${DATASMART_DATA_SYNC_WORKER_LOOP_FIXED_DELAY_MS:-5000}
       DATASMART_DATA_SYNC_WORKER_LOOP_MAX_EXECUTIONS_PER_RUN: ${DATASMART_DATA_SYNC_WORKER_LOOP_MAX_EXECUTIONS_PER_RUN:-5}
     ports:
-      - "8086:8086"
+      # 仅绑定本机用于诊断和 E2E；局域网/公网请求必须经 Gateway，不能绕过身份清理与授权。
+      - "127.0.0.1:8086:8086"
     depends_on:
       - postgresql
       - redis

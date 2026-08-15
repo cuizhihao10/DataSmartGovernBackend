@@ -13,6 +13,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionCorrelationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentInvocationAuthoritySupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -35,9 +37,13 @@ class DataSyncAgentTaskExecutionServiceImplTest {
     void shouldQueueExistingSyncTaskOnceForAgentCommand() {
         DataSyncService dataSyncService = mock(DataSyncService.class);
         SyncCallbackIdempotencySupport idempotencySupport = mock(SyncCallbackIdempotencySupport.class);
+        SyncAgentExecutionCorrelationSupport correlationSupport = mock(SyncAgentExecutionCorrelationSupport.class);
+        SyncAgentInvocationAuthoritySupport invocationAuthoritySupport = mock(SyncAgentInvocationAuthoritySupport.class);
         DataSyncAgentTaskExecutionServiceImpl service = new DataSyncAgentTaskExecutionServiceImpl(
                 dataSyncService,
                 idempotencySupport,
+                correlationSupport,
+                invocationAuthoritySupport,
                 new ObjectMapper()
         );
         AgentSyncTaskExecuteRequest request = request();
@@ -60,6 +66,8 @@ class DataSyncAgentTaskExecutionServiceImplTest {
         verify(dataSyncService, org.mockito.Mockito.times(2))
                 .getTask(eq(7001L), any(SyncActorContext.class));
         verify(dataSyncService).runTask(eq(7001L), any(SyncActorContext.class));
+        verify(invocationAuthoritySupport).verifyAsync(any(SyncTask.class), eq(request), any(SyncActorContext.class));
+        verify(correlationSupport).record(request, 8001L);
         verify(idempotencySupport).markSucceeded(eq(10L), eq("AGENT_EXECUTE_SYNC_TASK"),
                 eq("agent:session-001:run-001:audit-001"), eq("idem-001"), any());
     }

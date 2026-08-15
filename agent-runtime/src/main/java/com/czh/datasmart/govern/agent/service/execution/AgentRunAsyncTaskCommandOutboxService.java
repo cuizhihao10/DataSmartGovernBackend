@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.execution;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxRecordView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandObservationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandPlanItemView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandOutboxEnqueueResponse;
@@ -205,6 +206,48 @@ public class AgentRunAsyncTaskCommandOutboxService {
                 views.size(),
                 views
         );
+    }
+
+    /**
+     * 按已授权 session 收口通用 outbox 列表。
+     *
+     * <p>保留原 query 供模块内部诊断复用；HTTP Controller 必须使用本方法，避免只按 runId 暴露其他会话的
+     * tenant/project、endpoint 或错误摘要。过滤在映射响应 DTO 前完成。</p>
+     */
+    public AgentAsyncTaskCommandOutboxQueryResponse queryForSession(
+            String sessionId, String runId, String status, Integer limit) {
+        AgentAsyncTaskCommandOutboxStatus parsedStatus = parseStatus(status);
+        int normalizedLimit = normalizeLimit(limit);
+        String normalizedSessionId = normalizeText(sessionId);
+        List<AgentAsyncTaskCommandOutboxRecordView> views = outboxStore
+                .list(normalizeText(runId), parsedStatus, normalizedLimit)
+                .stream()
+                .filter(record -> java.util.Objects.equals(record.sessionId(), normalizedSessionId))
+                .map(AgentAsyncTaskCommandOutboxRecordView::from)
+                .toList();
+        return new AgentAsyncTaskCommandOutboxQueryResponse(
+                normalizeText(runId), parsedStatus == null ? null : parsedStatus.name(),
+                normalizedLimit, views.size(), views);
+    }
+
+    /**
+     * 按完整对象身份读取一条低敏命令观察事实。
+     *
+     * <p>Store 的 commandId 唯一索引保证查询不依赖分页；读取后还要比对 sessionId/runId，避免知道其他会话的
+     * commandId 就能探测其状态。Controller 会在调用前完成会话对象级授权。</p>
+     */
+    public AgentAsyncTaskCommandObservationView observe(String sessionId, String runId, String commandId) {
+        return outboxStore.findByCommandId(normalizeText(commandId))
+                .filter(record -> java.util.Objects.equals(record.sessionId(), normalizeText(sessionId)))
+                .filter(record -> java.util.Objects.equals(record.runId(), normalizeText(runId)))
+                .map(record -> new AgentAsyncTaskCommandObservationView(
+                        true,
+                        record.status().name(),
+                        record.attemptCount(),
+                        record.publishedAt(),
+                        record.updatedAt(),
+                        "AGENT_RUNTIME_COMMAND_OUTBOX"))
+                .orElseGet(AgentAsyncTaskCommandObservationView::missing);
     }
 
     private AgentAsyncTaskCommandOutboxRecord buildRecord(AgentRunAsyncTaskCommandPlanView plan,
