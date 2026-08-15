@@ -13,6 +13,10 @@ from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteR
 from datasmart_ai_runtime.services.rag.knowledge_base import RagHybridRetriever
 from datasmart_ai_runtime.services.rag.models import RagChunkSourceType, RagDocument
 from datasmart_ai_runtime.services.rag.pipeline import RagPipeline
+from datasmart_ai_runtime.services.rag.reranker_provider import (
+    RagReranker,
+    build_rag_reranker_provider,
+)
 from datasmart_ai_runtime.services.rag.persistence import (
     RagKnowledgeBaseRuntime,
     RagKnowledgeBaseSettings,
@@ -28,6 +32,7 @@ def build_default_governance_rag_pipeline(
     model_gateway: ModelGatewayGovernanceService,
     model_providers: ModelProviderRegistry,
     embedding_provider: AgentMemoryEmbeddingProvider | None = None,
+    reranker: RagReranker | None = None,
     knowledge_base_settings: RagKnowledgeBaseSettings | None = None,
     connection_factory: RagPostgresConnectionFactory | None = None,
 ) -> RagPipeline:
@@ -52,6 +57,7 @@ def build_default_governance_rag_pipeline(
     )
     return RagPipeline(
         retriever=retriever,
+        reranker=reranker or build_rag_reranker_provider(),
         model_routes=model_routes,
         model_gateway=model_gateway,
         model_providers=model_providers,

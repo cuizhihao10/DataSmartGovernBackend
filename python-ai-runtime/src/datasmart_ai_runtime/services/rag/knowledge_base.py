@@ -11,11 +11,21 @@ Neo4j、MinIO 对象索引或企业搜索服务；但内存实现仍然很有价
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping, Protocol
 
-from datasmart_ai_runtime.services.memory.memory_embedding_provider import AgentMemoryEmbeddingProvider
-from datasmart_ai_runtime.services.rag.models import RagChunk, RagDocument, RagQuery, RagScoredChunk
+from datasmart_ai_runtime.services.memory.memory_embedding_provider import (
+    AgentMemoryEmbeddingProvider,
+    validate_embedding_vector,
+)
+from datasmart_ai_runtime.services.rag.models import (
+    RagChunk,
+    RagDocument,
+    RagQuery,
+    RagScoredChunk,
+    rag_query_explicitly_requests_history,
+)
 from datasmart_ai_runtime.services.rag.text import (
     chunk_document,
     cosine_similarity,
@@ -33,6 +43,19 @@ class RagKnowledgeBase(Protocol):
 
     def diagnostics(self) -> dict[str, object]:
         """返回低敏诊断。"""
+
+
+@dataclass(frozen=True)
+class RagKnowledgeCandidateSet:
+    """知识库一次查询返回的候选正文和可复用向量分数。
+
+    内存知识库只返回 chunk，由检索器本地计算向量；pgvector 已在数据库中完成近邻计算，因此同时返回
+    ``vector_scores``。显式的数据结构让检索器知道这些分数已经计算完毕，即使结果为空也不会再次把
+    查询和候选正文发送给远程 Embedding Provider。
+    """
+
+    chunks: tuple[RagChunk, ...]
+    vector_scores: Mapping[str, float]
 
 
 class InMemoryRagKnowledgeBase:
@@ -134,15 +157,45 @@ class RagHybridRetriever:
         self._chunk_embedding_cache: dict[str, tuple[float, ...]] = {}
 
     def retrieve(self, query: RagQuery) -> tuple[RagScoredChunk, ...]:
-        """执行一次混合召回并返回 topK 候选。"""
+        """执行混合召回并返回供 reranker 使用的有界候选窗口。
 
-        visible_chunks = self._knowledge_base.chunks_for_query(query)
+        ``top_k`` 表示最终证据数量，不应在专用 reranker 之前截断。这里按 ``candidate_limit`` 返回融合
+        候选；RAG 管线完成重排和证据门禁后，再用 MMR 选择最终 ``top_k``，避免在大窗口上重复计算。
+        """
+
+        candidate_loader = getattr(self._knowledge_base, "candidate_set_for_query", None)
+        if callable(candidate_loader):
+            candidate_set = candidate_loader(query)
+            visible_chunks = tuple(candidate_set.chunks)
+            persistent_vector_scores: Mapping[str, float] | None = dict(
+                candidate_set.vector_scores
+            )
+        else:
+            visible_chunks = self._knowledge_base.chunks_for_query(query)
+            persistent_vector_scores = None
         query_terms = tokenize_for_rag(query.question)
         lexical_ranked = self._lexical_rank(visible_chunks, query_terms)
-        vector_ranked = self._vector_rank(visible_chunks, query)
+        vector_ranked = self._vector_rank(
+            visible_chunks,
+            query,
+            persistent_vector_scores=persistent_vector_scores,
+        )
         fused = self._fuse(lexical_ranked, vector_ranked)
-        candidate_window = fused[: max(5, min(query.candidate_limit, 200))]
-        return self._select_with_mmr(candidate_window, top_k=max(1, min(query.top_k, 20)))
+        return fused[: max(5, min(query.candidate_limit, 200))]
+
+    def select_diverse(
+        self,
+        candidates: tuple[RagScoredChunk, ...],
+        *,
+        top_k: int,
+    ) -> tuple[RagScoredChunk, ...]:
+        """在重排和证据门禁之后，用 MMR 选择少量相关且不重复的最终证据。
+
+        该方法不重新访问知识库或 Embedding Provider。它只在最多 ``top_k`` 轮中比较当前候选，既保留
+        专用 reranker 的排序纠正能力，也避免多份近重复文档占满最终引用。
+        """
+
+        return self._select_with_mmr(candidates, top_k=max(1, min(int(top_k), 20)))
 
     def diagnostics(self) -> dict[str, object]:
         """返回低敏召回器诊断。"""
@@ -182,7 +235,13 @@ class RagHybridRetriever:
         scored.sort(key=lambda item: item.lexical_score, reverse=True)
         return tuple(scored)
 
-    def _vector_rank(self, chunks: tuple[RagChunk, ...], query: RagQuery) -> tuple[RagScoredChunk, ...]:
+    def _vector_rank(
+        self,
+        chunks: tuple[RagChunk, ...],
+        query: RagQuery,
+        *,
+        persistent_vector_scores: Mapping[str, float] | None,
+    ) -> tuple[RagScoredChunk, ...]:
         """计算向量召回排序。
 
         如果没有 embedding provider，直接返回空结果。这样本地默认仍能靠 lexical RAG 工作；生产配置
@@ -194,12 +253,29 @@ class RagHybridRetriever:
         fail-closed，而不是因为向量通道返回了一个低质量近邻就继续生成答案。
         """
 
-        if self._embedding_provider is None or str(query.retrieval_mode).lower() == "lexical":
+        if str(query.retrieval_mode).lower() == "lexical":
             return ()
-        query_embedding = self._embedding_provider.embed_text(query.question[:4000])
+        if persistent_vector_scores is not None:
+            scored = tuple(
+                RagScoredChunk(chunk=chunk, vector_score=float(persistent_vector_scores[chunk.chunk_id]))
+                for chunk in chunks
+                if chunk.chunk_id in persistent_vector_scores
+                and math.isfinite(float(persistent_vector_scores[chunk.chunk_id]))
+                and float(persistent_vector_scores[chunk.chunk_id])
+                >= self._settings.minimum_vector_score
+            )
+            return tuple(sorted(scored, key=lambda item: item.vector_score, reverse=True))
+        if self._embedding_provider is None:
+            return ()
+        query_embedding = validate_embedding_vector(
+            self._embedding_provider.embed_text(query.question[:4000])
+        )
+        self._prime_chunk_embedding_cache(chunks)
         scored: list[RagScoredChunk] = []
         for chunk in chunks:
             chunk_embedding = self._chunk_embedding(chunk)
+            if len(chunk_embedding) != len(query_embedding):
+                raise ValueError("RAG query 与 chunk 的 Embedding 维度不一致。")
             vector_score = cosine_similarity(query_embedding, chunk_embedding)
             if vector_score >= self._settings.minimum_vector_score:
                 scored.append(RagScoredChunk(chunk=chunk, vector_score=vector_score))
@@ -215,9 +291,45 @@ class RagHybridRetriever:
         if self._embedding_provider is None:
             return ()
         text = f"{chunk.title}\n{chunk.text}\n{' '.join(chunk.tags)}"[:4000]
-        embedding = self._embedding_provider.embed_text(text)
+        embedding = validate_embedding_vector(self._embedding_provider.embed_text(text))
         self._chunk_embedding_cache[chunk.chunk_id] = embedding
         return embedding
+
+    def _prime_chunk_embedding_cache(self, chunks: tuple[RagChunk, ...]) -> None:
+        """批量生成当前候选窗口中尚未缓存的 chunk 向量。
+
+        黄金评测和本地内存检索会在第一次查询时扫描同一范围内的多份文档。如果逐 chunk 请求远端模型，
+        网络往返、限流风险和费用都会被候选数量放大。新 Provider 使用 `embed_texts` 的数组输入；只实现
+        单条接口的旧测试替身仍可兼容。响应数量和向量维度在写入缓存前统一校验，避免错位缓存污染后续用例。
+        """
+
+        if self._embedding_provider is None:
+            return
+        missing_by_id = {
+            chunk.chunk_id: chunk
+            for chunk in chunks
+            if chunk.chunk_id not in self._chunk_embedding_cache
+        }
+        missing = tuple(missing_by_id.values())
+        if not missing:
+            return
+        texts = tuple(
+            f"{chunk.title}\n{chunk.text}\n{' '.join(chunk.tags)}"[:4000]
+            for chunk in missing
+        )
+        embed_texts = getattr(self._embedding_provider, "embed_texts", None)
+        raw_embeddings = (
+            tuple(embed_texts(texts))
+            if callable(embed_texts)
+            else tuple(self._embedding_provider.embed_text(text) for text in texts)
+        )
+        if len(raw_embeddings) != len(missing):
+            raise ValueError("RAG 批量 Embedding 响应数量与 chunk 数量不一致。")
+        embeddings = tuple(validate_embedding_vector(value) for value in raw_embeddings)
+        if len({len(embedding) for embedding in embeddings}) != 1:
+            raise ValueError("RAG 批量 Embedding 响应维度不一致。")
+        for chunk, embedding in zip(missing, embeddings):
+            self._chunk_embedding_cache[chunk.chunk_id] = embedding
 
     def _fuse(
         self,
@@ -268,11 +380,12 @@ class RagHybridRetriever:
             best_score = -10**9
             for index, candidate in enumerate(remaining):
                 penalty = _max_similarity_to_selected(candidate, selected)
-                mmr_score = self._settings.mmr_lambda * candidate.fused_score - (1 - self._settings.mmr_lambda) * penalty
+                mmr_score = self._settings.mmr_lambda * candidate.final_score - (1 - self._settings.mmr_lambda) * penalty
                 if mmr_score > best_score:
                     best_index = index
                     best_score = mmr_score
             chosen = remaining.pop(best_index)
+            diversity_penalty = _max_similarity_to_selected(chosen, selected)
             selected.append(
                 RagScoredChunk(
                     chunk=chosen.chunk,
@@ -280,8 +393,10 @@ class RagHybridRetriever:
                     vector_score=chosen.vector_score,
                     fused_score=chosen.fused_score,
                     rerank_score=chosen.rerank_score,
-                    diversity_penalty=_max_similarity_to_selected(chosen, selected[:-1]),
-                    final_score=best_score,
+                    diversity_penalty=diversity_penalty,
+                    # final_score 继续表示 reranker/融合相关性；MMR 只影响选择顺序，不能把不可比较的
+                    # 多样性合成分冒充模型可信度写入引用和审计记录。
+                    final_score=chosen.final_score,
                     match_terms=chosen.match_terms,
                 )
             )
@@ -289,7 +404,11 @@ class RagHybridRetriever:
 
 
 def _chunk_visible(chunk: RagChunk, query: RagQuery) -> bool:
-    """判断 chunk 是否对当前查询可见。"""
+    """判断 chunk 是否同时满足授权范围、来源类型和证据时效要求。
+
+    ``SUPERSEDED`` 文档不会参与普通问答，也不会被发送给远程 reranker；只有来源类型明确且唯一为
+    ``git_history`` 的审计追溯才放行。未知状态保持兼容可见，摄取治理可以另行要求生产文档必须声明状态。
+    """
 
     tenant_visible = chunk.tenant_id in {"*", query.tenant_id}
     project_visible = chunk.project_id in {"*", query.project_id}
@@ -300,7 +419,17 @@ def _chunk_visible(chunk: RagChunk, query: RagQuery) -> bool:
         if str(value).strip()
     }
     source_visible = not source_types or chunk.source_type.value in source_types
-    return tenant_visible and project_visible and workspace_visible and source_visible
+    evidence_status = str((chunk.metadata or {}).get("evidenceStatus") or "").strip().lower()
+    source_status = str((chunk.metadata or {}).get("sourceStatus") or "").strip().upper()
+    superseded = evidence_status == "superseded" or source_status == "SUPERSEDED"
+    evidence_visible = not superseded or rag_query_explicitly_requests_history(query)
+    return (
+        tenant_visible
+        and project_visible
+        and workspace_visible
+        and source_visible
+        and evidence_visible
+    )
 
 
 def _max_similarity_to_selected(candidate: RagScoredChunk, selected: list[RagScoredChunk]) -> float:

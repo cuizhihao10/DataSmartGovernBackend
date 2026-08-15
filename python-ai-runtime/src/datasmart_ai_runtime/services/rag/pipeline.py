@@ -3,18 +3,21 @@
 本模块把 RAG 拆成一组明确步骤，而不是只调用框架 API：
 
 1. `retrieve`：从知识库按硬隔离边界召回候选；
-2. `rerank`：用轻量规则模拟 reranker 的“更精细相关性判断”；
-3. `compress`：按上下文预算压缩证据，避免把整篇文档塞给模型；
-4. `generate`：通过统一 ModelQueryEngine 调用治理问答模型；
-5. `cite`：把答案和证据引用绑定，降低幻觉并提升可审计性。
+2. `rerank`：把完整候选窗口交给规则实现或显式配置的专用 Reranker；
+3. `evidence gate + MMR`：先拒绝弱证据，再从合格候选中选出相关且不重复的最终证据；
+4. `compress`：按上下文预算压缩证据，避免把整篇文档塞给模型；
+5. `generate`：通过统一 ModelQueryEngine 调用治理问答模型；
+6. `cite`：把答案和证据引用绑定，降低幻觉并提升可审计性。
 
-生产环境可以把第 2 步替换为 Qwen/BGE/Jina reranker，把第 1 步替换为 pgvector/Neo4j/MinIO 检索，但
-这些替换不应改变 API 的主合同。
+当前已支持硅基流动 BGE Reranker，并可把知识库存储切换为 PostgreSQL/pgvector。后续接入其他专用模型、
+Neo4j GraphRAG 或 MinIO 文档解析时，不应改变上层 API、范围隔离和证据门禁合同。
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
+import re
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any
@@ -32,7 +35,16 @@ from datasmart_ai_runtime.services.model_gateway.model_query_engine import Model
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.rag.knowledge_base import RagHybridRetriever
 from datasmart_ai_runtime.services.rag.models import RagCitation, RagPipelineResult, RagQuery, RagScoredChunk
+from datasmart_ai_runtime.services.rag.reranker_provider import RagReranker
 from datasmart_ai_runtime.services.rag.text import compress_chunk_text, lexical_score, tokenize_for_rag
+
+
+# 只识别用户明确写出的“租户 + 项目”范围，不猜测自然语言里的公司名、部门名或数字。
+# 这种保守策略既能拦住黄金集中的跨范围请求，也不会因为普通业务描述恰好包含数字而误拒绝。
+_EXPLICIT_SCOPE_REFERENCE_PATTERN = re.compile(
+    r"租户\s*[:：]?\s*([A-Za-z0-9_.-]+)\s*(?:的)?\s*项目\s*[:：]?\s*([A-Za-z0-9_.-]+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +107,20 @@ class RagHeuristicReranker:
             )
         return tuple(sorted(reranked, key=lambda item: item.final_score, reverse=True))
 
+    @staticmethod
+    def diagnostics() -> dict[str, object]:
+        """说明当前使用可解释规则重排，不冒充专用模型。"""
+
+        return {
+            "implementation": "RagHeuristicReranker",
+            "providerType": "local-heuristic",
+            "model": None,
+            "configured": True,
+            "productionModel": False,
+            "failClosed": False,
+            "payloadPolicy": "RAG_RERANK_DIAGNOSTICS_NO_QUERY_OR_DOCUMENT_BODY",
+        }
+
 
 class RagContextCompressor:
     """RAG 证据压缩器。
@@ -151,7 +177,7 @@ class RagContextCompressor:
 
 
 class RagPipeline:
-    """DataSmart Governance RAG 管线。"""
+    """DataSmart 治理 RAG 管线。"""
 
     def __init__(
         self,
@@ -160,7 +186,7 @@ class RagPipeline:
         model_routes: ModelRouteRegistry,
         model_gateway: ModelGatewayGovernanceService,
         model_providers: ModelProviderRegistry,
-        reranker: RagHeuristicReranker | None = None,
+        reranker: RagReranker | None = None,
         compressor: RagContextCompressor | None = None,
         query_engine: ModelQueryEngine | None = None,
         settings: RagPipelineSettings | None = None,
@@ -185,10 +211,40 @@ class RagPipeline:
         """
 
         validated_query = _validate_query(query)
+        if _has_explicit_scope_reference_conflict(validated_query):
+            # 范围冲突必须发生在 retriever 之前。否则即使底层正确过滤了私有文档，
+            # 相似的全局文档仍可能被模型误当成用户点名项目的资料，形成“没有泄露原文、
+            # 但用错误范围证据作答”的治理缺陷。
+            retrieval_summary = self._retrieval_summary(
+                query=validated_query,
+                retrieved=(),
+                gated=(),
+                selected=(),
+                compressed_context="",
+            )
+            retrieval_summary.update(
+                {
+                    "reasonCode": "RAG_QUERY_SCOPE_REFERENCE_CONFLICT",
+                    "scopeReferenceConflict": True,
+                }
+            )
+            return RagPipelineResult(
+                answer="问题点名的租户或项目超出当前授权范围，已拒绝检索和生成。请切换到已授权项目或申请相应权限。",
+                citations=(),
+                selected_chunks=(),
+                compressed_context="",
+                retrieval_summary=retrieval_summary,
+                model_summary={"skipped": True, "reason": "scope_reference_conflict"},
+                generated=False,
+            )
         retrieved = self._retriever.retrieve(validated_query)
-        reranked = self._reranker.rerank(validated_query, retrieved)
+        reranker_input = retrieved
+        reranked = self._reranker.rerank(validated_query, reranker_input)
         gated = tuple(item for item in reranked if _has_sufficient_evidence(item, self._settings))
-        selected = gated[: max(1, min(validated_query.top_k, 20))]
+        selected = self._retriever.select_diverse(
+            gated,
+            top_k=max(1, min(validated_query.top_k, 20)),
+        )
         compressed_context, citations = self._compressor.compress(
             validated_query,
             selected,
@@ -210,6 +266,8 @@ class RagPipeline:
                 retrieval_summary=retrieval_summary,
                 model_summary={"skipped": True, "reason": "no_evidence"},
                 generated=False,
+                retrieved_chunks=retrieved,
+                reranker_input_chunks=reranker_input,
             )
         if not validated_query.generate_answer:
             return RagPipelineResult(
@@ -220,6 +278,8 @@ class RagPipeline:
                 retrieval_summary=retrieval_summary,
                 model_summary={"skipped": True, "reason": "generate_answer_false"},
                 generated=False,
+                retrieved_chunks=retrieved,
+                reranker_input_chunks=reranker_input,
             )
         answer, model_summary = self._generate_answer(validated_query, compressed_context, citations)
         return RagPipelineResult(
@@ -230,6 +290,8 @@ class RagPipeline:
             retrieval_summary=retrieval_summary,
             model_summary=model_summary,
             generated=not bool(model_summary.get("errorCode")),
+            retrieved_chunks=retrieved,
+            reranker_input_chunks=reranker_input,
         )
 
     def diagnostics(self) -> dict[str, Any]:
@@ -238,6 +300,7 @@ class RagPipeline:
         return {
             "component": "datasmart-governance-rag-pipeline",
             "retriever": self._retriever.diagnostics(),
+            "reranker": self._reranker.diagnostics(),
             "settings": {
                 "temperature": self._settings.temperature,
                 "maxOutputTokens": self._settings.max_output_tokens,
@@ -253,8 +316,9 @@ class RagPipeline:
                 "lexical_score",
                 "optional_vector_score",
                 "rrf_fusion",
+                "rerank",
+                "evidence_gate",
                 "mmr_diversity",
-                "heuristic_rerank",
                 "context_compression",
                 "model_generation",
                 "citation_binding",
@@ -342,6 +406,12 @@ class RagPipeline:
                 "finalScore": round(item.final_score, 6),
                 "confidence": _rag_evidence_confidence(item),
                 "confidenceBasis": "HYBRID_RETRIEVAL_SCORE",
+                # 来源事实描述文档本身何时生效、由什么依据确认；confidence 描述本次查询与文档的
+                # 检索相关性。二者不能混成一个分数，否则高相关的过期文档会被误认为高可信。
+                "sourceStatus": _rag_source_status(item),
+                "sourceEffectiveAt": _rag_source_effective_at(item),
+                "sourceConfidence": _rag_source_confidence(item),
+                "sourceConfidenceBasis": _rag_source_confidence_basis(item),
             }
             for index, item in enumerate(selected, start=1)
         )
@@ -401,6 +471,44 @@ def _rag_evidence_confidence(item: RagScoredChunk) -> float:
         + (0.20 * bounded(item.fused_score))
     )
     return round(confidence, 6)
+
+
+def _rag_source_status(item: RagScoredChunk) -> str:
+    """读取文档自身的证据状态，并规范化为稳定大写值。"""
+
+    metadata = item.chunk.metadata or {}
+    value = metadata.get("sourceStatus") or metadata.get("evidenceStatus") or "UNSPECIFIED"
+    return str(value).strip().upper()[:64] or "UNSPECIFIED"
+
+
+def _rag_source_effective_at(item: RagScoredChunk) -> str | None:
+    """返回文档来源声明的生效时间，不用本次检索时间冒充。"""
+
+    metadata = item.chunk.metadata or {}
+    value = metadata.get("effectiveAt") or metadata.get("updatedAt")
+    normalized = str(value).strip() if value is not None else ""
+    return normalized[:64] or None
+
+
+def _rag_source_confidence(item: RagScoredChunk) -> float | None:
+    """读取并限制文档来源可信度；非法值返回 None。"""
+
+    value = (item.chunk.metadata or {}).get("sourceConfidence")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return round(max(0.0, min(1.0, parsed)), 6)
+
+
+def _rag_source_confidence_basis(item: RagScoredChunk) -> str | None:
+    """返回来源可信度的审计依据。"""
+
+    value = (item.chunk.metadata or {}).get("sourceConfidenceBasis")
+    normalized = str(value).strip() if value is not None else ""
+    return normalized[:128] or None
 
 
 def _rag_messages(
@@ -488,6 +596,32 @@ def _validate_query(query: RagQuery) -> RagQuery:
             sorted({str(value).strip().lower() for value in (query.source_types or ()) if str(value).strip()})
         ),
     )
+
+
+def _has_explicit_scope_reference_conflict(query: RagQuery) -> bool:
+    """判断问题是否明确点名了当前授权范围之外的租户或项目。
+
+    RAG 存储层已有“先范围过滤、再排序”的硬隔离，但它无法理解问题正文里点名的目标范围。
+    例如当前授权为租户 10 / 项目 101，用户却询问项目 102；过滤器会正确排除项目 102 的
+    私有文档，却仍可能召回主题相同的全局文档。此时继续回答会让用户误以为全局资料就是
+    项目 102 的事实。
+
+    因此本方法只处理可确定判断的中文范围表达：
+    - 明确写出的租户、项目都等于查询授权范围时放行；
+    - 任意一组明确范围与授权范围不一致时拒绝；
+    - 查询范围为 ``*`` 时只允许问题保持全局语义，不能借全局查询读取点名的私有范围；
+    - 没有明确范围表达时不做猜测，继续交给存储层硬隔离。
+
+    该检查不是权限中心的替代品，而是检索前的一层语义防护。真正的文档可见性仍由
+    ``tenant_id/project_id/workspace_key`` 过滤和上游授权事实共同决定。
+    """
+
+    authorized_scope = (query.tenant_id.casefold(), query.project_id.casefold())
+    explicit_scopes = (
+        (match.group(1).casefold(), match.group(2).casefold())
+        for match in _EXPLICIT_SCOPE_REFERENCE_PATTERN.finditer(query.question)
+    )
+    return any(explicit_scope != authorized_scope for explicit_scope in explicit_scopes)
 
 
 def _retrieval_mode(value: Any) -> str:

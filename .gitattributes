@@ -1,2 +1,5 @@
 /mvnw text eol=lf
 *.cmd text eol=crlf
+
+# RAG 黄金资产的 SHA-256 覆盖 UTF-8 原始字节，必须在 Windows/Linux 检出时都保持 LF。
+python-ai-runtime/evaluation/rag/** text eol=lf

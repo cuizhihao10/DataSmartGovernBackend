@@ -1,32 +1,31 @@
-"""RAG knowledge-store configuration and PostgreSQL/pgvector adapter.
+"""RAG 知识库存储配置与 PostgreSQL/pgvector 适配器。
 
-The RAG pipeline deliberately depends on the small ``RagKnowledgeBase``
-protocol rather than on a database client.  This module owns the composition
-root for that protocol:
+RAG 管线只依赖精简的 ``RagKnowledgeBase`` 协议，不直接依赖具体数据库客户端。本模块是该协议的
+装配入口，负责以下存储选择：
 
-* ``in-memory`` is an explicit learning/test choice;
-* ``postgresql`` provides durable, scope-filtered lexical retrieval;
-* ``pgvector`` adds durable embedding storage and database-side nearest-neighbour
-  candidate selection;
-* an unconfigured or broken production store becomes an unavailable knowledge
-  base instead of silently changing to ``InMemoryRagKnowledgeBase``.
+* ``in-memory`` 只能作为显式选择的学习或测试实现；
+* ``postgresql`` 提供持久化、先范围过滤的词法检索；
+* ``pgvector`` 在此基础上增加持久向量和数据库侧近邻候选查询；
+* 生产存储未配置或不可用时返回 fail-closed 知识库，绝不静默降级到进程内存实现。
 
-The SQL contract is exposed as a string for migrations and integration smoke
-tests.  Runtime startup does not create or alter production schema implicitly.
+SQL 合同以常量形式暴露给迁移和集成验证使用。Runtime 启动时不会隐式创建或修改生产 schema。
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Callable, Iterable, Mapping
+from urllib import parse
 
 from datasmart_ai_runtime.services.memory.memory_embedding_provider import (
     AgentMemoryEmbeddingProvider,
+    DeterministicHashEmbeddingProvider,
     build_memory_embedding_provider,
     memory_embedding_provider_settings_from_env,
     validate_embedding_vector,
@@ -35,12 +34,16 @@ from datasmart_ai_runtime.services.memory.memory_sql_connection import (
     build_postgresql_connection,
     mask_postgresql_dsn,
 )
-from datasmart_ai_runtime.services.rag.knowledge_base import RagKnowledgeBase
+from datasmart_ai_runtime.services.rag.knowledge_base import (
+    RagKnowledgeBase,
+    RagKnowledgeCandidateSet,
+)
 from datasmart_ai_runtime.services.rag.models import (
     RagChunk,
     RagChunkSourceType,
     RagDocument,
     RagQuery,
+    rag_query_explicitly_requests_history,
 )
 from datasmart_ai_runtime.services.rag.text import chunk_document
 
@@ -49,12 +52,11 @@ RAG_POSTGRESQL_KNOWLEDGE_SCHEMA_VERSION = "datasmart.rag.postgresql-knowledge.v1
 RAG_POSTGRESQL_KNOWLEDGE_TABLE = "rag_knowledge_chunk"
 RAG_KNOWLEDGE_DIAGNOSTICS_PAYLOAD_POLICY = "RAG_KNOWLEDGE_DIAGNOSTICS_NO_DOCUMENT_BODY"
 
-# This is a migration contract, not an instruction for the Runtime to mutate
-# a customer database during startup.  The table is intentionally denormalised
-# at chunk level: a query can enforce all scope predicates and retrieve the
-# citation fields without first loading a document catalog into process memory.
+# 这是可重复执行的迁移合同，不表示运行时可以在客户数据库中随意变更结构。表按 chunk 有意做了适度
+# 反范式设计，使一次查询可以先执行全部范围谓词，再直接取得引用字段，无需先把文档目录加载进内存。
+# pgvector 扩展固定安装在 public；显式限定类型可兼容只开放 ai_memory 的受限 search_path。
 RAG_POSTGRESQL_KNOWLEDGE_SCHEMA_SQL = """
-CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
 CREATE SCHEMA IF NOT EXISTS ai_memory;
 
 CREATE TABLE IF NOT EXISTS ai_memory.rag_knowledge_chunk (
@@ -74,7 +76,7 @@ CREATE TABLE IF NOT EXISTS ai_memory.rag_knowledge_chunk (
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     embedding_model VARCHAR(128),
     embedding_dimension INTEGER,
-    embedding VECTOR,
+    embedding public.vector,
     content_fingerprint VARCHAR(128),
     expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -92,10 +94,21 @@ CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_scope
     ON ai_memory.rag_knowledge_chunk (tenant_id, project_id, workspace_key, enabled, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_document
     ON ai_memory.rag_knowledge_chunk (document_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_scoped_document
+    ON ai_memory.rag_knowledge_chunk (
+        tenant_id, project_id, workspace_key, document_id, chunk_index
+    );
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_search
     ON ai_memory.rag_knowledge_chunk USING GIN (content_search_vector);
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_embedding_model
     ON ai_memory.rag_knowledge_chunk (embedding_model, embedding_dimension, enabled);
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_bge_m3_hnsw
+    ON ai_memory.rag_knowledge_chunk USING hnsw (
+        (embedding::public.vector(1024)) public.vector_cosine_ops
+    )
+    WHERE enabled = TRUE
+      AND embedding_model = 'BAAI/bge-m3'
+      AND embedding_dimension = 1024;
 """.strip()
 
 
@@ -109,17 +122,15 @@ RagPostgresConnectionFactory = Callable[["RagKnowledgeBaseSettings"], Any]
 
 
 class RagPersistenceConfigurationError(ValueError):
-    """Raised when an explicitly requested RAG storage contract is invalid."""
+    """显式指定的 RAG 存储合同无效时抛出的配置异常。"""
 
 
 @dataclass(frozen=True)
 class RagKnowledgeBaseSettings:
-    """Runtime selection for the RAG knowledge base.
+    """RAG 知识库的运行时选择和边界参数。
 
-    ``store_type`` is intentionally ``unconfigured`` by default.  The API
-    composition root therefore cannot accidentally make a process-local demo
-    store look like a durable production knowledge base.  Learning and test
-    callers must select ``in-memory`` explicitly.
+    ``store_type`` 默认值刻意设为 ``unconfigured``，防止 API 装配入口误把进程内演示数据宣传为持久化
+    生产知识库。学习和测试调用方必须显式选择 ``in-memory``。
     """
 
     runtime_mode: str = "production"
@@ -133,33 +144,34 @@ class RagKnowledgeBaseSettings:
     candidate_limit: int = 200
     chunk_max_chars: int = 700
     chunk_overlap_chars: int = 120
+    ingest_document_limit: int = 500
+    ingest_chunk_limit: int = 2000
     embedding_model: str = ""
     embedding_dimensions: int | None = None
 
     @property
     def production_mode(self) -> bool:
-        """Whether the runtime must reject process-local knowledge state."""
+        """判断当前运行模式是否必须拒绝进程内知识状态。"""
 
-        # Unknown modes are treated as production-like.  A typo in deployment
-        # configuration must not accidentally enable a process-local store.
+        # 未知模式按生产类环境处理。部署配置即使拼写错误，也不能意外开放进程内存储。
         return not self.in_memory_allowed
 
     @property
     def in_memory_allowed(self) -> bool:
-        """Whether an explicit in-memory store is permitted for this mode."""
+        """判断当前模式是否允许显式使用内存知识库。"""
 
         return _normalize_runtime_mode(self.runtime_mode) in _IN_MEMORY_ALLOWED_MODES
 
     @property
     def vector_enabled(self) -> bool:
-        """Whether the selected store requires the pgvector query contract."""
+        """判断所选存储是否要求启用 pgvector 查询合同。"""
 
         return _normalize_store_type(self.store_type) == "pgvector"
 
 
 @dataclass(frozen=True)
 class RagKnowledgeBaseRuntime:
-    """The selected knowledge base plus low-sensitivity startup facts."""
+    """封装选中的知识库实例和可对外诊断的低敏启动事实。"""
 
     knowledge_base: RagKnowledgeBase
     settings: RagKnowledgeBaseSettings
@@ -170,11 +182,10 @@ class RagKnowledgeBaseRuntime:
 
 
 class UnavailableRagKnowledgeBase:
-    """Fail-closed knowledge base used when durable RAG is unavailable.
+    """持久 RAG 不可用时使用的 fail-closed 知识库。
 
-    Returning no chunks keeps the existing pipeline contract intact: its
-    evidence gate refuses generation and returns the normal no-evidence result.
-    The diagnostic distinguishes this state from an empty but healthy store.
+    返回空 chunk 可以保持现有管线合同不变：证据门禁会拒绝生成并返回标准无证据结果；诊断字段则负责
+    区分“存储不可用”和“存储健康但没有匹配文档”。
     """
 
     def __init__(self, settings: RagKnowledgeBaseSettings, *, reason_code: str) -> None:
@@ -182,12 +193,12 @@ class UnavailableRagKnowledgeBase:
         self._reason_code = reason_code
 
     def chunks_for_query(self, query: RagQuery) -> tuple[RagChunk, ...]:
-        """Never return evidence while the configured store is unavailable."""
+        """配置存储不可用时永远不返回证据。"""
 
         return ()
 
     def diagnostics(self) -> dict[str, object]:
-        """Return an actionable, body-free unavailable diagnostic."""
+        """返回可操作且不含正文的不可用诊断。"""
 
         return {
             "implementation": type(self).__name__,
@@ -207,13 +218,10 @@ class UnavailableRagKnowledgeBase:
 
 
 class PostgresRagKnowledgeBase:
-    """PostgreSQL knowledge store with an optional pgvector retrieval path.
+    """支持可选 pgvector 检索路径的 PostgreSQL 知识库。
 
-    The adapter owns only document/chunk persistence and database-side
-    candidate selection.  Scope filtering is part of every SQL query and is
-    performed before vector ordering.  The existing ``RagHybridRetriever``
-    still performs its explainable lexical/vector fusion and MMR selection on
-    the bounded candidate window.
+    该适配器只负责文档/chunk 持久化和数据库侧候选选择。每条查询 SQL 都包含范围谓词，并在向量排序前
+    完成过滤；``RagHybridRetriever`` 继续在有界候选窗口上执行可解释的词法/向量融合和 MMR 选择。
     """
 
     _SELECT_COLUMNS = (
@@ -242,10 +250,19 @@ class PostgresRagKnowledgeBase:
         self._upserted_chunk_count = 0
 
     def chunks_for_query(self, query: RagQuery) -> tuple[RagChunk, ...]:
-        """Return a bounded, hard-scope-filtered candidate set.
+        """返回经过硬范围过滤的有界候选集。
 
-        The question is used only as an in-flight embedding input.  It is
-        never written to the database or diagnostic state.
+        问题正文只作为本次请求的 Embedding 输入，不写入数据库或诊断状态。
+        """
+
+        return self.candidate_set_for_query(query).chunks
+
+    def candidate_set_for_query(self, query: RagQuery) -> RagKnowledgeCandidateSet:
+        """返回候选 chunk，并携带数据库已经计算完成的向量相似度。
+
+        ``RagHybridRetriever`` 通过这个增强合同复用 pgvector 分数，避免查询向量和候选正文被第二次发送
+        给 Embedding Provider。纯词法 PostgreSQL 也返回空的 ``vector_scores``，明确表示本次数据库查询
+        已经决定不启用向量通道，而不是让外层猜测是否应重新计算。
         """
 
         limit = max(5, min(int(query.candidate_limit), self._settings.candidate_limit, 200))
@@ -262,53 +279,71 @@ class PostgresRagKnowledgeBase:
                             self._embedding_provider.embed_text(str(query.question or "")[:4000])
                         )
                         vector_rows = self._query_vector_rows(query, query_embedding, limit)
+                vector_scores = _vector_scores_for_rows(vector_rows)
                 rows = _merge_rows(lexical_rows, vector_rows, limit)
                 if not rows and retrieval_mode != "vector":
-                    # Keep the bounded scope fallback for deployments whose
-                    # PostgreSQL text configuration does not tokenize a local
-                    # language well. The outer retriever still performs exact
-                    # token scoring and the evidence gate remains authoritative.
+                    # 某些 PostgreSQL 文本配置不能正确切分本地语言，因此保留有界的同范围候选回退。
+                    # 外层检索器仍会执行精确 token 评分，最终是否可引用仍由证据门禁决定。
                     rows = self._query_scope_rows(query, limit)
                 chunks = tuple(self._row_to_chunk(row) for row in rows)
                 self._last_query_row_count = len(chunks)
                 self._clear_error()
-                return chunks
+                return RagKnowledgeCandidateSet(
+                    chunks=chunks,
+                    vector_scores={
+                        chunk.chunk_id: vector_scores[chunk.chunk_id]
+                        for chunk in chunks
+                        if chunk.chunk_id in vector_scores
+                    },
+                )
         except Exception as exc:
-            # RAG infrastructure failures must not turn into an in-memory
-            # fallback.  Empty candidates let the pipeline's evidence gate
-            # close the request while diagnostics expose the failure class.
+            # RAG 基础设施故障不能变成内存回退。空候选让证据门禁收口请求，诊断字段仅暴露故障类别。
             with self._lock:
                 self._rollback_safely()
                 self._record_error(_query_error_code(self._settings), exc)
-            return ()
+            return RagKnowledgeCandidateSet(chunks=(), vector_scores={})
 
     def upsert_documents(self, documents: Iterable[RagDocument]) -> int:
-        """Atomically replace the persisted chunks for each supplied document.
+        """在有界批次内按文档原子替换持久化 chunk，并批量生成向量。
 
-        This is the minimal ingestion contract for P1.  A future MinIO/parser
-        worker can call it after authorization and chunking; it does not need
-        to know SQL identifiers, JSON encoding, or pgvector literals.
+        摄取流程刻意分成三个清晰阶段：
+
+        1. 逐份校验范围和稳定文档 ID，达到文档/chunk 上限立即拒绝，不消费无限 iterable；
+        2. 在数据库锁外批量调用 Embedding Provider，在线查询不会被远程模型延迟阻塞；
+        3. 在同一数据库事务中删除旧版本、写入新版本，任一步失败都会整体回滚。
+
+        调用方只需要提供 `RagDocument`，不需要了解 SQL 标识符、JSONB 编码或 pgvector 字面量。
         """
 
-        normalized_documents = tuple(documents)
+        try:
+            prepared_documents, all_chunks = self._prepare_documents_for_upsert(documents)
+            # Provider 自己按 max_batch_size 切 HTTP 批次；单次摄取的总 chunk 数已由本地硬上限约束。
+            embedding_records = self._embeddings_for_chunks(all_chunks)
+        except RagPersistenceConfigurationError as exc:
+            with self._lock:
+                self._record_error("RAG_INGEST_PREPARATION_REJECTED", exc)
+            raise
+        except Exception as exc:
+            with self._lock:
+                self._record_error("RAG_EMBEDDING_BATCH_FAILED", exc)
+            raise RagPersistenceConfigurationError(
+                "RAG 文档切块或 Embedding 生成失败，尚未开始数据库事务。"
+            ) from exc
+
         with self._lock:
             try:
+                embedding_index = 0
                 total_chunks = 0
-                for document in normalized_documents:
-                    document_id = _required_text(document.document_id, "document_id")
+                for document_id, tenant_id, project_id, workspace_key, chunks in prepared_documents:
                     self._execute(
-                        f"DELETE FROM {self._table} WHERE document_id = %s",
-                        (document_id,),
-                    )
-                    if not document.enabled:
-                        continue
-                    chunks = chunk_document(
-                        document,
-                        max_chars=self._settings.chunk_max_chars,
-                        overlap_chars=self._settings.chunk_overlap_chars,
+                        f"DELETE FROM {self._table} "
+                        "WHERE document_id = %s AND tenant_id = %s AND project_id = %s "
+                        "AND workspace_key = %s",
+                        (document_id, tenant_id, project_id, workspace_key),
                     )
                     for chunk in chunks:
-                        embedding, embedding_model = self._embedding_for_chunk(chunk)
+                        embedding, embedding_model = embedding_records[embedding_index]
+                        embedding_index += 1
                         now = datetime.now(timezone.utc)
                         self._execute(
                             f"""
@@ -321,7 +356,7 @@ class PostgresRagKnowledgeBase:
                                 %s, %s, %s, %s, %s, %s,
                                 %s, %s, %s, %s, CAST(%s AS jsonb),
                                 %s, CAST(%s AS jsonb), TRUE, %s,
-                                %s, {"CAST(%s AS vector)" if self._settings.vector_enabled else "%s"}, %s, %s
+                                %s, {"CAST(%s AS public.vector)" if self._settings.vector_enabled else "%s"}, %s, %s
                             )
                             ON CONFLICT (chunk_id) DO UPDATE SET
                                 document_id = EXCLUDED.document_id,
@@ -373,18 +408,89 @@ class PostgresRagKnowledgeBase:
                 self._rollback_safely()
                 self._record_error("RAG_POSTGRESQL_WRITE_FAILED", exc)
                 raise RagPersistenceConfigurationError(
-                    "RAG knowledge document persistence failed; the transaction was rolled back."
+                    "RAG 知识文档持久化失败，数据库事务已回滚。"
                 ) from exc
 
-    def delete_document(self, document_id: str) -> int:
-        """Delete all chunks for one stable document ID and commit atomically."""
+    def _prepare_documents_for_upsert(
+        self,
+        documents: Iterable[RagDocument],
+    ) -> tuple[
+        tuple[tuple[str, str, str, str, tuple[RagChunk, ...]], ...],
+        tuple[RagChunk, ...],
+    ]:
+        """逐份准备摄取数据，并在越过本地资源边界前停止消费输入。
+
+        文档上限防止无限生成器或超大请求被整体物化；chunk 上限同时限制待生成向量、事务 SQL 数量和
+        Python 浮点对象占用。超过边界应由调用方拆成多个显式批次，每个批次仍保持自己的事务原子性。
+        """
+
+        prepared_documents: list[tuple[str, str, str, str, tuple[RagChunk, ...]]] = []
+        seen_document_scopes: set[tuple[str, str, str, str]] = set()
+        all_chunks: list[RagChunk] = []
+        for document in documents:
+            if len(prepared_documents) >= self._settings.ingest_document_limit:
+                raise RagPersistenceConfigurationError(
+                    f"单次 RAG 摄取文档数量超过上限 {self._settings.ingest_document_limit}。"
+                )
+            document_id = _required_text(document.document_id, "document_id")
+            tenant_id = _required_text(document.tenant_id, "tenant_id")
+            project_id = _required_text(document.project_id, "project_id")
+            workspace_key = _required_text(document.workspace_key, "workspace_key")
+            scoped_identity = (tenant_id, project_id, workspace_key, document_id)
+            if scoped_identity in seen_document_scopes:
+                raise RagPersistenceConfigurationError(
+                    "同一次 RAG 摄取不能重复提交相同范围和 documentId。"
+                )
+            seen_document_scopes.add(scoped_identity)
+            chunks = (
+                chunk_document(
+                    document,
+                    max_chars=self._settings.chunk_max_chars,
+                    overlap_chars=self._settings.chunk_overlap_chars,
+                )
+                if document.enabled
+                else ()
+            )
+            if len(all_chunks) + len(chunks) > self._settings.ingest_chunk_limit:
+                raise RagPersistenceConfigurationError(
+                    f"单次 RAG 摄取 chunk 数量超过上限 {self._settings.ingest_chunk_limit}。"
+                )
+            prepared_documents.append(
+                (document_id, tenant_id, project_id, workspace_key, chunks)
+            )
+            all_chunks.extend(chunks)
+        return tuple(prepared_documents), tuple(all_chunks)
+
+    def delete_document(
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        project_id: str,
+        workspace_key: str,
+    ) -> int:
+        """按完整治理范围和文档 ID 删除 chunk，并以单个事务原子提交。
+
+        ``document_id`` 只保证项目内部稳定，不能单独标识共享知识表中的一份文档。三个范围参数因此是
+        必填关键字参数，调用方无法无意间使用旧的一参数形式跨租户删除同名知识。
+        """
 
         normalized_id = _required_text(document_id, "document_id")
+        normalized_tenant_id = _required_text(tenant_id, "tenant_id")
+        normalized_project_id = _required_text(project_id, "project_id")
+        normalized_workspace_key = _required_text(workspace_key, "workspace_key")
         with self._lock:
             try:
                 cursor = self._execute(
-                    f"DELETE FROM {self._table} WHERE document_id = %s",
-                    (normalized_id,),
+                    f"DELETE FROM {self._table} "
+                    "WHERE document_id = %s AND tenant_id = %s AND project_id = %s "
+                    "AND workspace_key = %s",
+                    (
+                        normalized_id,
+                        normalized_tenant_id,
+                        normalized_project_id,
+                        normalized_workspace_key,
+                    ),
                 )
                 self._commit()
                 self._clear_error()
@@ -397,7 +503,7 @@ class PostgresRagKnowledgeBase:
                 ) from exc
 
     def validate_schema(self) -> bool:
-        """Probe the configured table without creating or altering schema."""
+        """探测目标表是否可用，不创建或修改 schema。"""
 
         with self._lock:
             try:
@@ -410,7 +516,7 @@ class PostgresRagKnowledgeBase:
                 return False
 
     def diagnostics(self) -> dict[str, object]:
-        """Return low-sensitivity storage facts without document or query text."""
+        """返回不含文档正文和查询正文的低敏存储事实。"""
 
         return {
             "implementation": type(self).__name__,
@@ -427,6 +533,8 @@ class PostgresRagKnowledgeBase:
             "schemaContract": "migration-managed; runtime does not auto-create schema",
             "candidateLimit": self._settings.candidate_limit,
             "chunkMaxChars": self._settings.chunk_max_chars,
+            "ingestDocumentLimit": self._settings.ingest_document_limit,
+            "ingestChunkLimit": self._settings.ingest_chunk_limit,
             "embedding": {
                 "enabled": self._settings.vector_enabled,
                 "model": self._settings.embedding_model or None,
@@ -442,7 +550,7 @@ class PostgresRagKnowledgeBase:
         }
 
     def close(self) -> None:
-        """Close the owned DB-API connection when the host lifecycle permits it."""
+        """在宿主生命周期允许时关闭本实例持有的 DB-API 连接。"""
 
         with self._lock:
             close = getattr(self._connection, "close", None)
@@ -461,12 +569,10 @@ class PostgresRagKnowledgeBase:
         return tuple(cursor.fetchall())
 
     def _query_lexical_rows(self, query: RagQuery, limit: int) -> tuple[Any, ...]:
-        """Use PostgreSQL FTS before Python reranking.
+        """在 Python 重排前使用 PostgreSQL 全文检索取得候选。
 
-        The generated ``content_search_vector`` GIN index is the durable exact
-        retrieval path for error codes, identifiers and runbook terms. Scope
-        predicates remain in the same SQL statement, so a lexical hit cannot
-        widen tenant/project visibility before ranking.
+        生成列 ``content_search_vector`` 的 GIN 索引负责持久化精确检索错误码、标识符和 Runbook 术语。
+        范围谓词与全文条件位于同一条 SQL 中，词法命中不会在排序前扩大租户或项目可见范围。
         """
 
         predicates, params = _scope_predicates(query)
@@ -492,38 +598,92 @@ class PostgresRagKnowledgeBase:
         embedding: tuple[float, ...],
         limit: int,
     ) -> tuple[Any, ...]:
-        predicates, params = _scope_predicates(query)
+        """在硬范围和向量版本约束内查询最相近的持久化 chunk。
+
+        DataSmart 的数据库连接会把 ``search_path`` 收紧到 ``ai_memory``，防止应用误访问其他 schema；
+        pgvector 的类型和距离运算符则由扩展安装在 ``public``。PostgreSQL 对类型和运算符分别做名称解析，
+        所以只写 ``public.vector`` 仍不足以找到 ``<=>``。这里同时使用 ``public.vector`` 和
+        ``OPERATOR(public.<=>)``，在不放宽连接权限边界的前提下完成余弦距离排序。
+        """
+
+        predicates, scope_params = _scope_predicates(query)
         predicates.extend(["embedding IS NOT NULL"])
         if self._settings.embedding_model:
             predicates.append("embedding_model = %s")
-            params.append(self._settings.embedding_model)
+            scope_params.append(self._settings.embedding_model)
         if self._settings.embedding_dimensions is not None:
             predicates.append("embedding_dimension = %s")
-            params.append(self._settings.embedding_dimensions)
+            scope_params.append(self._settings.embedding_dimensions)
         vector_literal = _vector_literal(embedding)
-        params.extend([vector_literal, limit])
+        bge_m3_indexed = (
+            self._settings.embedding_model == "BAAI/bge-m3"
+            and self._settings.embedding_dimensions == 1024
+        )
+        stored_vector = (
+            "embedding::public.vector(1024)" if bge_m3_indexed else "embedding"
+        )
+        query_vector_type = "public.vector(1024)" if bge_m3_indexed else "public.vector"
+        distance_expression = (
+            f"({stored_vector}) OPERATOR(public.<=>) query_vector.value"
+        )
+        params = [vector_literal, *scope_params, limit]
         cursor = self._execute(
-            f"SELECT {self._SELECT_COLUMNS} FROM {self._table} "
+            f"SELECT {self._SELECT_COLUMNS}, 1 - ({distance_expression}) AS vector_score "
+            f"FROM {self._table} "
+            f"CROSS JOIN (SELECT CAST(%s AS {query_vector_type}) AS value) query_vector "
             f"WHERE enabled = TRUE AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) "
             f"AND {' AND '.join(predicates)} "
-            "ORDER BY embedding <=> CAST(%s AS vector), chunk_id ASC LIMIT %s",
+            f"ORDER BY {distance_expression}, chunk_id ASC LIMIT %s",
             tuple(params),
         )
         return tuple(cursor.fetchall())
 
-    def _embedding_for_chunk(self, chunk: RagChunk) -> tuple[tuple[float, ...], str | None]:
+    def _embeddings_for_chunks(
+        self,
+        chunks: tuple[RagChunk, ...],
+    ) -> tuple[tuple[tuple[float, ...], str | None], ...]:
+        """为一组 chunk 生成顺序稳定、维度一致的向量记录。
+
+        新 Provider 应实现 `embed_texts` 以利用服务端数组输入。这里仍兼容只实现 `embed_text` 的旧测试
+        替身或内部适配器，但生产配置不会因为兼容逻辑而静默使用伪向量。响应数量、有限浮点值和声明维度
+        都在进入 SQL 参数前校验，因此不完整或错位的批量响应会使整次摄取回滚。
+        """
+
+        if not chunks:
+            return ()
         if not self._settings.vector_enabled:
-            return (), None
+            return tuple(((), None) for _ in chunks)
         if self._embedding_provider is None:
             raise RagPersistenceConfigurationError("pgvector RAG requires an embedding provider.")
-        text = f"{chunk.title}\n{chunk.text}\n{' '.join(chunk.tags)}"[:4000]
-        embedding = validate_embedding_vector(self._embedding_provider.embed_text(text))
+
+        texts = tuple(
+            f"{chunk.title}\n{chunk.text}\n{' '.join(chunk.tags)}"[:4000]
+            for chunk in chunks
+        )
+        embed_texts = getattr(self._embedding_provider, "embed_texts", None)
+        raw_embeddings = (
+            tuple(embed_texts(texts))
+            if callable(embed_texts)
+            else tuple(self._embedding_provider.embed_text(text) for text in texts)
+        )
+        if len(raw_embeddings) != len(chunks):
+            raise RagPersistenceConfigurationError(
+                "RAG embedding provider returned a different vector count than the chunk count."
+            )
+
+        embeddings = tuple(validate_embedding_vector(value) for value in raw_embeddings)
         declared = self._settings.embedding_dimensions
-        if declared is not None and len(embedding) != declared:
+        if declared is not None and any(len(embedding) != declared for embedding in embeddings):
             raise RagPersistenceConfigurationError(
                 "RAG embedding dimension does not match DATASMART_RAG_EMBEDDING_DIMENSIONS."
             )
-        return embedding, self._settings.embedding_model or "rag-embedding"
+        dimensions = {len(embedding) for embedding in embeddings}
+        if len(dimensions) != 1:
+            raise RagPersistenceConfigurationError(
+                "RAG embedding provider returned vectors with inconsistent dimensions."
+            )
+        embedding_model = self._settings.embedding_model or "rag-embedding"
+        return tuple((embedding, embedding_model) for embedding in embeddings)
 
     def _row_to_chunk(self, row: Any) -> RagChunk:
         source_type_raw = _row_value(row, "source_type", 9)
@@ -576,8 +736,7 @@ class PostgresRagKnowledgeBase:
         self._last_error_type = None
 
 
-# The explicit name is useful to callers that want to communicate the target
-# index technology while retaining one adapter for lexical-only PostgreSQL.
+# 显式别名便于调用方表达目标索引技术，同时让纯词法 PostgreSQL 和 pgvector 复用同一适配器。
 PostgresPgvectorRagKnowledgeBase = PostgresRagKnowledgeBase
 PgvectorRagKnowledgeBase = PostgresRagKnowledgeBase
 
@@ -585,13 +744,11 @@ PgvectorRagKnowledgeBase = PostgresRagKnowledgeBase
 def rag_knowledge_base_settings_from_env(
     environ: Mapping[str, str] | None = None,
 ) -> RagKnowledgeBaseSettings:
-    """Read RAG storage settings from environment variables.
+    """从环境变量读取 RAG 存储设置。
 
-    Primary variables are ``DATASMART_RAG_KNOWLEDGE_BASE`` and
-    ``DATASMART_RAG_POSTGRESQL_DSN``.  Dedicated pgvector aliases and the
-    project-wide ``DATASMART_AI_MEMORY_POSTGRESQL_DSN`` are accepted so a
-    deployment can share the target database while still choosing RAG
-    explicitly.
+    主配置为 ``DATASMART_RAG_KNOWLEDGE_BASE`` 和 ``DATASMART_RAG_POSTGRESQL_DSN``。RAG 专用 DSN 或
+    ``DATASMART_RAG_PGVECTOR_ENABLED`` 本身视为显式启用 pgvector；项目级
+    ``DATASMART_AI_MEMORY_POSTGRESQL_DSN`` 只表示可共享连接，单独存在时不会隐式开启 RAG 存储。
     """
 
     source = environ if environ is not None else os.environ
@@ -652,6 +809,14 @@ def rag_knowledge_base_settings_from_env(
             candidate_limit=_positive_int(_first_text(source, "DATASMART_RAG_CANDIDATE_LIMIT"), 200),
             chunk_max_chars=_positive_int(_first_text(source, "DATASMART_RAG_CHUNK_MAX_CHARS"), 700),
             chunk_overlap_chars=_nonnegative_int(_first_text(source, "DATASMART_RAG_CHUNK_OVERLAP_CHARS"), 120),
+            ingest_document_limit=_positive_int(
+                _first_text(source, "DATASMART_RAG_INGEST_DOCUMENT_LIMIT"),
+                500,
+            ),
+            ingest_chunk_limit=_positive_int(
+                _first_text(source, "DATASMART_RAG_INGEST_CHUNK_LIMIT"),
+                2000,
+            ),
             embedding_model=_first_text(
                 source,
                 "DATASMART_RAG_EMBEDDING_MODEL",
@@ -677,13 +842,10 @@ def build_rag_knowledge_base_runtime(
     embedding_provider: AgentMemoryEmbeddingProvider | None = None,
     connection_factory: RagPostgresConnectionFactory | None = None,
 ) -> RagKnowledgeBaseRuntime:
-    """Select and construct the configured RAG knowledge base.
+    """选择并构造配置指定的 RAG 知识库。
 
-    No branch silently falls back from a requested persistent store to an
-    in-memory store.  ``fail_fast`` controls whether an invalid persistent
-    configuration raises at startup; the default is an unavailable,
-    fail-closed knowledge base so unrelated Runtime control-plane routes can
-    still start and expose a useful diagnostic.
+    任何分支都不会把请求的持久存储静默降级为内存存储。``fail_fast`` 控制无效持久化配置是否在启动时
+    直接抛错；默认返回不可用的 fail-closed 知识库，使无关 Runtime 控制面路由仍可启动并暴露低敏诊断。
     """
 
     resolved = _normalized_settings(settings or rag_knowledge_base_settings_from_env())
@@ -731,6 +893,16 @@ def build_rag_knowledge_base_runtime(
             "RAG_PGVECTOR_MODEL_NOT_CONFIGURED",
             "RAG pgvector storage requires an embedding model name.",
         )
+    if (
+        resolved.vector_enabled
+        and resolved.production_mode
+        and isinstance(provider, DeterministicHashEmbeddingProvider)
+    ):
+        return _persistent_failure_runtime(
+            resolved,
+            "RAG_PGVECTOR_NON_SEMANTIC_PROVIDER_FORBIDDEN",
+            "生产 pgvector 禁止使用不具备语义能力的确定性测试 Embedding Provider。",
+        )
 
     try:
         connection = connection_factory(resolved) if connection_factory else build_postgresql_connection(
@@ -762,7 +934,7 @@ def build_rag_knowledge_base_runtime(
 
 
 def default_documents_for_runtime() -> tuple[RagDocument, ...]:
-    """Import built-in learning documents lazily to avoid a module cycle."""
+    """延迟导入内置学习文档，避免模块循环依赖。"""
 
     from datasmart_ai_runtime.services.rag.components import default_governance_rag_documents
 
@@ -801,6 +973,8 @@ def _normalized_settings(settings: RagKnowledgeBaseSettings) -> RagKnowledgeBase
         candidate_limit=max(5, min(int(settings.candidate_limit), 2000)),
         chunk_max_chars=max(200, min(int(settings.chunk_max_chars), 4000)),
         chunk_overlap_chars=max(0, int(settings.chunk_overlap_chars)),
+        ingest_document_limit=max(1, min(int(settings.ingest_document_limit), 10000)),
+        ingest_chunk_limit=max(1, min(int(settings.ingest_chunk_limit), 50000)),
         embedding_model=str(settings.embedding_model or "").strip(),
     )
     if normalized.chunk_overlap_chars > normalized.chunk_max_chars // 2:
@@ -827,11 +1001,20 @@ def _scope_predicates(query: RagQuery) -> tuple[list[str], list[Any]]:
     if source_types:
         predicates.append("source_type IN (" + ", ".join("%s" for _ in source_types) + ")")
         params.extend(source_types)
+    if not rag_query_explicitly_requests_history(query):
+        # 过期证据应在数据库候选阶段被排除，不能等到 reranker 或答案压缩后再丢弃；否则正文已经可能
+        # 被发送给外部模型。JSONB 同时兼容旧 evidenceStatus 和新的 sourceStatus 字段。
+        predicates.extend(
+            (
+                "UPPER(COALESCE(metadata_json->>'sourceStatus', '')) <> 'SUPERSEDED'",
+                "LOWER(COALESCE(metadata_json->>'evidenceStatus', '')) <> 'superseded'",
+            )
+        )
     return predicates, params
 
 
 def _merge_rows(left: tuple[Any, ...], right: tuple[Any, ...], limit: int) -> tuple[Any, ...]:
-    """Merge lexical and vector windows without duplicate chunks."""
+    """合并词法和向量候选窗口，并按 chunk ID 去重。"""
 
     merged: list[Any] = []
     seen: set[str] = set()
@@ -844,6 +1027,29 @@ def _merge_rows(left: tuple[Any, ...], right: tuple[Any, ...], limit: int) -> tu
         if len(merged) >= limit:
             break
     return tuple(merged)
+
+
+def _vector_scores_for_rows(rows: tuple[Any, ...]) -> dict[str, float]:
+    """从数据库向量候选中提取有限相似度，并与 chunk 身份稳定关联。
+
+    SQL 返回的是 ``1 - cosine_distance``。这里不把分数写入文档 metadata，避免内部排序事实混入最终
+    引用；它只在本次 ``RagKnowledgeCandidateSet`` 中传递给检索器。非法或非有限分数会使整次查询
+    fail-closed，由上层返回无证据结果。
+    """
+
+    scores: dict[str, float] = {}
+    for row in rows:
+        chunk_id = _required_text(_row_value(row, "chunk_id", 0), "chunk_id")
+        try:
+            score = float(_row_value(row, "vector_score", 13))
+        except (TypeError, ValueError) as exc:
+            raise RagPersistenceConfigurationError(
+                "RAG pgvector 返回了非法相似度分数。"
+            ) from exc
+        if not math.isfinite(score):
+            raise RagPersistenceConfigurationError("RAG pgvector 返回了非有限相似度分数。")
+        scores[chunk_id] = score
+    return scores
 
 
 def _row_value(row: Any, key: str, index: int) -> Any:
@@ -978,11 +1184,14 @@ def _optional_positive_int(value: str | None) -> int | None:
 def rag_embedding_provider_from_env(
     environ: Mapping[str, str] | None = None,
 ) -> AgentMemoryEmbeddingProvider | None:
-    """Build a shared or RAG-dedicated embedding provider on demand."""
+    """按需构建共享或 RAG 专用 Embedding Provider。
+
+    RAG 专用配置始终优先。若部署统一使用硅基流动，可只通过 Secret 注入
+    ``SILICONFLOW_API_KEY``；该兼容变量只补充密钥，不会隐式开启 Provider 或改变模型名称。
+    """
 
     source = dict(environ if environ is not None else os.environ)
-    # Keep the existing Memory provider implementation while allowing RAG to
-    # use an independently managed endpoint/model when a deployment needs it.
+    # 复用现有 Memory Provider 实现，同时允许 RAG 在部署需要时独立管理 Endpoint 和模型。
     aliases = {
         "PROVIDER": ("DATASMART_RAG_EMBEDDING_PROVIDER", "DATASMART_AI_RAG_EMBEDDING_PROVIDER"),
         "ENDPOINT": ("DATASMART_RAG_EMBEDDING_ENDPOINT", "DATASMART_AI_RAG_EMBEDDING_ENDPOINT"),
@@ -1001,16 +1210,34 @@ def rag_embedding_provider_from_env(
             "DATASMART_RAG_EMBEDDING_MAX_INPUT_CHARS",
             "DATASMART_AI_RAG_EMBEDDING_MAX_INPUT_CHARS",
         ),
+        "MAX_BATCH_SIZE": (
+            "DATASMART_RAG_EMBEDDING_MAX_BATCH_SIZE",
+            "DATASMART_AI_RAG_EMBEDDING_MAX_BATCH_SIZE",
+        ),
     }
     for suffix, keys in aliases.items():
         value = _first_text(source, *keys)
         if value is not None:
             source[f"DATASMART_AI_MEMORY_EMBEDDING_{suffix}"] = value
+    if not _first_text(source, "DATASMART_AI_MEMORY_EMBEDDING_API_KEY"):
+        siliconflow_api_key = _first_text(source, "SILICONFLOW_API_KEY")
+        if siliconflow_api_key is not None:
+            provider_type = str(
+                source.get("DATASMART_AI_MEMORY_EMBEDDING_PROVIDER") or "disabled"
+            ).strip().lower().replace("_", "-")
+            if provider_type in {"openai", "openai-compatible"}:
+                endpoint = _first_text(source, "DATASMART_AI_MEMORY_EMBEDDING_ENDPOINT") or ""
+                if (parse.urlsplit(endpoint).hostname or "").lower() != "api.siliconflow.cn":
+                    raise ValueError(
+                        "共享 SILICONFLOW_API_KEY 只能用于 api.siliconflow.cn；"
+                        "自定义 Endpoint 必须配置独立 Embedding API Key。"
+                    )
+            source["DATASMART_AI_MEMORY_EMBEDDING_API_KEY"] = siliconflow_api_key
     return build_memory_embedding_provider(memory_embedding_provider_settings_from_env(source))
 
 
 def _build_embedding_provider_from_env() -> AgentMemoryEmbeddingProvider | None:
-    """Internal compatibility wrapper used by the persistence builder."""
+    """供持久化装配器调用的内部兼容入口。"""
 
     return rag_embedding_provider_from_env()
 

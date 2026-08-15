@@ -45,7 +45,7 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
         transport = FakeUrlOpen({"data": [{"embedding": [0.25, -0.5, 0.75]}]})
         settings = MemoryEmbeddingProviderSettings(
             provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
-            endpoint="http://embedding.local/v1",
+            endpoint="http://localhost:8001/v1",
             api_key="test-secret",
             model="embedding-model-v1",
             timeout_seconds=7,
@@ -56,12 +56,95 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
         vector = provider.embed_text("x" * 150)
 
         self.assertEqual((0.25, -0.5, 0.75), vector)
-        self.assertEqual("http://embedding.local/v1/embeddings", transport.request.full_url)
+        self.assertEqual("http://localhost:8001/v1/embeddings", transport.request.full_url)
         self.assertEqual(7, transport.timeout)
         payload = json.loads(transport.request.data.decode("utf-8"))
         self.assertEqual("embedding-model-v1", payload["model"])
         self.assertEqual(100, len(payload["input"]))
         self.assertEqual("Bearer test-secret", transport.request.get_header("Authorization"))
+
+    def test_openai_compatible_provider_batches_inputs_and_preserves_response_order(self) -> None:
+        """批量摄取语料时应一次提交多个低敏文本，并按响应 index 恢复输入顺序。"""
+
+        transport = FakeUrlOpen(
+            {
+                "data": [
+                    {"index": 1, "embedding": [0.3, 0.4]},
+                    {"index": 0, "embedding": [0.1, 0.2]},
+                ]
+            }
+        )
+        settings = MemoryEmbeddingProviderSettings(
+            provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+            endpoint="https://api.siliconflow.cn/v1/embeddings",
+            api_key="test-secret",
+            model="BAAI/bge-m3",
+            timeout_seconds=9,
+            max_input_chars=100,
+            max_batch_size=8,
+        )
+        provider = OpenAICompatibleMemoryEmbeddingProvider(settings, urlopen=transport)
+
+        vectors = provider.embed_texts(("第一段", "第二段"))
+
+        self.assertEqual(((0.1, 0.2), (0.3, 0.4)), vectors)
+        payload = json.loads(transport.request.data.decode("utf-8"))
+        self.assertEqual(["第一段", "第二段"], payload["input"])
+        self.assertEqual("float", payload["encoding_format"])
+
+    def test_batch_embedding_rejects_missing_duplicate_or_dimension_mismatch(self) -> None:
+        """批量响应缺项、重复 index 或维度不一致时，不能把错误向量写入其他 chunk。"""
+
+        invalid_payloads = (
+            {"data": [{"index": 0, "embedding": [0.1, 0.2]}]},
+            {
+                "data": [
+                    {"index": 0, "embedding": [0.1, 0.2]},
+                    {"index": 0, "embedding": [0.3, 0.4]},
+                ]
+            },
+            {
+                "data": [
+                    {"index": 0, "embedding": [0.1, 0.2]},
+                    {"index": 1, "embedding": [0.3]},
+                ]
+            },
+        )
+        settings = MemoryEmbeddingProviderSettings(
+            provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+            endpoint="https://api.siliconflow.cn/v1/embeddings",
+            api_key="test-secret",
+            model="BAAI/bge-m3",
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                provider = OpenAICompatibleMemoryEmbeddingProvider(settings, urlopen=FakeUrlOpen(payload))
+                with self.assertRaises(RuntimeError):
+                    provider.embed_texts(("第一段", "第二段"))
+
+    def test_batch_embedding_rejects_fractional_index(self) -> None:
+        """小数 index 不能经 ``int`` 截断后冒充合法位置，否则向量可能绑定到错误文档。"""
+
+        settings = MemoryEmbeddingProviderSettings(
+            provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+            endpoint="https://api.siliconflow.cn/v1/embeddings",
+            api_key="test-secret",
+            model="BAAI/bge-m3",
+        )
+        provider = OpenAICompatibleMemoryEmbeddingProvider(
+            settings,
+            urlopen=FakeUrlOpen(
+                {
+                    "data": [
+                        {"index": 0.5, "embedding": [0.1, 0.2]},
+                        {"index": 1, "embedding": [0.3, 0.4]},
+                    ]
+                }
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "index 非法"):
+            provider.embed_texts(("第一段", "第二段"))
 
     def test_invalid_embedding_values_are_rejected_before_index_write(self) -> None:
         """空数组、NaN 和 Infinity 不能进入 pgvector，否则距离计算和排序结果不可信。"""
@@ -94,6 +177,32 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
         serialized = json.dumps(diagnostics, ensure_ascii=False)
         self.assertNotIn("secret-value", serialized)
         self.assertNotIn("embedding.example.internal", serialized)
+
+    def test_remote_embedding_endpoint_with_bearer_key_requires_https(self) -> None:
+        """Bearer 密钥不能通过远程明文 HTTP 发送，localhost 调试地址除外。"""
+
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            OpenAICompatibleMemoryEmbeddingProvider(
+                MemoryEmbeddingProviderSettings(
+                    provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+                    endpoint="http://embedding.example.com/v1",
+                    api_key="unit-test-secret",
+                    model="embedding-model-v1",
+                )
+            )
+
+    def test_remote_embedding_endpoint_without_key_also_requires_https(self) -> None:
+        """即使服务不鉴权，远程 Embedding 正文也不能通过明文 HTTP 外发。"""
+
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            OpenAICompatibleMemoryEmbeddingProvider(
+                MemoryEmbeddingProviderSettings(
+                    provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+                    endpoint="http://embedding.example.com/v1",
+                    api_key="",
+                    model="embedding-model-v1",
+                )
+            )
 
 
 class FakeUrlOpen:

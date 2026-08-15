@@ -30,6 +30,9 @@ class RagChunkSourceType(str, Enum):
     - `RULE`：质量规则、权限策略、合规条款；
     - `METADATA`：表结构、字段口径、血缘或资产说明；
     - `RUNBOOK`：故障演练、恢复手册、部署指南；
+    - `INCIDENT`：已经脱敏并复盘完成的历史事故；
+    - `TASK_CASE`：经过验证的数据同步任务案例；
+    - `DATASET`：用于字段映射、质量规则或评测的数据字典与样例说明；
     - `MEMORY_EXPORT`：从 Agent Memory 受控导出的低敏知识快照。
     """
 
@@ -37,6 +40,9 @@ class RagChunkSourceType(str, Enum):
     RULE = "rule"
     METADATA = "metadata"
     RUNBOOK = "runbook"
+    INCIDENT = "incident"
+    TASK_CASE = "task_case"
+    DATASET = "dataset"
     MEMORY_EXPORT = "memory_export"
     WIKI = "wiki"
     GIT_HISTORY = "git_history"
@@ -120,12 +126,26 @@ class RagQuery:
     generate_answer: bool = True
     trace_id: str | None = None
     session_id: str | None = None
-    # `hybrid` is the default Codex-like retrieval policy: the model may use
-    # the same governed knowledge tool while the storage adapter combines FTS
-    # and pgvector. `lexical` is useful for exact error codes and identifiers;
-    # `vector` is reserved for semantic expansion after exact evidence is weak.
+    # `hybrid` 是类似主流编码 Agent 的默认检索策略：模型使用同一个受治理知识工具，存储适配器在内部
+    # 组合 FTS 与 pgvector。`lexical` 适合精确错误码和标识符；`vector` 用于精确证据较弱时的语义扩展。
     retrieval_mode: str = "hybrid"
     source_types: tuple[str, ...] = ()
+
+
+def rag_query_explicitly_requests_history(query: RagQuery) -> bool:
+    """判断查询是否明确限定为历史追溯，而不是当前事实问答。
+
+    已替代证据仍有审计价值，不能从知识库物理删除；但普通问答或“现行 + 历史”冲突查询不能把它送入
+    reranker 和生成模型。只有调用方把来源明确、唯一地限制为 ``git_history`` 时，系统才把查询视为
+    历史追溯。这个规则同时供内存检索与 PostgreSQL 检索使用，避免两种存储产生不同治理结果。
+    """
+
+    normalized_source_types = {
+        str(value).strip().lower()
+        for value in (query.source_types or ())
+        if str(value).strip()
+    }
+    return normalized_source_types == {RagChunkSourceType.GIT_HISTORY.value}
 
 
 @dataclass(frozen=True)
@@ -196,7 +216,12 @@ class RagCitation:
 
 @dataclass(frozen=True)
 class RagPipelineResult:
-    """RAG 管线最终结果。"""
+    """RAG 管线最终结果。
+
+    ``retrieved_chunks`` 与 ``reranker_input_chunks`` 是仅供安全评测和内部审计使用的阶段快照，证明范围
+    过滤发生在外部模型之前。``to_summary`` 不序列化它们，避免把未被最终证据门禁选中的文档 ID、标题
+    或片段暴露给普通 API 调用方。
+    """
 
     answer: str
     citations: tuple[RagCitation, ...]
@@ -205,12 +230,15 @@ class RagPipelineResult:
     retrieval_summary: dict[str, Any]
     model_summary: dict[str, Any] = field(default_factory=dict)
     generated: bool = False
+    retrieved_chunks: tuple[RagScoredChunk, ...] = ()
+    reranker_input_chunks: tuple[RagScoredChunk, ...] = ()
 
     def to_summary(self) -> dict[str, Any]:
         """输出 API 响应结构。
 
         这里会返回 `compressedContext`，因为它是已经经过 RAG compressor 控制的低敏证据上下文，便于学习、
         调试和面试讲解；生产中如需进一步收紧，可通过 gateway/权限策略隐藏该字段，仅保留 citations。
+        retriever 与 reranker 的内部候选不在此方法输出，只能由同进程评测器读取。
         """
 
         return {
@@ -235,4 +263,5 @@ __all__ = [
     "RagPipelineResult",
     "RagQuery",
     "RagScoredChunk",
+    "rag_query_explicitly_requests_history",
 ]

@@ -14,6 +14,8 @@ RAG 的质量很大程度取决于“文本如何被切块、如何被分词、�
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from collections import Counter
@@ -55,7 +57,8 @@ def chunk_document(document: RagDocument, *, max_chars: int = 700, overlap_chars
     - 先按段落拆分，尽量保持语义完整；
     - 单个段落过长时再滑窗切分；
     - 相邻 chunk 保留少量 overlap，避免答案所需信息刚好被切在边界两侧；
-    - chunkId 使用 documentId + 序号，便于幂等更新和引用。
+    - chunkId 使用“完整治理范围 + documentId”的稳定摘要和序号，既支持幂等更新，也避免不同租户的
+      同名文档碰撞。
     """
 
     max_chars = max(200, min(max_chars, 4000))
@@ -85,7 +88,7 @@ def chunk_document(document: RagDocument, *, max_chars: int = 700, overlap_chars
 
     return tuple(
         RagChunk(
-            chunk_id=f"{document.document_id}#chunk-{index + 1}",
+            chunk_id=_scoped_chunk_id(document, index),
             document_id=document.document_id,
             chunk_index=index,
             title=document.title,
@@ -101,6 +104,31 @@ def chunk_document(document: RagDocument, *, max_chars: int = 700, overlap_chars
         )
         for index, chunk in enumerate(chunks)
     )
+
+
+def _scoped_chunk_id(document: RagDocument, chunk_index: int) -> str:
+    """为一个文档分块生成跨租户安全且长度固定的持久身份。
+
+    ``document_id`` 通常只在一个项目内部唯一，不能直接充当整张共享表的主键。这里把 tenant、project、
+    workspace 和 documentId 按 JSON 数组编码后计算 SHA-256，再附加从 1 开始的分块序号。JSON 编码
+    避免简单分隔符产生歧义，固定长度摘要也不会因很长的业务 ID 超过数据库 ``VARCHAR(256)``。
+
+    这不是权限校验本身；查询与删除仍必须携带完整范围谓词。摘要只负责让数据库主键在多租户场景下
+    保持稳定且不互相覆盖。
+    """
+
+    scoped_identity = json.dumps(
+        [
+            str(document.tenant_id),
+            str(document.project_id),
+            str(document.workspace_key),
+            str(document.document_id),
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(scoped_identity).hexdigest()
+    return f"rag-{digest}#chunk-{chunk_index + 1}"
 
 
 def compress_chunk_text(text: str, query_terms: Iterable[str], *, max_chars: int) -> str:

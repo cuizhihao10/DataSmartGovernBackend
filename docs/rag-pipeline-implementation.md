@@ -16,7 +16,10 @@ DataSmart 的 AI 层现在同时存在两类“知识”：
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/models.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/text.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/knowledge_base.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/persistence.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/pipeline.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/reranker_provider.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/evaluation.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/components.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/services/multi_agent/knowledge_agent_capability.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/api/rag.py`
@@ -57,9 +60,9 @@ LangGraph durable checkpoint 已接入：
 4. `lexical score`：使用轻量 BM25 风格词项分，标题和 tag 命中权重大于正文命中。
 5. `optional vector score`：如果配置了 embedding provider，则计算 query/chunk 的余弦相似度。
 6. `RRF fusion`：用 Reciprocal Rank Fusion 融合词项召回和向量召回，避免两类分数尺度不同导致简单加权失真。
-7. `MMR diversity`：用 Maximal Marginal Relevance 在相关性和多样性之间平衡，避免 topK 都来自同一文档重复段落。
-8. `heuristic rerank`：使用可解释规则模拟 reranker，生产后可替换为专用 reranker 模型。
-9. `evidence gate`：生成前执行证据强度门控，过滤只命中单个泛词或低质量近邻的弱证据。
+7. `rerank`：把完整 `candidateLimit` 候选窗口交给独立 Reranker，再决定最终 topK；未配置远程模型时使用可解释规则。当前已适配硅基流动 `BAAI/bge-reranker-v2-m3`，异常按 fail-closed 处理。
+8. `evidence gate`：在重排后执行证据强度门控，过滤只命中单个泛词或低质量近邻的弱证据。
+9. `MMR diversity`：只在合格证据中选择最终 topK，在相关性和多样性之间平衡；MMR 不覆盖 Reranker 的相关性分数。
 10. `context compression`：按问题相关词压缩 chunk，优先保留命中句子，控制进入模型的上下文长度。
 11. `model generation`：通过统一 `ModelQueryEngine` 调用治理问答模型，继承模型路由、限流、预算、fallback 和低敏错误处理。
 12. `citation binding`：答案必须绑定 `[C1]`、`[C2]` 这类引用编号，方便审计和回溯。
@@ -122,13 +125,20 @@ MASTER_ORCHESTRATOR
 - `agentTurnRunner` 已可把 RAG 能力、Agent role/status、requiredEvidenceCodes 和 handoff 状态写入 LangGraph durable checkpoint。
 - 多 Agent 执行前计划已把 `KNOWLEDGE_AGENT -> DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT/...` 建模为 `supports_context` 协作边。
 - 单元测试覆盖召回、租户隔离、无证据拒绝和 API 合同。
+- PostgreSQL 持久化词法知识库与可选 pgvector 查询路径，范围谓词在排序前进入同一 SQL。
+- 查询显式点名其他租户或项目时，在进入 retriever 前直接拒绝，避免用当前范围的相似资料回答越权目标。
+- 现行查询在进入 Reranker 前排除 `superseded` 证据；只有来源唯一限定为 `git_history` 的审计追溯才允许读取历史版本。
+- 候选窗口先重排、再证据门控和 MMR 选取 topK，内部候选快照仅供评测，不进入 API 摘要。
+- OpenAI-compatible 批量 Embedding Provider，摄取和内存评测均按有界批次生成 chunk 向量。
+- 硅基流动 `BAAI/bge-m3` / `BAAI/bge-reranker-v2-m3` 配置与独立重排适配器。
+- 96 份合成中文文档、168 条黄金用例、资产哈希校验、低敏评测报告和质量门禁。
 
 尚未完成但已预留接口：
 
-- PostgreSQL/pgvector 持久化知识库适配器。
 - Neo4j GraphRAG，用于血缘、表关系、业务口径和资产图谱推理。
-- 专用 embedding/reranker 模型，例如当前一代 Qwen embedding/reranker、BGE 或 Jina reranker。
 - MinIO 文档解析、增量索引、删除重建和索引版本管理。
+- 已完成一次 168 条用例的真实 BGE 全量评测和本机 pgvector 摄取/查询 smoke；质量门禁仍未通过，完整
+  pgvector 基准、并发、限流和故障注入仍待执行。
 - RAG 的真实执行 handoff：当前 runner 已输出低敏能力合同并写入 durable checkpoint，但尚未自动创建 Java outbox、派发 worker 或把 RAG 结果作为低敏 specialist summary 回填给 DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT。
 
 ## 6. 面试讲解要点
@@ -165,3 +175,30 @@ Recovery 不是“发生失败就先检索”的固定流程。`RECOVERY_AGENT` 
 - RAG 证据只能补充恢复判断，不能替代 Autopilot 的幂等、作用域、循环/时间预算或风险决策。高风险动作仍由 Java 审批链路处理，Python 不因检索成功而直接执行恢复。
 
 本轮检索能力只包括受治理 RAG、结构化控制面查询与 allowlist 的 repository 文本搜索；不把 Elasticsearch 或 Web Search 作为自动恢复的隐含依赖。这里的 repository workspace 只是 worker 注入的文件系统搜索根，受相对路径、隐藏/凭据路径、符号链接和预算限制，不是产品数据模型中的 Workspace 层级。
+
+## 2026-08-15 补充：中文黄金集、批量 Embedding 与独立 Reranker
+
+本轮新增 96 份纯合成中文知识文档和 168 条黄金用例，覆盖精确错误码、语义改写、多文档、无答案、
+跨范围拒答和过期证据冲突。Manifest 保存每份 Markdown 的 SHA-256、来源 URI、证据状态和范围三元组；
+黄金集保存期望文档、三级相关性、期望引用、禁止文档、拒答原因和租户范围。
+
+运行时新增可重复评测器，统一计算 Recall@K、MRR、nDCG@K、引用精确率/召回率、拒答 F1、禁止文档
+通过率、过期证据抑制率、范围泄漏率、单用例通过率和 p50/p95。单用例通过率也进入质量门禁，防止宏平均
+达标掩盖一部分完整引用/拒答合同失败。禁止文档和范围泄漏会检查召回候选、Reranker 输入、
+最终证据三个阶段；内部候选 ID 不进入普通 API 摘要。报告不保存问题、正文、模型输出、Endpoint 或密钥。
+真实 BGE 全量运行没有执行错误且范围泄漏为零，但引用精确率、拒答 F1、禁止文档通过率和单用例通过率仍未达门禁，
+不能被表述为生产 RAG 验收。
+
+Embedding Provider 现支持数组输入、受限批次、严格整数 index 和维度一致性校验；PostgreSQL/pgvector
+摄取有单次文档/chunk 硬上限，远程向量生成不占用数据库锁，准备完成后再事务写入。完整治理范围参与
+chunk 身份和替换/删除条件，跨租户同名 documentId 不会碰撞。Reranker 已作为独立协议接入管线，硅基流动适配器固定
+`return_documents=false` 并严格验证完整 index 集。详细运行步骤见
+[RAG 黄金集与硅基流动 BGE 评测 Runbook](rag-evaluation-siliconflow-runbook.md)。
+确定性哈希 Embedding 只保留给学习、单元测试和 smoke；生产 pgvector 装配检测到该 Provider 时会
+fail-closed，不能把可重复伪向量描述为语义召回。
+
+PostgreSQL 连接使用 `search_path=ai_memory`，而 pgvector 扩展安装在 `public`。因此建表类型固定为
+`public.vector`，距离表达式固定为 `OPERATOR(public.<=>)`；该写法已经过真实向量写入与查询验证，避免
+依赖部署环境的隐式 search path。数据库向量分数会被外层混合检索直接复用；1024 维 `BAAI/bge-m3`
+使用部分表达式 HNSW 索引，其他模型/维度仍走精确排序，必须另行建立匹配索引并做容量验收。合成语料摄取只允许本地、开发、测试或学习模式，生产和预发布环境
+即使提供确认参数也会拒绝写入。

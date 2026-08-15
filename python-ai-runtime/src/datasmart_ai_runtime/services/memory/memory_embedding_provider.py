@@ -25,7 +25,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Protocol
-from urllib import error, request
+from urllib import error, parse, request
 
 
 class AgentMemoryEmbeddingProvider(Protocol):
@@ -37,6 +37,9 @@ class AgentMemoryEmbeddingProvider(Protocol):
 
     def embed_text(self, text: str) -> tuple[float, ...]:
         """把低敏记忆文本转换为向量。"""
+
+    def embed_texts(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        """批量把低敏文本转换为与输入顺序一致的向量。"""
 
 
 class MemoryEmbeddingProviderType(str, Enum):
@@ -75,6 +78,7 @@ class MemoryEmbeddingProviderSettings:
     timeout_seconds: int = 30
     organization: str = ""
     max_input_chars: int = 4000
+    max_batch_size: int = 16
 
 
 UrlOpen = Callable[..., Any]
@@ -105,6 +109,11 @@ class DeterministicHashEmbeddingProvider:
             values.append(round((byte_value / 255.0) * 2 - 1, 8))
         return tuple(values)
 
+    def embed_texts(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        """逐条生成测试向量，并保持批量输入顺序。"""
+
+        return tuple(self.embed_text(text) for text in texts)
+
 
 class OpenAICompatibleMemoryEmbeddingProvider:
     """OpenAI-compatible Embeddings API 适配器。
@@ -128,6 +137,7 @@ class OpenAICompatibleMemoryEmbeddingProvider:
             raise ValueError("OpenAI-compatible Embedding Provider 必须配置 endpoint。")
         if not settings.model.strip():
             raise ValueError("OpenAI-compatible Embedding Provider 必须配置独立 embedding model。")
+        _validate_embedding_endpoint(settings.endpoint)
         self._settings = settings
         self._urlopen = urlopen
 
@@ -138,13 +148,44 @@ class OpenAICompatibleMemoryEmbeddingProvider:
         API Key 和上游 body 的稳定错误，避免敏感信息进入 worker 日志或重试任务。
         """
 
+        return self.embed_texts((text,))[0]
+
+    def embed_texts(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        """使用 Provider 的数组输入批量生成向量。
+
+        企业语料摄取通常包含数十到数千个 chunk。逐条 HTTP 请求会放大网络延迟和限流压力，因此这里按
+        ``max_batch_size`` 切成有界批次。每个响应必须提供完整、唯一且不越界的 index；只有单文本兼容
+        旧 Provider 时允许省略 index。任何缺项或维度不一致都会整体失败，防止向量写入错误文档。
+        """
+
+        normalized = tuple(self._safe_text(text) for text in texts)
+        if not normalized:
+            raise ValueError("Embedding 批量输入不能为空。")
+        batch_size = max(1, min(int(self._settings.max_batch_size), 128))
+        vectors: list[tuple[float, ...]] = []
+        for offset in range(0, len(normalized), batch_size):
+            vectors.extend(self._request_batch(normalized[offset : offset + batch_size]))
+        dimensions = {len(vector) for vector in vectors}
+        if len(dimensions) != 1:
+            raise RuntimeError("Embedding Provider 批量响应的向量维度不一致。")
+        return tuple(vectors)
+
+    def _safe_text(self, text: str) -> str:
+        """裁剪单条低敏文本，并拒绝空输入。"""
+
         safe_text = str(text or "").strip()[: max(100, self._settings.max_input_chars)]
         if not safe_text:
             raise ValueError("Embedding 输入不能为空。")
+        return safe_text
+
+    def _request_batch(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        """执行一次有界批量请求并按 Provider index 恢复输入顺序。"""
+
         payload = json.dumps(
             {
                 "model": self._settings.model,
-                "input": safe_text,
+                "input": texts[0] if len(texts) == 1 else list(texts),
+                "encoding_format": "float",
             },
             ensure_ascii=False,
         ).encode("utf-8")
@@ -174,10 +215,32 @@ class OpenAICompatibleMemoryEmbeddingProvider:
             raise RuntimeError("Embedding Provider 返回了无法解析的 JSON。上游响应正文已隐藏。") from exc
 
         try:
-            raw_embedding = response_payload["data"][0]["embedding"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("Embedding Provider 响应缺少 data[0].embedding。上游响应正文已隐藏。") from exc
-        return validate_embedding_vector(raw_embedding)
+            raw_items = response_payload["data"]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError("Embedding Provider 响应缺少 data 数组。上游响应正文已隐藏。") from exc
+        if not isinstance(raw_items, list) or len(raw_items) != len(texts):
+            raise RuntimeError("Embedding Provider 批量响应数量与请求数量不一致。上游响应正文已隐藏。")
+
+        indexed: dict[int, tuple[float, ...]] = {}
+        for response_position, item in enumerate(raw_items):
+            if not isinstance(item, dict) or "embedding" not in item:
+                raise RuntimeError("Embedding Provider 响应缺少 embedding。上游响应正文已隐藏。")
+            raw_index = item.get("index")
+            if raw_index is None and len(texts) == 1:
+                raw_index = response_position
+            if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+                raise RuntimeError("Embedding Provider 响应 index 非法。上游响应正文已隐藏。")
+            item_index = raw_index
+            if item_index < 0 or item_index >= len(texts) or item_index in indexed:
+                raise RuntimeError("Embedding Provider 响应 index 重复或越界。上游响应正文已隐藏。")
+            indexed[item_index] = validate_embedding_vector(item["embedding"])
+
+        if set(indexed) != set(range(len(texts))):
+            raise RuntimeError("Embedding Provider 批量响应缺少输入项。上游响应正文已隐藏。")
+        vectors = tuple(indexed[index] for index in range(len(texts)))
+        if len({len(vector) for vector in vectors}) != 1:
+            raise RuntimeError("Embedding Provider 批量响应的向量维度不一致。")
+        return vectors
 
 
 def memory_embedding_provider_settings_from_env(
@@ -194,6 +257,7 @@ def memory_embedding_provider_settings_from_env(
 - `DATASMART_AI_MEMORY_EMBEDDING_TIMEOUT_SECONDS`；
 - `DATASMART_AI_MEMORY_EMBEDDING_ORGANIZATION`；
 - `DATASMART_AI_MEMORY_EMBEDDING_MAX_INPUT_CHARS`。
+- `DATASMART_AI_MEMORY_EMBEDDING_MAX_BATCH_SIZE`。
     """
 
     source = environ if environ is not None else os.environ
@@ -207,6 +271,7 @@ def memory_embedding_provider_settings_from_env(
         timeout_seconds=_positive_int(source.get("DATASMART_AI_MEMORY_EMBEDDING_TIMEOUT_SECONDS"), 30),
         organization=source.get("DATASMART_AI_MEMORY_EMBEDDING_ORGANIZATION") or "",
         max_input_chars=_positive_int(source.get("DATASMART_AI_MEMORY_EMBEDDING_MAX_INPUT_CHARS"), 4000),
+        max_batch_size=_positive_int(source.get("DATASMART_AI_MEMORY_EMBEDDING_MAX_BATCH_SIZE"), 16),
     )
 
 
@@ -259,6 +324,7 @@ def memory_embedding_provider_diagnostics(settings: MemoryEmbeddingProviderSetti
         "declaredDimensions": settings.dimensions,
         "timeoutSeconds": settings.timeout_seconds,
         "maxInputChars": settings.max_input_chars,
+        "maxBatchSize": settings.max_batch_size,
         "productionReady": settings.provider_type == MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
         "notes": (
             "deterministic provider 只用于单元测试和 pgvector smoke，不能衡量语义召回质量。",
@@ -276,6 +342,23 @@ def _embedding_endpoint(endpoint: str) -> str:
     if normalized.endswith("/v1"):
         return f"{normalized}/embeddings"
     return f"{normalized}/v1/embeddings"
+
+
+def _validate_embedding_endpoint(endpoint: str) -> None:
+    """校验 Embedding Endpoint，防止凭据或知识正文经远程明文 HTTP 发送。
+
+    OpenAI-compatible 是通用企业适配器，因此不会限制为某一个厂商主机；但无论上游是否要求密钥，
+    查询和文档正文都属于需要保护的数据，除 localhost 开发调试外必须使用 HTTPS。URL 中的用户名、
+    密码、查询参数和 fragment 也一律拒绝，避免凭据或路由参数被代理、访问日志和错误追踪意外记录。
+    """
+
+    parts = parse.urlsplit(str(endpoint or "").strip())
+    local_host = (parts.hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
+    allowed_schemes = {"http", "https"} if local_host else {"https"}
+    if parts.scheme not in allowed_schemes:
+        raise ValueError("远程 Embedding Endpoint 必须使用 HTTPS，只有 localhost 可使用 HTTP。")
+    if not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+        raise ValueError("Embedding Endpoint 不能包含凭据、查询参数或 fragment。")
 
 
 def _provider_type(value: str | None) -> MemoryEmbeddingProviderType:
