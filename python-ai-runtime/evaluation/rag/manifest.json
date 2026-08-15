@@ -1,7 +1,20 @@
 {
-  "schemaVersion": "datasmart.rag-evaluation-assets.v1",
+  "schemaVersion": "datasmart.rag-evaluation-assets.v2",
   "assetBoundary": "synthetic-only",
-  "generatedBy": "scripts/generate-rag-evaluation-assets.py",
+  "generatedBy": "scripts/generate-rag-evaluation-assets.py + scripts/generate-rag-multiformat-assets.mjs",
+  "documentCount": 188,
+  "formatCounts": {
+    "csv": 4,
+    "docx": 40,
+    "json": 8,
+    "jsonl": 4,
+    "log": 4,
+    "md": 96,
+    "sql": 4,
+    "txt": 8,
+    "xlsx": 20
+  },
+  "multiformatCatalogSha256": "112e75ea25c84bdd5e265a295a17935f92207444ff5809ece0f9082e02b2d230",
   "documents": [
     {
       "documentId": "rag-eval-global-architecture-rag-scope-filter",
@@ -32,7 +45,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "afe1b18eb36633ccf12c3517185a3436b6c5540631e0c28a95f2fa96503f135d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "afe1b18eb36633ccf12c3517185a3436b6c5540631e0c28a95f2fa96503f135d",
+      "extractedTextSha256": "76f379f529e81aaca9405d11910466ab3184daacad71fc7b0c49c7fcac9005ce"
     },
     {
       "documentId": "rag-eval-global-architecture-event-bridge",
@@ -63,7 +79,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "422dcc857933afd1c764bf79b11e113693c60cc5282392eb9bb37515d097c32d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "422dcc857933afd1c764bf79b11e113693c60cc5282392eb9bb37515d097c32d",
+      "extractedTextSha256": "bee51d0312e818b8225ed9e241aed6c1671958bda3c57cfdc233546640a3c1b7"
     },
     {
       "documentId": "rag-eval-global-architecture-citation-evidence",
@@ -94,7 +113,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "b7f293bd1a53b0b3d8bf6c4e03496d09918e83c2a4acbb185d3b56b1ace7a370"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "b7f293bd1a53b0b3d8bf6c4e03496d09918e83c2a4acbb185d3b56b1ace7a370",
+      "extractedTextSha256": "0c31c7c07088b1c2fc4b3f0e5b6e310d734c68a3dbd347b40be75f3d001812e4"
     },
     {
       "documentId": "rag-eval-global-product-quality-lifecycle",
@@ -125,7 +147,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "0a716cc520b15760c49a50a4201df3c1fe5cc79da0c195799010055861ace9cd"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "0a716cc520b15760c49a50a4201df3c1fe5cc79da0c195799010055861ace9cd",
+      "extractedTextSha256": "52e86fbc65e425573c6d0542e4356963c3acf12db75d676d1cdc2d16c3cb2911"
     },
     {
       "documentId": "rag-eval-global-product-agent-handoff",
@@ -156,7 +181,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "b91b8979f51b3b027d778418ea81831220255ecc14dab8a201b3a28437e5e3cb"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "b91b8979f51b3b027d778418ea81831220255ecc14dab8a201b3a28437e5e3cb",
+      "extractedTextSha256": "474f93218afd9cc2b0a37625e8c7f96370e98595877d6e3c201e5bcd9f745a4b"
     },
     {
       "documentId": "rag-eval-global-runbook-rag-index-rebuild",
@@ -187,7 +215,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "283a292b4dd4cb8a598dbe7c64aae22fe26b01cb3a729f7d0e52393732db6b3f"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "283a292b4dd4cb8a598dbe7c64aae22fe26b01cb3a729f7d0e52393732db6b3f",
+      "extractedTextSha256": "c3e484f0c5fece7109c0c2ccc221a35eb07fc221ef447c2fac9cd181a2eeb2b3"
     },
     {
       "documentId": "rag-eval-global-runbook-kafka-backlog",
@@ -218,7 +249,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "8adc7735f448a156ec895b640d3865a9881d908cee3daa3175bc65adb8e19d62"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "8adc7735f448a156ec895b640d3865a9881d908cee3daa3175bc65adb8e19d62",
+      "extractedTextSha256": "eec6d45306b71657a974f705d015d62df1c25c973a9d61898f1344990bd17dac"
     },
     {
       "documentId": "rag-eval-global-runbook-pgvector-degraded",
@@ -249,7 +283,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "7e49368809343c97e3d9faac01d34f149624149dae5d1e7d83c4c1f276270d46"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "7e49368809343c97e3d9faac01d34f149624149dae5d1e7d83c4c1f276270d46",
+      "extractedTextSha256": "faa808c9e0809d99912161b6fddda113cf5dbe7c49a5b72cdcf51f81e56e067f"
     },
     {
       "documentId": "rag-eval-global-incident-scope-filter-miss",
@@ -280,7 +317,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "84f1e75e920ce72fecbf72129be158aebe21ee2589624e83d75b0c56284f6b4c"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "84f1e75e920ce72fecbf72129be158aebe21ee2589624e83d75b0c56284f6b4c",
+      "extractedTextSha256": "eb429c5b3ac9d4a742fad3b53e58ba6d95bca92f44e546ca9a093a283964e892"
     },
     {
       "documentId": "rag-eval-global-incident-cdc-offset-gap",
@@ -311,7 +351,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "8df9e1a266f1bb77612f9cb53b8b7ff749cf5a3808a77735c2a4e5c89928e07f"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "8df9e1a266f1bb77612f9cb53b8b7ff749cf5a3808a77735c2a4e5c89928e07f",
+      "extractedTextSha256": "d53bb86b116a0668d32e6133ecfda11fbcc82eee25fb56351443dedbe984dc41"
     },
     {
       "documentId": "rag-eval-global-incident-schema-drift",
@@ -342,7 +385,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "ac9d5312bc39af8e13c8457f1f54e084fe9c32747a278ac3c36950b62b13536d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "ac9d5312bc39af8e13c8457f1f54e084fe9c32747a278ac3c36950b62b13536d",
+      "extractedTextSha256": "531035c053332b5062a47236e6695003b2266438e68a1376fa271fe580ea33ee"
     },
     {
       "documentId": "rag-eval-global-sync-cdc-orders",
@@ -373,7 +419,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "22c43133346efd5c23caf3c02914bd7701614fc3a9ee084c4a7ba3c775eaaba1"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "22c43133346efd5c23caf3c02914bd7701614fc3a9ee084c4a7ba3c775eaaba1",
+      "extractedTextSha256": "884a9e7427f8f9fcd0a4869b63761556134a8c64fde5ff3f3bd642c62aa53c2e"
     },
     {
       "documentId": "rag-eval-global-sync-batch-customer",
@@ -404,7 +453,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "c299ccae215a81429f07f681604c593ec6ea9a3e034694f9651e83300c417f55"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "c299ccae215a81429f07f681604c593ec6ea9a3e034694f9651e83300c417f55",
+      "extractedTextSha256": "fce6a148053e394b3f74de40b6bd2a9b2e0d25d8a5e48cc061ee27936b8462c9"
     },
     {
       "documentId": "rag-eval-global-sync-idempotency-ledger",
@@ -435,7 +487,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "f916bce25efa03859846505a9f7c0958338a4b8824b88dd9e24d61640852077d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "f916bce25efa03859846505a9f7c0958338a4b8824b88dd9e24d61640852077d",
+      "extractedTextSha256": "3e9b2a7976119bae4a54a75e7b6309c58307cb8849fe74245b54f54e8a976e42"
     },
     {
       "documentId": "rag-eval-global-metadata-order-fact-dictionary",
@@ -466,7 +521,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "81920b1085f75314f0db4b352f5d6900366087c2df03d6da4c11befa3d7e7ca7"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "81920b1085f75314f0db4b352f5d6900366087c2df03d6da4c11befa3d7e7ca7",
+      "extractedTextSha256": "671d98c6490fda542f6182269f96ade28d068934c9c534804e55c9f822153f61"
     },
     {
       "documentId": "rag-eval-global-metadata-quality-rule-dictionary",
@@ -497,7 +555,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "86ffd0ad252f8317281b81e737a704e43ff4c067eda1fac09cfe29ee625747b3"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "86ffd0ad252f8317281b81e737a704e43ff4c067eda1fac09cfe29ee625747b3",
+      "extractedTextSha256": "8a59e6ad4b30b212116220008065ec33bd124363494aa6685697adad86955a1c"
     },
     {
       "documentId": "rag-eval-global-metadata-lineage-dataset",
@@ -528,7 +589,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "0fc83850d088d4f2e690d6b05d1759e966188725e565c3fdd0d273e2ff12d256"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "0fc83850d088d4f2e690d6b05d1759e966188725e565c3fdd0d273e2ff12d256",
+      "extractedTextSha256": "69fbaf360e450dea266197ad0e6514cff22401f2291fe4d8451a68e408ca96be"
     },
     {
       "documentId": "rag-eval-global-governance-rbac-least-privilege",
@@ -559,7 +623,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "d1711207f79bb6f9bcf86bb5bae016b6d2c6b2194142cce2c42a23dd9acf5517"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "d1711207f79bb6f9bcf86bb5bae016b6d2c6b2194142cce2c42a23dd9acf5517",
+      "extractedTextSha256": "fd485a3fac6da7505848586328dfd90268f85e8ffc351934771da7d470e11711"
     },
     {
       "documentId": "rag-eval-global-governance-classification",
@@ -590,7 +657,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "bf76a19fc262d18d03c25dde07436a45c4c1fcc6a721496895ed098558455f70"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "bf76a19fc262d18d03c25dde07436a45c4c1fcc6a721496895ed098558455f70",
+      "extractedTextSha256": "0973a04ab68ef3799469f0374fa623a8ee7dedfa5cf0e9070a19ecba425aa4ef"
     },
     {
       "documentId": "rag-eval-global-governance-export-approval",
@@ -621,7 +691,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "2a2b08fd9897809bc988fcd33bc3d3dca563e43cdba31195c5ab5764e9b21bc4"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "2a2b08fd9897809bc988fcd33bc3d3dca563e43cdba31195c5ab5764e9b21bc4",
+      "extractedTextSha256": "f59490873f6dfe2867391ade89bd3c92c54dbebbb050b4c4701d6e0b018cf65a"
     },
     {
       "documentId": "rag-eval-global-history-index-rebuild-v1",
@@ -652,7 +725,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "2dfa0b66005060b6a9903adf48705bb4048e4307b3ba392ac655036a0f3e6ecc"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "2dfa0b66005060b6a9903adf48705bb4048e4307b3ba392ac655036a0f3e6ecc",
+      "extractedTextSha256": "8c2f6acff5b61ed94486edbb3e081ebe9015d076a5f6626de7637d3694e8a848"
     },
     {
       "documentId": "rag-eval-global-history-cdc-checkpoint-v1",
@@ -683,7 +759,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "7b8e773d0bb4ad6d99d3be28a38ee57d99784eda1c59b6046382c6924a01fefe"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "7b8e773d0bb4ad6d99d3be28a38ee57d99784eda1c59b6046382c6924a01fefe",
+      "extractedTextSha256": "89863ad04d6f3484bb3f5d36d920fb23ebb31a1a07893b95d833a3a40142b6cd"
     },
     {
       "documentId": "rag-eval-global-history-dictionary-version-v1",
@@ -714,7 +793,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "678bc7a5657c35b9363faeb090112941f733bc220325339f79dc65144e15fd7b"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "678bc7a5657c35b9363faeb090112941f733bc220325339f79dc65144e15fd7b",
+      "extractedTextSha256": "be70fb46b142795e9a07cf509ddc60254c1836ed30650bf0b23499f0f3c0cd04"
     },
     {
       "documentId": "rag-eval-global-history-export-rule-v1",
@@ -745,7 +827,10 @@
         "scopeLabel": "全局产品基线"
       },
       "enabled": true,
-      "contentSha256": "93ec28ec39de1b6667486df79918f7af38956d504c825083d6151c741715a316"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "93ec28ec39de1b6667486df79918f7af38956d504c825083d6151c741715a316",
+      "extractedTextSha256": "126a51a4f9bdddacacd9cf8ad6ef7ece52143e052636e25d2c0d2f0a6a4bcaec"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-architecture-rag-scope-filter",
@@ -776,7 +861,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "30e09e9fd67ae525cbb3b752e0ef0a1a7c87b0229169660fc3ef4d9bfb37182e"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "30e09e9fd67ae525cbb3b752e0ef0a1a7c87b0229169660fc3ef4d9bfb37182e",
+      "extractedTextSha256": "06e286e1bf8f2d662ab126273758f4a202e9b859f3f39d7185454b12ac739a73"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-architecture-event-bridge",
@@ -807,7 +895,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "5d31bee34aebe3ca919deeb91081895e2f0546c8164924af89d506ab9faf5c93"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "5d31bee34aebe3ca919deeb91081895e2f0546c8164924af89d506ab9faf5c93",
+      "extractedTextSha256": "53e252a9a35a1eba357de9b07deb7e9dafb62c90ce0bc60fc1f1d65ea401fcaa"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-architecture-citation-evidence",
@@ -838,7 +929,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "1541790e81d06520ac76e7bd61b25af0045488bfb9f39d4c2d188971bb81ca2a"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "1541790e81d06520ac76e7bd61b25af0045488bfb9f39d4c2d188971bb81ca2a",
+      "extractedTextSha256": "3b39b0c4237caa64a47ad568472e4f650ce4fb3c7516a63507ea171c5cb0cd72"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-product-quality-lifecycle",
@@ -869,7 +963,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "868917e20ed3b7c0643f65bff275dd3f159155ec450efa0305ea0b8494e699ca"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "868917e20ed3b7c0643f65bff275dd3f159155ec450efa0305ea0b8494e699ca",
+      "extractedTextSha256": "77b123d95fe54eafaabbc05204f91bba7d1a5832bc6dd6cb16d0dbe43eb36131"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-product-agent-handoff",
@@ -900,7 +997,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "483fb6042bdd66f5e0f3e8a3a57da219adde6aae2694fe23594dbd59cf3ac6d5"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "483fb6042bdd66f5e0f3e8a3a57da219adde6aae2694fe23594dbd59cf3ac6d5",
+      "extractedTextSha256": "4c1c5907d71a8283b55cc1e2fe9d8daf5e52d624e87a2d9a80af20c687ff0461"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-runbook-rag-index-rebuild",
@@ -931,7 +1031,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "21d0843aaf327f6e53cc78fcb7f598e706a267938e6c92d0b3dd8542b0f2e88e"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "21d0843aaf327f6e53cc78fcb7f598e706a267938e6c92d0b3dd8542b0f2e88e",
+      "extractedTextSha256": "9c472648448bb5eeb6b0cc534e8b67c3897ed2452c122a233c234739cf474ae8"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-runbook-kafka-backlog",
@@ -962,7 +1065,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "e9e69484e201df7ee090fe21af3155d0d122eef4e99d5827ce123c3e2beeb7e2"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "e9e69484e201df7ee090fe21af3155d0d122eef4e99d5827ce123c3e2beeb7e2",
+      "extractedTextSha256": "396a7ffe9a1024621e121a5b96852f92e1594875f67df4ac1e2b052fd9be5993"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-runbook-pgvector-degraded",
@@ -993,7 +1099,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "08063823b0df2f01c14d29d7f70ea6a7da04c8dbdd8ef8bca78341ca9ae81bbd"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "08063823b0df2f01c14d29d7f70ea6a7da04c8dbdd8ef8bca78341ca9ae81bbd",
+      "extractedTextSha256": "f5f98c1af8b7dfb56412904fd3b352bc2b2d4719f9fc3a6938b7e55fead89501"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-incident-scope-filter-miss",
@@ -1024,7 +1133,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "f6750e5c449de6873167e5d06d7bc010e9ec8d2838d9820905ea27280992d754"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "f6750e5c449de6873167e5d06d7bc010e9ec8d2838d9820905ea27280992d754",
+      "extractedTextSha256": "5be86b36860176f524423d7c7efebaa65428748cd55f4285a3413ccf7142a097"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-incident-cdc-offset-gap",
@@ -1055,7 +1167,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "6883285255da94e6d267dff91ac2cf5f6e885023b398f17af5f11ac33b52f40a"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "6883285255da94e6d267dff91ac2cf5f6e885023b398f17af5f11ac33b52f40a",
+      "extractedTextSha256": "e0f2ab9f72a6da34bf6e935487ee037346bfb49ad398033dd21b185d4c6d8687"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-incident-schema-drift",
@@ -1086,7 +1201,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "4e5034fc4598395280b781f6b42b63816e98331d8437ce685c6a7fa01c3d9b40"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "4e5034fc4598395280b781f6b42b63816e98331d8437ce685c6a7fa01c3d9b40",
+      "extractedTextSha256": "a96581f9136c890265ce44718358422c471815caa6c9cade59abe7cdb4d35d8d"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-sync-cdc-orders",
@@ -1117,7 +1235,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "08a8f17b05f945c52187b90b2fe7a609ba3563e60eb317a21ef317052c8b9541"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "08a8f17b05f945c52187b90b2fe7a609ba3563e60eb317a21ef317052c8b9541",
+      "extractedTextSha256": "76796ed6ceeaf33ff23bb49ae6502b00ab95e1dab8c1b83b6fc6b66af3e5ddc5"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-sync-batch-customer",
@@ -1148,7 +1269,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "71a62ff03c692acf6c2e49fd97e3ca285f5ddf2eb4b59a8fc0a2072b9f6443f9"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "71a62ff03c692acf6c2e49fd97e3ca285f5ddf2eb4b59a8fc0a2072b9f6443f9",
+      "extractedTextSha256": "d1c8396a62d20b658e473143bff8b78bb2e3310dbf9c878412fe641d2dc33926"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-sync-idempotency-ledger",
@@ -1179,7 +1303,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "f67764fb2ebee3edded6d7682807b2d6b1170782316b689eef7cd155d0c2927d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "f67764fb2ebee3edded6d7682807b2d6b1170782316b689eef7cd155d0c2927d",
+      "extractedTextSha256": "b5b1ccac17333a2c5bcfee6dc44d0404c25ed1eaf7e4444f5d4b0949c1aecb28"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-metadata-order-fact-dictionary",
@@ -1210,7 +1337,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "8a63560d56554416fd4eef729b58f0eacae1ad9b184e134e606fb1b0151db179"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "8a63560d56554416fd4eef729b58f0eacae1ad9b184e134e606fb1b0151db179",
+      "extractedTextSha256": "569424d774c53f185d842a9ab83fabeaf61e6fbc99ce66471feef4cea33d3d58"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-metadata-quality-rule-dictionary",
@@ -1241,7 +1371,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "565646b6f9e4f9ae34b15a8546d3b4143b1360b65f80b2c40171da793cafd7d2"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "565646b6f9e4f9ae34b15a8546d3b4143b1360b65f80b2c40171da793cafd7d2",
+      "extractedTextSha256": "1bf9c394115c0218753c44534e98e97129b1eaec93e9f93bd227b974f52cb654"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-metadata-lineage-dataset",
@@ -1272,7 +1405,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "9fb8507d5ebce95500b60c7341c12d61fda9d8c9f7c3f5e8a5092ffca7c5d29f"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "9fb8507d5ebce95500b60c7341c12d61fda9d8c9f7c3f5e8a5092ffca7c5d29f",
+      "extractedTextSha256": "b4cae1889f8013c4e19cb360975b540a3e6a3a528d739b3f6213d726ae1cf0f9"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-governance-rbac-least-privilege",
@@ -1303,7 +1439,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "1912e080332d048191398cf2cb2c8cc80a95ee2e057f6843524b1aa2c95276b4"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "1912e080332d048191398cf2cb2c8cc80a95ee2e057f6843524b1aa2c95276b4",
+      "extractedTextSha256": "be8ad885486171dd755d71254efa845664e4610ce3ab36cec38db9eda6a74b5a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-governance-classification",
@@ -1334,7 +1473,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "d895e71c4164121c5483552a4f5660aadba371783247c2d6adf004e5d1ad390c"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "d895e71c4164121c5483552a4f5660aadba371783247c2d6adf004e5d1ad390c",
+      "extractedTextSha256": "f143c2aaa172c8331bf93cab9aa93b5b08226b8ddfa9e7d1c96fab20ca5cc806"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-governance-export-approval",
@@ -1365,7 +1507,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "075b3eaf2f82613079cf30c43bb1b01d22d507c0c40acfa4cdd6cf0775800cc0"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "075b3eaf2f82613079cf30c43bb1b01d22d507c0c40acfa4cdd6cf0775800cc0",
+      "extractedTextSha256": "d8137d3076c09592c1ca7c3e4f9742e776053956e88c031f1a085e9fce3390f1"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-history-index-rebuild-v1",
@@ -1396,7 +1541,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "68aec982cc6311b1ddcd96694199de8395c6e5e0f33b4e6159bad8aff3b714d8"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "68aec982cc6311b1ddcd96694199de8395c6e5e0f33b4e6159bad8aff3b714d8",
+      "extractedTextSha256": "8025a30c677d296b45b0fde9ce16978c6237915a19c71fd342b68722e4d8348b"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-history-cdc-checkpoint-v1",
@@ -1427,7 +1575,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "e39f240399106253805959ba8f21d99fbddc3cff98ce278f4e3dfd45e3a9ab57"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "e39f240399106253805959ba8f21d99fbddc3cff98ce278f4e3dfd45e3a9ab57",
+      "extractedTextSha256": "3b243030dd9d6adc13fe315367aefe8c9999b6fb353d099c20b8d6664af3c66c"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-history-dictionary-version-v1",
@@ -1458,7 +1609,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "ad27042cf7bc15a32ea92ff4858eae0074346325120843bb6428a7ac93fa0d8a"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "ad27042cf7bc15a32ea92ff4858eae0074346325120843bb6428a7ac93fa0d8a",
+      "extractedTextSha256": "1e00c2753233c01f902e48fdb9ec18ae57de2505ce13711c898abcfb7b04f950"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-history-export-rule-v1",
@@ -1489,7 +1643,10 @@
         "scopeLabel": "租户 10 项目 101 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "0dd9849e055117f3303a537d582f1762b86259374d4afbb67d97f85f748e86b6"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "0dd9849e055117f3303a537d582f1762b86259374d4afbb67d97f85f748e86b6",
+      "extractedTextSha256": "30683e04c7aa208350708166c16a0fc2bd5798a9c2b88d68b1ace4b3212e419c"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-architecture-rag-scope-filter",
@@ -1520,7 +1677,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "865cd5f57e3239614a044e40c9844ed7705e9b83f56775d25bbf63d5082720ee"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "865cd5f57e3239614a044e40c9844ed7705e9b83f56775d25bbf63d5082720ee",
+      "extractedTextSha256": "4c1c0122d674ef07cd9684f195ae86a9bf75c08fc48f078f8291b8971b20cb0d"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-architecture-event-bridge",
@@ -1551,7 +1711,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "06aff018465895cb534f5236247d714be2053bcc85d4947653255a73e1d51808"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "06aff018465895cb534f5236247d714be2053bcc85d4947653255a73e1d51808",
+      "extractedTextSha256": "abe456282a40aabcf9f466b7ed771da2350920c16d9709b1826ad2b76e692948"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-architecture-citation-evidence",
@@ -1582,7 +1745,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "c4483cff9cef79f96ceb9e3d71fedda0defc885becfac2b5bad757496f280fd8"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "c4483cff9cef79f96ceb9e3d71fedda0defc885becfac2b5bad757496f280fd8",
+      "extractedTextSha256": "29a99362f377cd3590a69ab8f9086f5681b0f5fdb603af1685726bde5754fd49"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-product-quality-lifecycle",
@@ -1613,7 +1779,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "ae18ba2262e57f4fbbc9747163afb1d6ec330c95961c923dc5e3567b2b8f98fd"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "ae18ba2262e57f4fbbc9747163afb1d6ec330c95961c923dc5e3567b2b8f98fd",
+      "extractedTextSha256": "d452477902e6bc256c7698617ade044277777956cd7be2559f7f684be36bc8a1"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-product-agent-handoff",
@@ -1644,7 +1813,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "bc7198460d9fe396cbeb0d80d4b576e0da16ff41125b3a0b5fdb102686c9b966"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "bc7198460d9fe396cbeb0d80d4b576e0da16ff41125b3a0b5fdb102686c9b966",
+      "extractedTextSha256": "30f5adf90f2d788bcc47a6fa0c8a8a658856b0857425deb9e338d91cf1ce88e6"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-runbook-rag-index-rebuild",
@@ -1675,7 +1847,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "fba2d5620f10246c4add2bc2d54df57a4285eb0737094b483bb84e682c9faf2e"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "fba2d5620f10246c4add2bc2d54df57a4285eb0737094b483bb84e682c9faf2e",
+      "extractedTextSha256": "522f85ae23c4294d3bb7fb2007dd0bcb7eff438429934fb2f43c540676d15a7e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-runbook-kafka-backlog",
@@ -1706,7 +1881,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "8b2067f36c6fd2c60d3b914547a0b87ea329e2998c5b01c3b63fe7e7337682f7"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "8b2067f36c6fd2c60d3b914547a0b87ea329e2998c5b01c3b63fe7e7337682f7",
+      "extractedTextSha256": "7968a3717dd8ef4cb9680acf6d03c947c04bf237aa14704245bdbb1b64cce159"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-runbook-pgvector-degraded",
@@ -1737,7 +1915,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "94a28d58ae975fc109722dc90649d13d774862b8f22ba48ccc9cb303382b47bc"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "94a28d58ae975fc109722dc90649d13d774862b8f22ba48ccc9cb303382b47bc",
+      "extractedTextSha256": "263da201ca5fbbabe4e072fbb0d31ab7ce28a075106c724f10f9d7c33e8bfca9"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-incident-scope-filter-miss",
@@ -1768,7 +1949,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "a18d68feb08bc4f6bd34a13d9deefbe5b62e90d7c0ea63c98742cc4dce74b94d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "a18d68feb08bc4f6bd34a13d9deefbe5b62e90d7c0ea63c98742cc4dce74b94d",
+      "extractedTextSha256": "91fac823123662e962c79b334bc5b46c59d54ef2d5281ce4601ff32568b43824"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-incident-cdc-offset-gap",
@@ -1799,7 +1983,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "b8bc25ff6c379c6d742bf4129c8d5690d84759c3e4deeabf7ee52d0358b0b732"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "b8bc25ff6c379c6d742bf4129c8d5690d84759c3e4deeabf7ee52d0358b0b732",
+      "extractedTextSha256": "e30ea6292f032aaa1b91c6558eab7eefa9f31e1c38a9a5245ad8b4615d8e3b12"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-incident-schema-drift",
@@ -1830,7 +2017,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "660ee5d2b35da5581478d185d6c5b38f45628baf5d7d37724a12184fc9f8cfb1"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "660ee5d2b35da5581478d185d6c5b38f45628baf5d7d37724a12184fc9f8cfb1",
+      "extractedTextSha256": "9fcaa6976b7e6bb6a22e2752902ce090d24f92cae4e58b22b75744b45f3ab99e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-sync-cdc-orders",
@@ -1861,7 +2051,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "9924915d90a1adbe361780f0e58ce9384fa4d93c2afe89a42e10690c337a4b15"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "9924915d90a1adbe361780f0e58ce9384fa4d93c2afe89a42e10690c337a4b15",
+      "extractedTextSha256": "1634fb76831c2fcc4d0af7033a6bc03d01d5f4cf386f9df37b6a20cdf86de9e4"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-sync-batch-customer",
@@ -1892,7 +2085,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "9717f1e507aed95ace432d0e22eb1af5d5e4edb2f048972e9178e36f6d821249"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "9717f1e507aed95ace432d0e22eb1af5d5e4edb2f048972e9178e36f6d821249",
+      "extractedTextSha256": "cfe898ffa1a6afcf2f0308b7c7342cff9f8243777d54ad076b67476828f0314b"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-sync-idempotency-ledger",
@@ -1923,7 +2119,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "5e4e6ab9e8e3e23a74087d94d759fad23e74706c55146e8f735d6f3ec5910d16"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "5e4e6ab9e8e3e23a74087d94d759fad23e74706c55146e8f735d6f3ec5910d16",
+      "extractedTextSha256": "a5e75a72d77af34a942991e6119d541a31ee58325149d45999bbc9bf339199f0"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-metadata-order-fact-dictionary",
@@ -1954,7 +2153,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "99916161045905cceaf1b48c726b82033bb6234dc8e89f7265f7524d67baa930"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "99916161045905cceaf1b48c726b82033bb6234dc8e89f7265f7524d67baa930",
+      "extractedTextSha256": "16cc07e0a28e599d2a7216223db68e14110e53d4456ccff1f4130bc0267f102d"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-metadata-quality-rule-dictionary",
@@ -1985,7 +2187,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "698cc1343fde2a8d725d7728202ca8d8b672c8faf5bde6bd68b4840dc479b891"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "698cc1343fde2a8d725d7728202ca8d8b672c8faf5bde6bd68b4840dc479b891",
+      "extractedTextSha256": "2d3fe0fbe9dee31d833d6a8fc33ee58797ee64ee94c042a0156ef7b1622343ba"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-metadata-lineage-dataset",
@@ -2016,7 +2221,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "24688628dd48ddb256b47929fd3a0d0a36a88a67cd2bd04ca30cbf74524b4ec5"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "24688628dd48ddb256b47929fd3a0d0a36a88a67cd2bd04ca30cbf74524b4ec5",
+      "extractedTextSha256": "3479ec605afefedcd2483ac24bd22327873c3f54a2cb094bff322a6386e0729b"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-governance-rbac-least-privilege",
@@ -2047,7 +2255,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "f24ec522b5a3a799ac30da9c849a392da908c916ef185885232d84c40dbf15b7"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "f24ec522b5a3a799ac30da9c849a392da908c916ef185885232d84c40dbf15b7",
+      "extractedTextSha256": "fd492cac5a37eb70f36a342b16627ad0e937ba32011510568a8dc1e7d0d9f3f3"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-governance-classification",
@@ -2078,7 +2289,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "745629a986444824555c951babce93ec0ff087cc645e1f0c1af0d48c590fce14"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "745629a986444824555c951babce93ec0ff087cc645e1f0c1af0d48c590fce14",
+      "extractedTextSha256": "a70d9a511e15fcd5f697dc73d7b3bf91887830e93696e7f5cdbdb3c6c89e6f10"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-governance-export-approval",
@@ -2109,7 +2323,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "5b11252641ad51498ef015824c853cab181555a8f245de631ad79c8562ef0e13"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "5b11252641ad51498ef015824c853cab181555a8f245de631ad79c8562ef0e13",
+      "extractedTextSha256": "5712d6330354645956a785a5c6edc637a6e00b36c5e5762b44d12f0f99c175e1"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-history-index-rebuild-v1",
@@ -2140,7 +2357,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "7ccc072d3fdd832e8cdc80da9b0ffaeecae98a70b5a308e9e4500f27de790f20"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "7ccc072d3fdd832e8cdc80da9b0ffaeecae98a70b5a308e9e4500f27de790f20",
+      "extractedTextSha256": "7f412ced244b5a86999add90efc982b870ff9936a88c112e41bcb8c897daba75"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-history-cdc-checkpoint-v1",
@@ -2171,7 +2391,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "2fb5e37412def2180030d492741afc44d3353a44d8f568171343c7bc33b65bab"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "2fb5e37412def2180030d492741afc44d3353a44d8f568171343c7bc33b65bab",
+      "extractedTextSha256": "8d1374ef873ac14ec9f8ad5da08fe7adc65fdabbbcd51b2ad308cea5e8a1351a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-history-dictionary-version-v1",
@@ -2202,7 +2425,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "6218e45ec1f5366daa8b2411f617bb10122602202e215d0e1e507657da24812a"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "6218e45ec1f5366daa8b2411f617bb10122602202e215d0e1e507657da24812a",
+      "extractedTextSha256": "7d5d01a916cf0f163338d25f7b808236ad80a275ee0cad195aeee3e3df50a255"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-history-export-rule-v1",
@@ -2233,7 +2459,10 @@
         "scopeLabel": "租户 10 项目 102 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "1b7e37966a3c68027e61c3dbaf4821eabcd0746269bbdd7a5c15a82f310861e7"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "1b7e37966a3c68027e61c3dbaf4821eabcd0746269bbdd7a5c15a82f310861e7",
+      "extractedTextSha256": "968cf9efe91279dde256d018d4adc2f1cc689686d6c28994013023f88d5a78a5"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-architecture-rag-scope-filter",
@@ -2264,7 +2493,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "497db1ad949e2cfe537dadd55a309d3a53b9834e0df3c82640dddbf4eade9bbd"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "497db1ad949e2cfe537dadd55a309d3a53b9834e0df3c82640dddbf4eade9bbd",
+      "extractedTextSha256": "853b30de9fbb6d9e01e560c7047de563c509db21ace98087137186454cfc595a"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-architecture-event-bridge",
@@ -2295,7 +2527,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "7f64c7aad4c381d031cdb85fa0816336a109e643c0dce06d7537f20ed22aca95"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "7f64c7aad4c381d031cdb85fa0816336a109e643c0dce06d7537f20ed22aca95",
+      "extractedTextSha256": "14b400999dccbce63106e5260426ae7acd0093932925d4cbe5cb56d2f414514a"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-architecture-citation-evidence",
@@ -2326,7 +2561,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "3cf5079641a119110f5cd9b3dee9dd90ceac98a2c710e6b71b55d34f46851fe9"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "3cf5079641a119110f5cd9b3dee9dd90ceac98a2c710e6b71b55d34f46851fe9",
+      "extractedTextSha256": "af806f603cc8c877851a1149141e4af1616e06b3494c09acd2b411b3500585f9"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-product-quality-lifecycle",
@@ -2357,7 +2595,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "fcda3af44ad5e0632fe17a5add9f3fe01ae50df962b0aac484a7a37e3390bd3c"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "fcda3af44ad5e0632fe17a5add9f3fe01ae50df962b0aac484a7a37e3390bd3c",
+      "extractedTextSha256": "f6daa197b099387b8afbc1bb3a1bdc7c8d0e3be77c0c31a7ad4f6136ebb80d65"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-product-agent-handoff",
@@ -2388,7 +2629,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "f3826f6c3d4d8600abfa80184886245536a5410bb8a0a4078289384c80038611"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "f3826f6c3d4d8600abfa80184886245536a5410bb8a0a4078289384c80038611",
+      "extractedTextSha256": "c0bc5ea49070a21330f5e9b0cc64745d3ba1d5e4282df7d61a8814015ef9d000"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-runbook-rag-index-rebuild",
@@ -2419,7 +2663,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "b92d9ea693fec6d3fc453886f3b9743d5b80b4427177406e50e270f360b1d194"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "b92d9ea693fec6d3fc453886f3b9743d5b80b4427177406e50e270f360b1d194",
+      "extractedTextSha256": "3284f6f61654a440e46b1d60497e6353b96a5fe6403575ec6e19e43560bf75dd"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-runbook-kafka-backlog",
@@ -2450,7 +2697,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "1883a8e351e6dc0ee9bff82dc1eba9da734736b606d735edd94b4681fedd775d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "1883a8e351e6dc0ee9bff82dc1eba9da734736b606d735edd94b4681fedd775d",
+      "extractedTextSha256": "7fc99905235c1a1b473c24763141086cd1d67838971da1a1b284eea979b23619"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-runbook-pgvector-degraded",
@@ -2481,7 +2731,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "f3db56cf72577b3bca44ad047600646ece639cc92a91c0e2906d4153e987e9a1"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "f3db56cf72577b3bca44ad047600646ece639cc92a91c0e2906d4153e987e9a1",
+      "extractedTextSha256": "0fe3133a5abceb7cc3563bb2cb9b0c92f221b6dc10bca0da4e5bbdc7ce859dc5"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-incident-scope-filter-miss",
@@ -2512,7 +2765,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "92154e3b96673a5666bc4d8c95cb73d5a2a91ca89d5f41c9c35922023a85f1e7"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "92154e3b96673a5666bc4d8c95cb73d5a2a91ca89d5f41c9c35922023a85f1e7",
+      "extractedTextSha256": "9149b2e1f5272756489558ad5b4224c95b8a75ccbeb4d86e78faed49cf87f122"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-incident-cdc-offset-gap",
@@ -2543,7 +2799,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "34e0db70a710ad3b115624fd82ee102397e0ecce855059ee50097c17644f1e6f"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "34e0db70a710ad3b115624fd82ee102397e0ecce855059ee50097c17644f1e6f",
+      "extractedTextSha256": "2456f224e19b1da04a07bda4a9488e51463151f93bab4a7b792b5d763f0e0134"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-incident-schema-drift",
@@ -2574,7 +2833,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "a3ed79f352b328760562828e93c81dde03fb454709a56ce3137e9fbde3461a8c"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "a3ed79f352b328760562828e93c81dde03fb454709a56ce3137e9fbde3461a8c",
+      "extractedTextSha256": "02eedd50d0f8fa713d89b1a2143d1a576dfa97e7c4ac7dc015ae3e6c2d19f1c2"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-sync-cdc-orders",
@@ -2605,7 +2867,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "e6b39ab30c27143ff4faaa343593eba210428215127e485d58474be7a6d4890d"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "e6b39ab30c27143ff4faaa343593eba210428215127e485d58474be7a6d4890d",
+      "extractedTextSha256": "42d6b319700f8dc26adfcde72f3295e6eaec54aa9597c9bafb9506f6ad057b01"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-sync-batch-customer",
@@ -2636,7 +2901,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "f19225b839f6ea04bb3295b1017a88b073f0442be645193dd4f15fb525b1c38a"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "f19225b839f6ea04bb3295b1017a88b073f0442be645193dd4f15fb525b1c38a",
+      "extractedTextSha256": "cc63afaf1e25e1a5edcaaf0bec8d96013a1aa9c33091ab93a19be0c29fbf0f20"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-sync-idempotency-ledger",
@@ -2667,7 +2935,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "1a347e07bd624f33408cced7dc652acec45441ee689531592c3cf92b0bc5f402"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "1a347e07bd624f33408cced7dc652acec45441ee689531592c3cf92b0bc5f402",
+      "extractedTextSha256": "ec065288508a623729f8122927b4745e1a99f8051ba87686227e5f4615a0debf"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-metadata-order-fact-dictionary",
@@ -2698,7 +2969,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "1cec47edd15df952798fb73f20e9e1b40a40d5069ed044c80a5735585ed50468"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "1cec47edd15df952798fb73f20e9e1b40a40d5069ed044c80a5735585ed50468",
+      "extractedTextSha256": "96aec9bf1a4b38b9499e5673d48d79f0e608c4ad51a19190bf9177cc065590f1"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-metadata-quality-rule-dictionary",
@@ -2729,7 +3003,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "c330145b8f9d80e4c9940d9dd0d68832c575850373f22c068b73ebd40e6ced1e"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "c330145b8f9d80e4c9940d9dd0d68832c575850373f22c068b73ebd40e6ced1e",
+      "extractedTextSha256": "6aab39129458388c50947785179f0b476dd079c2a45990c42fec338842eb84c5"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-metadata-lineage-dataset",
@@ -2760,7 +3037,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "282e8d9964f777ddcdf9946ba85143d906949cbdd45385676d5ac2201841e0d5"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "282e8d9964f777ddcdf9946ba85143d906949cbdd45385676d5ac2201841e0d5",
+      "extractedTextSha256": "5d1014b7da94f490de663ac0a34e6771e8bb25bc307470e60f3de48eb8bfb917"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-governance-rbac-least-privilege",
@@ -2791,7 +3071,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "77ec0bcfe3f31b50f4d3e49cd0c5f37d3ed2a68f93f2cf368a90360e0e11d818"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "77ec0bcfe3f31b50f4d3e49cd0c5f37d3ed2a68f93f2cf368a90360e0e11d818",
+      "extractedTextSha256": "bd6f6406e2cb0a6f923dca6407602042570b632b9127c8b2a0110340023fe15f"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-governance-classification",
@@ -2822,7 +3105,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "c9a4db87e868cd3c43848bd0f205dd478dc5f11cd0113aea2f7cd15ede218b75"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "c9a4db87e868cd3c43848bd0f205dd478dc5f11cd0113aea2f7cd15ede218b75",
+      "extractedTextSha256": "f710c2b27493eaa4b72c14e707c46be26e3e946ff52cd5d07ba3d7de6c279ab1"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-governance-export-approval",
@@ -2853,7 +3139,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "9f4f673718acf174afebb0bc5d722c930f7106083d0422295243499dbf83db86"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "9f4f673718acf174afebb0bc5d722c930f7106083d0422295243499dbf83db86",
+      "extractedTextSha256": "d16794a48d1df3f85094ecb632f130959e0a90d0a185044376c95f09b903f5f4"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-history-index-rebuild-v1",
@@ -2884,7 +3173,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "64efc23e27e337a6c29e48b82879cc37ba8d19a7ea4a4f22593559920bab4216"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "64efc23e27e337a6c29e48b82879cc37ba8d19a7ea4a4f22593559920bab4216",
+      "extractedTextSha256": "e6ffb9728fb1ece0e157016fe565019c6b2c5fe5dce5b5375ec63ffd51baaeef"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-history-cdc-checkpoint-v1",
@@ -2915,7 +3207,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "cbc8f7394fcd50e80c8f4e1db9eabd329622eadfe7da59a254d54267fc42fb36"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "cbc8f7394fcd50e80c8f4e1db9eabd329622eadfe7da59a254d54267fc42fb36",
+      "extractedTextSha256": "2971e80d92ed467508e6664ee68c1c10d7332946661a4654f2ea98fd34500361"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-history-dictionary-version-v1",
@@ -2946,7 +3241,10 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "77d24d4eb282ecda53ce2ef904f048b48c67130800ee98c0205353ae11df726e"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "77d24d4eb282ecda53ce2ef904f048b48c67130800ee98c0205353ae11df726e",
+      "extractedTextSha256": "83a7ef9aaebe1cb1e8a6b6d44c0cdda2ec958f086addd746b9081a0d87bf0dda"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-history-export-rule-v1",
@@ -2977,7 +3275,3226 @@
         "scopeLabel": "租户 20 项目 201 合成演示空间"
       },
       "enabled": true,
-      "contentSha256": "789a295ecd302c597f5750751b079f18f3f429d63d258439c9686573ca4fef2b"
+      "contentFormat": "md",
+      "mediaType": "text/markdown",
+      "contentSha256": "789a295ecd302c597f5750751b079f18f3f429d63d258439c9686573ca4fef2b",
+      "extractedTextSha256": "502806e6839ca611a42898e400f2244f19ea89587391b59f22000859f5adfb20"
+    },
+    {
+      "documentId": "rag-eval-global-manual-user-guide",
+      "title": "DataSmart Govern 用户操作手册",
+      "path": "documents/global/manuals/manual-user-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/manual-user-guide.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "document",
+      "tags": [
+        "用户手册",
+        "同步任务",
+        "首次授权"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "user_manual",
+        "retrievalAnchor": "global:manual-user-guide",
+        "artifactCode": "DOC-USR-701",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "4cae160727a01365c09f216dd4c198259b2eaf5ba51f8fce2ea47d90a9574d13",
+      "extractedTextSha256": "ec4b90fc2f31d5ba8cb58711307c69d683bd95342867b635a60188e50ec45a72"
+    },
+    {
+      "documentId": "rag-eval-global-manual-administrator-guide",
+      "title": "DataSmart Govern 管理员手册",
+      "path": "documents/global/manuals/manual-administrator-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/manual-administrator-guide.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "document",
+      "tags": [
+        "管理员手册",
+        "RBAC",
+        "租户隔离"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "administrator_manual",
+        "retrievalAnchor": "global:manual-administrator-guide",
+        "artifactCode": "DOC-ADM-714",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "f20cec9e73b7c659db647e355810d03d9f0b22561d963390c60bb4696f80f70b",
+      "extractedTextSha256": "9f96f280ca772ee92908bd746d6fe538ebc211ce399658ad5b04d2131a2893b3"
+    },
+    {
+      "documentId": "rag-eval-global-manual-deployment-guide",
+      "title": "DataSmart Govern 部署手册",
+      "path": "documents/global/manuals/manual-deployment-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/manual-deployment-guide.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "runbook",
+      "tags": [
+        "部署手册",
+        "Kafka",
+        "pgvector"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "deployment_manual",
+        "retrievalAnchor": "global:manual-deployment-guide",
+        "artifactCode": "DOC-DEP-731",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "d72374a6c3a7ccdc72028cdf2046a65f94b0ce4f13e184135f0bbd84ba568c3f",
+      "extractedTextSha256": "2ca9e68324815fa8b7924ebfebc105ad637435332ac46a96867b6dcdfacf1be6"
+    },
+    {
+      "documentId": "rag-eval-global-manual-operations-guide",
+      "title": "DataSmart Govern 运维手册",
+      "path": "documents/global/manuals/manual-operations-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/manual-operations-guide.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "runbook",
+      "tags": [
+        "运维手册",
+        "日志",
+        "指标"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_manual",
+        "retrievalAnchor": "global:manual-operations-guide",
+        "artifactCode": "DOC-OPS-746",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "36baee469fbb72a0b49097b434fff0a9ff10bdb3ffd98eb06a17e479d0ee2a1c",
+      "extractedTextSha256": "2e790f0d2825ed4d2de0642d38c33aae9151c8c1b880c17580595fc24aae4e35"
+    },
+    {
+      "documentId": "rag-eval-global-record-operations-incident",
+      "title": "同步平台运维记录",
+      "path": "documents/global/manuals/record-operations-incident.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/record-operations-incident.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "incident",
+      "tags": [
+        "运维记录",
+        "事故时间线",
+        "恢复验证"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_record",
+        "retrievalAnchor": "global:record-operations-incident",
+        "artifactCode": "DOC-REC-752",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "00ca16fb581449f33d7f12f046f2e2b17ef1d963bfb8090295607a991bd5ece0",
+      "extractedTextSha256": "38233c42dbdfe4fac6d560be6c9f45994f9ee3706d055bb59ad2c5bafc2f2c05"
+    },
+    {
+      "documentId": "rag-eval-global-report-platform-test",
+      "title": "DataSmart Govern 平台测试报告",
+      "path": "documents/global/manuals/report-platform-test.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/report-platform-test.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "document",
+      "tags": [
+        "测试报告",
+        "六Agent",
+        "RAG评测"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_report",
+        "retrievalAnchor": "global:report-platform-test",
+        "artifactCode": "DOC-TST-768",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "3aefb517b8ef47f2eb05a211aa61ac119ff25148b61bd47128636ba7644cfbe3",
+      "extractedTextSha256": "aa9f8a8a332de3db4840758578f22dbc23bba7df485a50556efb8c906dbf7976"
+    },
+    {
+      "documentId": "rag-eval-global-product-feature-specification",
+      "title": "DataSmart Govern 产品特性说明",
+      "path": "documents/global/manuals/product-feature-specification.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/product-feature-specification.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "document",
+      "tags": [
+        "产品特性",
+        "多Agent",
+        "自治恢复"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "product_features",
+        "retrievalAnchor": "global:product-feature-specification",
+        "artifactCode": "DOC-PRD-783",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "e9d86a7527c6fa188f46321e4570b9a9c823a3986fa34fa647fd79c6fb996ee0",
+      "extractedTextSha256": "c22c31d09bae756d75c95d3b23a2f45cc5d39e4dd99164ced8ea8dc26182f4da"
+    },
+    {
+      "documentId": "rag-eval-global-reference-api-websocket",
+      "title": "Agent、任务与数据同步接口说明",
+      "path": "documents/global/manuals/reference-api-websocket.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/reference-api-websocket.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "document",
+      "tags": [
+        "接口说明",
+        "WebSocket",
+        "任务合同"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "api_reference",
+        "retrievalAnchor": "global:reference-api-websocket",
+        "artifactCode": "DOC-API-795",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "dc374bed0f30a50a3073aec04aecfa083ff70daa98ce8d0cc53da7bcbdf1e974",
+      "extractedTextSha256": "38912488dd8e42e46abbcaa5661f7814bdc335d60e9ebb4f87d77cbda47edd0a"
+    },
+    {
+      "documentId": "rag-eval-global-manual-schema-recovery",
+      "title": "字段映射与约束故障恢复手册",
+      "path": "documents/global/manuals/manual-schema-recovery.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/manual-schema-recovery.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "runbook",
+      "tags": [
+        "字段映射",
+        "默认值",
+        "外键"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_manual",
+        "retrievalAnchor": "global:manual-schema-recovery",
+        "artifactCode": "DOC-RCV-812",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "9f88ad4ee19557958eb98d3bf5e640086cef6e0970296fbf49abd63b28dfbb9a",
+      "extractedTextSha256": "753cf1dd23a70c5ac861aeeca450fab7f456ba6176708d2849503a06b0e30319"
+    },
+    {
+      "documentId": "rag-eval-global-manual-security-approval",
+      "title": "安全、审批与自治边界手册",
+      "path": "documents/global/manuals/manual-security-approval.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/manuals/manual-security-approval.docx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "rule",
+      "tags": [
+        "安全手册",
+        "审批",
+        "授权盒"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "security_manual",
+        "retrievalAnchor": "global:manual-security-approval",
+        "artifactCode": "DOC-SEC-829",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "eaaa2f4b98730608018093b918f8a6485fdeb9fb6d6c8ae09dc767bac6a29240",
+      "extractedTextSha256": "905bc805e6dfef86c5bfb7607bb4e220960b560af485fb5b8971d7807d4793c4"
+    },
+    {
+      "documentId": "rag-eval-global-workbook-success-task-parameters",
+      "title": "成功同步任务参数案例",
+      "path": "documents/global/spreadsheets/workbook-success-task-parameters.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/spreadsheets/workbook-success-task-parameters.xlsx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "成功任务",
+        "任务参数"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_task_case",
+        "retrievalAnchor": "global:workbook-success-task-parameters",
+        "artifactCode": "XLSX-TASK-518",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "39bf17a13a0b623f4a677c030f83d7d6e3646c040092b27402641b637d197631",
+      "extractedTextSha256": "bd5ce740fb48278d6cb5c22df3000d549b19eb7ccc1614c913cc43a0b705b99a"
+    },
+    {
+      "documentId": "rag-eval-global-workbook-field-mapping-cases",
+      "title": "字段映射与默认值案例",
+      "path": "documents/global/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "dataset",
+      "tags": [
+        "Excel",
+        "字段映射",
+        "默认值"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "field_mapping_case",
+        "retrievalAnchor": "global:workbook-field-mapping-cases",
+        "artifactCode": "XLSX-MAP-536",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "0980ccec6b99a937f3832f9630b5786f32b6776d7e436b1bb69a57bd24d9e79c",
+      "extractedTextSha256": "954523ae711f371195d4314c423f9527d5be61bc0acecdd6e2ec6e8206ad1bb2"
+    },
+    {
+      "documentId": "rag-eval-global-workbook-schedule-retry-cases",
+      "title": "调度与重试参数案例",
+      "path": "documents/global/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "调度",
+        "重试"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "schedule_case",
+        "retrievalAnchor": "global:workbook-schedule-retry-cases",
+        "artifactCode": "XLSX-SCH-554",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "2c0a36e4b4a6106fcb2d601964cac82f4b025adc136ee8d0695d3ec8b5351255",
+      "extractedTextSha256": "4abd7cea5bbe7ce95ac492ebea2f3df734fea1b994ffbb36fb897426b17acb80"
+    },
+    {
+      "documentId": "rag-eval-global-workbook-test-result-matrix",
+      "title": "RAG 与 Agent 测试结果矩阵",
+      "path": "documents/global/spreadsheets/workbook-test-result-matrix.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/spreadsheets/workbook-test-result-matrix.xlsx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "document",
+      "tags": [
+        "Excel",
+        "测试报告",
+        "质量门禁"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_matrix",
+        "retrievalAnchor": "global:workbook-test-result-matrix",
+        "artifactCode": "XLSX-TST-572",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "1a95170600557e68fa5eb867967e45862c725eb67bd8b9dba407ccf4d2f6ed28",
+      "extractedTextSha256": "ae4eb6d8e4767c2d5d5ab3b76e1948d055e84be27f3c1b730d6a1334a28182e2"
+    },
+    {
+      "documentId": "rag-eval-global-workbook-incident-repair-ledger",
+      "title": "事故证据与修复动作台账",
+      "path": "documents/global/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "incident",
+      "tags": [
+        "Excel",
+        "事故台账",
+        "自动修复"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "repair_ledger",
+        "retrievalAnchor": "global:workbook-incident-repair-ledger",
+        "artifactCode": "XLSX-INC-589",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "7654d2b9f36f4ba6ea80808689e92ae0c9c10ac1e2fa7e26f2f52a31af618d36",
+      "extractedTextSha256": "f2dccbc5dd7ba8b121f726ef34feb2fd03c916363b80b8cc57a4d24bbc550692"
+    },
+    {
+      "documentId": "rag-eval-global-quick-reference",
+      "title": "DataSmart Govern 快速参考",
+      "path": "documents/global/structured/quick-reference.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/quick-reference.txt",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "document",
+      "tags": [
+        "TXT",
+        "快速参考"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "quick_reference",
+        "retrievalAnchor": "global:quick-reference",
+        "artifactCode": "TXT-QRF-611",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "e314a4087f6257de3014e7e33312deef3dbf32e59561f9450479fa5abf9bfe74",
+      "extractedTextSha256": "39280a7bd027a282e7aa3a7d711ade4d38dabf073af184dbe72cfc0386c22bd6"
+    },
+    {
+      "documentId": "rag-eval-global-operator-faq",
+      "title": "运维常见问题",
+      "path": "documents/global/structured/operator-faq.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/operator-faq.txt",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "runbook",
+      "tags": [
+        "TXT",
+        "FAQ",
+        "运维"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operator_faq",
+        "retrievalAnchor": "global:operator-faq",
+        "artifactCode": "TXT-FAQ-624",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "b853efd94038f7961d5b0b332b5c9f13c12b758a076b3e62a22677103672863a",
+      "extractedTextSha256": "f3afb8352e0ef785c84ccd9e8cc4d6a5d795b3e8c5845b9d97fe02e501d69df6"
+    },
+    {
+      "documentId": "rag-eval-global-connector-capabilities",
+      "title": "连接器能力与容量快照",
+      "path": "documents/global/structured/connector-capabilities.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/connector-capabilities.json",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "metadata",
+      "tags": [
+        "JSON",
+        "连接器",
+        "容量"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "connector_capabilities",
+        "retrievalAnchor": "global:connector-capabilities",
+        "artifactCode": "JSON-CON-637",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "76fc4c325de185f9fd5bd35b5125bd69cc27afd80338105c6d82e217c5d04fe4",
+      "extractedTextSha256": "f97aaaef4b4589cc5904f45ed5ce13e1ba9cd0885a612da93bee5e46464b9759"
+    },
+    {
+      "documentId": "rag-eval-global-agent-state-snapshot",
+      "title": "Agent 全链路状态快照",
+      "path": "documents/global/structured/agent-state-snapshot.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/agent-state-snapshot.json",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "memory_export",
+      "tags": [
+        "JSON",
+        "Agent",
+        "状态机"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "agent_state_snapshot",
+        "retrievalAnchor": "global:agent-state-snapshot",
+        "artifactCode": "JSON-AGT-645",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "09595ad63e35243ca7d7404332cbe26e8bcb00555fde2bc628f82679e4b18dea",
+      "extractedTextSha256": "655c0f53bb8ecac01166b30651d8c9075f5da58dcb419390f9ef15ce55865354"
+    },
+    {
+      "documentId": "rag-eval-global-recovery-events",
+      "title": "恢复事件流水",
+      "path": "documents/global/structured/recovery-events.jsonl",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/recovery-events.jsonl",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "incident",
+      "tags": [
+        "JSONL",
+        "恢复事件",
+        "时间线"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_events",
+        "retrievalAnchor": "global:recovery-events",
+        "artifactCode": "JSONL-RCV-653",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "jsonl",
+      "mediaType": "application/x-ndjson",
+      "contentSha256": "e60d20cf8fdd8aa78682c88a575ca1c299a95ed1cc6c4f5554ee1655b34b9ee9",
+      "extractedTextSha256": "89d96e10ffea47fe7d03211fc222b3fecec23694aa00754c9a8cb34bb53b27d7"
+    },
+    {
+      "documentId": "rag-eval-global-successful-runs",
+      "title": "历史成功运行记录",
+      "path": "documents/global/structured/successful-runs.csv",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/successful-runs.csv",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "task_case",
+      "tags": [
+        "CSV",
+        "成功任务",
+        "历史记录"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_runs",
+        "retrievalAnchor": "global:successful-runs",
+        "artifactCode": "CSV-RUN-667",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "csv",
+      "mediaType": "text/csv",
+      "contentSha256": "83bd573c0abebc89d19ed04dedf38131177d9f3b1f8bb7314276944c9ff1ec04",
+      "extractedTextSha256": "4975645508e50c50a517705a915559d49e2a67e16474e5e6405585ef9a86a224"
+    },
+    {
+      "documentId": "rag-eval-global-worker-execution",
+      "title": "数据同步 Worker 执行日志",
+      "path": "documents/global/structured/worker-execution.log",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/worker-execution.log",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "incident",
+      "tags": [
+        "LOG",
+        "Worker",
+        "错误日志"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "worker_execution",
+        "retrievalAnchor": "global:worker-execution",
+        "artifactCode": "LOG-WRK-679",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "log",
+      "mediaType": "text/plain",
+      "contentSha256": "b51ca356321673327b137f806a7106e7f9483f087fac769845097c2bd46407b6",
+      "extractedTextSha256": "65e76545d3a300010dcc7e2677092916b86e210776274c56f29e1da030eb79d5"
+    },
+    {
+      "documentId": "rag-eval-global-persistence-snapshot",
+      "title": "任务与恢复持久化快照",
+      "path": "documents/global/structured/persistence-snapshot.sql",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/global/structured/persistence-snapshot.sql",
+      "tenantId": "*",
+      "projectId": "*",
+      "workspaceKey": "*",
+      "sourceType": "dataset",
+      "tags": [
+        "SQL",
+        "数据库",
+        "持久化"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "persistence_snapshot",
+        "retrievalAnchor": "global:persistence-snapshot",
+        "artifactCode": "SQL-DB-688",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "全局产品基线",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "sql",
+      "mediaType": "application/sql",
+      "contentSha256": "6566d635fe331c8ffbb728c9c61ba7c822fb8ac3f250fe7fb667e18eacc6c9d8",
+      "extractedTextSha256": "570be55061186043bfae1543d69f1e2d3c7232055ae226ac0b1197286d88253e"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-manual-user-guide",
+      "title": "DataSmart Govern 用户操作手册",
+      "path": "documents/tenant-10-project-101/manuals/manual-user-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/manual-user-guide.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "document",
+      "tags": [
+        "用户手册",
+        "同步任务",
+        "首次授权"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "user_manual",
+        "retrievalAnchor": "tenant-10-project-101:manual-user-guide",
+        "artifactCode": "DOC-USR-701",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "03809d2e0823dd0f7bec851c1b375602729ffe610551e5e798fbdcf5be02e597",
+      "extractedTextSha256": "9bd01bfe7eda07174475bd56638e5c1b97ac100f79f99958359b8478ed92afd0"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-manual-administrator-guide",
+      "title": "DataSmart Govern 管理员手册",
+      "path": "documents/tenant-10-project-101/manuals/manual-administrator-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/manual-administrator-guide.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "document",
+      "tags": [
+        "管理员手册",
+        "RBAC",
+        "租户隔离"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "administrator_manual",
+        "retrievalAnchor": "tenant-10-project-101:manual-administrator-guide",
+        "artifactCode": "DOC-ADM-714",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "1af74207c0e6938b4058e9f72da1d22e42ee2491978ec74d4851c73c515e796f",
+      "extractedTextSha256": "b89439dcf831cf40fdb801f3be8bd1be079e04aff2ef7e9ff81cb1337d30740b"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-manual-deployment-guide",
+      "title": "DataSmart Govern 部署手册",
+      "path": "documents/tenant-10-project-101/manuals/manual-deployment-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/manual-deployment-guide.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "runbook",
+      "tags": [
+        "部署手册",
+        "Kafka",
+        "pgvector"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "deployment_manual",
+        "retrievalAnchor": "tenant-10-project-101:manual-deployment-guide",
+        "artifactCode": "DOC-DEP-731",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "3fb786ff30802cbf91ce6171bd0e2e9887f8ce85e3c0103370d658f67f55f29d",
+      "extractedTextSha256": "cc684e7c6ec0c4d5fa80325f256adc8156e809fe776ff9065a4ecee739535829"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-manual-operations-guide",
+      "title": "DataSmart Govern 运维手册",
+      "path": "documents/tenant-10-project-101/manuals/manual-operations-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/manual-operations-guide.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "runbook",
+      "tags": [
+        "运维手册",
+        "日志",
+        "指标"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_manual",
+        "retrievalAnchor": "tenant-10-project-101:manual-operations-guide",
+        "artifactCode": "DOC-OPS-746",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "13b7f6eac2266e8e7beb1a88043f37f1954e2932155f48a76a28c830c559d190",
+      "extractedTextSha256": "654c1f2bedbea26a2ccb3f07759589f2f34ac6c6b18160acee8f2f39f267f097"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-record-operations-incident",
+      "title": "同步平台运维记录",
+      "path": "documents/tenant-10-project-101/manuals/record-operations-incident.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/record-operations-incident.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "incident",
+      "tags": [
+        "运维记录",
+        "事故时间线",
+        "恢复验证"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_record",
+        "retrievalAnchor": "tenant-10-project-101:record-operations-incident",
+        "artifactCode": "DOC-REC-752",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "dc306e262acae824c6f5e6dae939b1b9569659e4278e6ba9dda6d5b3e4b84657",
+      "extractedTextSha256": "3eafbea6c296d8b8f534a6ea8ca48da08501aca588780f3105dd6b471ad03d4b"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-report-platform-test",
+      "title": "DataSmart Govern 平台测试报告",
+      "path": "documents/tenant-10-project-101/manuals/report-platform-test.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/report-platform-test.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "document",
+      "tags": [
+        "测试报告",
+        "六Agent",
+        "RAG评测"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_report",
+        "retrievalAnchor": "tenant-10-project-101:report-platform-test",
+        "artifactCode": "DOC-TST-768",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "1860b23fcff4864bde67334d8d2f80867214394115a44a1f10b9e56440b9a906",
+      "extractedTextSha256": "4063e1785e7bedfcc1b7672662b0a16fe0707567ffcef95ae70f19c1bafff51f"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-product-feature-specification",
+      "title": "DataSmart Govern 产品特性说明",
+      "path": "documents/tenant-10-project-101/manuals/product-feature-specification.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/product-feature-specification.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "document",
+      "tags": [
+        "产品特性",
+        "多Agent",
+        "自治恢复"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "product_features",
+        "retrievalAnchor": "tenant-10-project-101:product-feature-specification",
+        "artifactCode": "DOC-PRD-783",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "767e1183cc0650817221620d572ef1a19e5564fa2ff5ebd54db587c872b45f12",
+      "extractedTextSha256": "394e677b28c0020eaf15ff2e541fb98e97ecdc7c72027a5f5c21620fd3990822"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-reference-api-websocket",
+      "title": "Agent、任务与数据同步接口说明",
+      "path": "documents/tenant-10-project-101/manuals/reference-api-websocket.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/reference-api-websocket.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "document",
+      "tags": [
+        "接口说明",
+        "WebSocket",
+        "任务合同"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "api_reference",
+        "retrievalAnchor": "tenant-10-project-101:reference-api-websocket",
+        "artifactCode": "DOC-API-795",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "4b28c8fbef71b3b9a866c6bf188cec8885111f506c72fc58b51995462194b143",
+      "extractedTextSha256": "2d8edd53035a226a3fdf265f506d8d979b9c313186f60ef7d1c726973364d907"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-manual-schema-recovery",
+      "title": "字段映射与约束故障恢复手册",
+      "path": "documents/tenant-10-project-101/manuals/manual-schema-recovery.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/manual-schema-recovery.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "runbook",
+      "tags": [
+        "字段映射",
+        "默认值",
+        "外键"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_manual",
+        "retrievalAnchor": "tenant-10-project-101:manual-schema-recovery",
+        "artifactCode": "DOC-RCV-812",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "8a6c4318a6a81244879aaa148600aac1a79d1f7ab0099833010fee8956c486a4",
+      "extractedTextSha256": "392bc1c75bdda5227f037b1799fa36612a61771814dec08f8bc4241ee869c122"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-manual-security-approval",
+      "title": "安全、审批与自治边界手册",
+      "path": "documents/tenant-10-project-101/manuals/manual-security-approval.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/manuals/manual-security-approval.docx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "rule",
+      "tags": [
+        "安全手册",
+        "审批",
+        "授权盒"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "security_manual",
+        "retrievalAnchor": "tenant-10-project-101:manual-security-approval",
+        "artifactCode": "DOC-SEC-829",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "5660d3414e5eb21dcf6c39187e53c77d0ec34dd1707ba9a483f56939a84462e6",
+      "extractedTextSha256": "46e9456cff32dd779cf0dfaa304262a23110c4a76cf8335af48c75c0b63bfd2d"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-workbook-success-task-parameters",
+      "title": "成功同步任务参数案例",
+      "path": "documents/tenant-10-project-101/spreadsheets/workbook-success-task-parameters.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/spreadsheets/workbook-success-task-parameters.xlsx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "成功任务",
+        "任务参数"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_task_case",
+        "retrievalAnchor": "tenant-10-project-101:workbook-success-task-parameters",
+        "artifactCode": "XLSX-TASK-518",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "943327b10670de2b2605376a5d5f47dc92bbd3d2e0e9130d60d84c1ce0b50a7c",
+      "extractedTextSha256": "5798d8e64d44c52228eacdd9c8382492202cd07ccc77f4bc6c014fcd7721ba99"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-workbook-field-mapping-cases",
+      "title": "字段映射与默认值案例",
+      "path": "documents/tenant-10-project-101/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "dataset",
+      "tags": [
+        "Excel",
+        "字段映射",
+        "默认值"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "field_mapping_case",
+        "retrievalAnchor": "tenant-10-project-101:workbook-field-mapping-cases",
+        "artifactCode": "XLSX-MAP-536",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "7e67e31012028c85166b6ac66f82fa96176d7ce7e91d34b3a1af6d3c641598bf",
+      "extractedTextSha256": "dd89e18ff2d0f9a05291cc6dec64083961149802bea557a517d1520370b5e885"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-workbook-schedule-retry-cases",
+      "title": "调度与重试参数案例",
+      "path": "documents/tenant-10-project-101/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "调度",
+        "重试"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "schedule_case",
+        "retrievalAnchor": "tenant-10-project-101:workbook-schedule-retry-cases",
+        "artifactCode": "XLSX-SCH-554",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "168acd67896b145a4ff948bf2decbdcdf20b7ef230cd032a98c50cd0aa5969c6",
+      "extractedTextSha256": "729396c75cf36260d6bd805c5242b0e177b050907609d1502a82cfa09219372f"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-workbook-test-result-matrix",
+      "title": "RAG 与 Agent 测试结果矩阵",
+      "path": "documents/tenant-10-project-101/spreadsheets/workbook-test-result-matrix.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/spreadsheets/workbook-test-result-matrix.xlsx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "document",
+      "tags": [
+        "Excel",
+        "测试报告",
+        "质量门禁"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_matrix",
+        "retrievalAnchor": "tenant-10-project-101:workbook-test-result-matrix",
+        "artifactCode": "XLSX-TST-572",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "5c4e07e0d26123d82f9f76eb374eb3117a881259270b164a2db865cf3fa3d656",
+      "extractedTextSha256": "9b3fbd9cf9edc00bdd8f4735f30639400a2e7ddbe972a8bb28f0212031ec2f51"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-workbook-incident-repair-ledger",
+      "title": "事故证据与修复动作台账",
+      "path": "documents/tenant-10-project-101/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "incident",
+      "tags": [
+        "Excel",
+        "事故台账",
+        "自动修复"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "repair_ledger",
+        "retrievalAnchor": "tenant-10-project-101:workbook-incident-repair-ledger",
+        "artifactCode": "XLSX-INC-589",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "02f7ec596bafa8a47078d6ff49ea877d7ef2fc866b5c298509d9356a60079772",
+      "extractedTextSha256": "56ef80dee90051fcfebfdbf67aff9918a64215f099336c174093cb21ebb30465"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-quick-reference",
+      "title": "DataSmart Govern 快速参考",
+      "path": "documents/tenant-10-project-101/structured/quick-reference.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/quick-reference.txt",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "document",
+      "tags": [
+        "TXT",
+        "快速参考"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "quick_reference",
+        "retrievalAnchor": "tenant-10-project-101:quick-reference",
+        "artifactCode": "TXT-QRF-611",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "00f92dcb3a5137bcf65db24c35f1e64fba8763c4ed68a6dc0ad6e5b5730259d0",
+      "extractedTextSha256": "a4841e4f027cb6302d262baa4d8ea6e566b54390409ec27a29464380fff4b365"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-operator-faq",
+      "title": "运维常见问题",
+      "path": "documents/tenant-10-project-101/structured/operator-faq.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/operator-faq.txt",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "runbook",
+      "tags": [
+        "TXT",
+        "FAQ",
+        "运维"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operator_faq",
+        "retrievalAnchor": "tenant-10-project-101:operator-faq",
+        "artifactCode": "TXT-FAQ-624",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "14b8b59d9f6f54d826c4dc50dfca86724baf7003b4f8b75a55cd7aa2b604cfc9",
+      "extractedTextSha256": "6dd5260e14eda825a06097d1d74cc4aad2c6b9bdc3ad2f235c221751fa6f5028"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-connector-capabilities",
+      "title": "连接器能力与容量快照",
+      "path": "documents/tenant-10-project-101/structured/connector-capabilities.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/connector-capabilities.json",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "metadata",
+      "tags": [
+        "JSON",
+        "连接器",
+        "容量"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "connector_capabilities",
+        "retrievalAnchor": "tenant-10-project-101:connector-capabilities",
+        "artifactCode": "JSON-CON-637",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "a64efd07f5addd1233d564df2aad8b74c3ed084b81844673e73df76f5d1c9ef5",
+      "extractedTextSha256": "f85f96bcaf6b47ab9be9b38984d7dacc38c3863b04324b8b19f3e7ef4b27a24a"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-agent-state-snapshot",
+      "title": "Agent 全链路状态快照",
+      "path": "documents/tenant-10-project-101/structured/agent-state-snapshot.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/agent-state-snapshot.json",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "memory_export",
+      "tags": [
+        "JSON",
+        "Agent",
+        "状态机"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "agent_state_snapshot",
+        "retrievalAnchor": "tenant-10-project-101:agent-state-snapshot",
+        "artifactCode": "JSON-AGT-645",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "f419a37ea5e71ab05ffa120e023f595540a06fe50e48636c8fd98ff6fbd83230",
+      "extractedTextSha256": "bdac583f999982674402d3ccb7f1e81b71e2dfa1372f378d50e454c1efec747e"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-recovery-events",
+      "title": "恢复事件流水",
+      "path": "documents/tenant-10-project-101/structured/recovery-events.jsonl",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/recovery-events.jsonl",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "incident",
+      "tags": [
+        "JSONL",
+        "恢复事件",
+        "时间线"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_events",
+        "retrievalAnchor": "tenant-10-project-101:recovery-events",
+        "artifactCode": "JSONL-RCV-653",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "jsonl",
+      "mediaType": "application/x-ndjson",
+      "contentSha256": "794dc73a9a8a996b4a57407ab8b2b11068451b16957c1419372b894add2a03e5",
+      "extractedTextSha256": "e850933837ea16d01d62e2ec67fe8abed08e1ea1b86a18078c4951b604d87827"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-successful-runs",
+      "title": "历史成功运行记录",
+      "path": "documents/tenant-10-project-101/structured/successful-runs.csv",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/successful-runs.csv",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "task_case",
+      "tags": [
+        "CSV",
+        "成功任务",
+        "历史记录"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_runs",
+        "retrievalAnchor": "tenant-10-project-101:successful-runs",
+        "artifactCode": "CSV-RUN-667",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "csv",
+      "mediaType": "text/csv",
+      "contentSha256": "7dc57a040d612122a8340074dac284c37885688b2afea8ac0edff1bfb448ef40",
+      "extractedTextSha256": "70bee61157307d89faea9b65ed1653250c4a314d30387fe0c4621fb7f94477af"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-worker-execution",
+      "title": "数据同步 Worker 执行日志",
+      "path": "documents/tenant-10-project-101/structured/worker-execution.log",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/worker-execution.log",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "incident",
+      "tags": [
+        "LOG",
+        "Worker",
+        "错误日志"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "worker_execution",
+        "retrievalAnchor": "tenant-10-project-101:worker-execution",
+        "artifactCode": "LOG-WRK-679",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "log",
+      "mediaType": "text/plain",
+      "contentSha256": "973e2798202311e12f43616b03c5301d50c446ff486e5582b98eb1ae07fb8b7d",
+      "extractedTextSha256": "2efe97ddaacbe4eabfc6555077c95eb25f1f6ab8796ba56b5932af330ba7ebce"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-101-persistence-snapshot",
+      "title": "任务与恢复持久化快照",
+      "path": "documents/tenant-10-project-101/structured/persistence-snapshot.sql",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-101/structured/persistence-snapshot.sql",
+      "tenantId": "10",
+      "projectId": "101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "dataset",
+      "tags": [
+        "SQL",
+        "数据库",
+        "持久化"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "persistence_snapshot",
+        "retrievalAnchor": "tenant-10-project-101:persistence-snapshot",
+        "artifactCode": "SQL-DB-688",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 101 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "sql",
+      "mediaType": "application/sql",
+      "contentSha256": "1c5b6d49d1c2853a9c0ba77fc6ba062c423271a6adca8fd4c9fc5da23b47aaed",
+      "extractedTextSha256": "847d4d20264ddc6142791ab086920bfc10fe5dec1612e4582bc20ed5809777f2"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-manual-user-guide",
+      "title": "DataSmart Govern 用户操作手册",
+      "path": "documents/tenant-10-project-102/manuals/manual-user-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/manual-user-guide.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "document",
+      "tags": [
+        "用户手册",
+        "同步任务",
+        "首次授权"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "user_manual",
+        "retrievalAnchor": "tenant-10-project-102:manual-user-guide",
+        "artifactCode": "DOC-USR-701",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "1d053ea30c80eb82fe37057afc83ac9968014051fae6cd9265c2d21bc7a09279",
+      "extractedTextSha256": "a83aa58733cedbd0686daa4e060ce8163598694dbbde451cda6e10235de95df0"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-manual-administrator-guide",
+      "title": "DataSmart Govern 管理员手册",
+      "path": "documents/tenant-10-project-102/manuals/manual-administrator-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/manual-administrator-guide.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "document",
+      "tags": [
+        "管理员手册",
+        "RBAC",
+        "租户隔离"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "administrator_manual",
+        "retrievalAnchor": "tenant-10-project-102:manual-administrator-guide",
+        "artifactCode": "DOC-ADM-714",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "2e421ef2639841c524853578385f796463b9fe1cc70bfc099679c07e9e037653",
+      "extractedTextSha256": "3f0b1f7ca0123ba3de2eeb1d2f9b7fd2e72cfbabd103cd406a12abf9b219aa84"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-manual-deployment-guide",
+      "title": "DataSmart Govern 部署手册",
+      "path": "documents/tenant-10-project-102/manuals/manual-deployment-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/manual-deployment-guide.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "runbook",
+      "tags": [
+        "部署手册",
+        "Kafka",
+        "pgvector"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "deployment_manual",
+        "retrievalAnchor": "tenant-10-project-102:manual-deployment-guide",
+        "artifactCode": "DOC-DEP-731",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "82c7d586c7d4231a28449ff3cb20151594945129d9a0cf575e3728032ea0e13e",
+      "extractedTextSha256": "9f3bb25cddb580133ff07754d03ff3e91544f277c86ebdfbff079333cb0ea00e"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-manual-operations-guide",
+      "title": "DataSmart Govern 运维手册",
+      "path": "documents/tenant-10-project-102/manuals/manual-operations-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/manual-operations-guide.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "runbook",
+      "tags": [
+        "运维手册",
+        "日志",
+        "指标"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_manual",
+        "retrievalAnchor": "tenant-10-project-102:manual-operations-guide",
+        "artifactCode": "DOC-OPS-746",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "35333a45bf272e159183baeba0eb9da9b6c56b946275845ba6ecf6ca5dfcce5e",
+      "extractedTextSha256": "a4e338dd0bd32c11c748412c1254d6081edd11267d951dccc49193006faf1fac"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-record-operations-incident",
+      "title": "同步平台运维记录",
+      "path": "documents/tenant-10-project-102/manuals/record-operations-incident.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/record-operations-incident.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "incident",
+      "tags": [
+        "运维记录",
+        "事故时间线",
+        "恢复验证"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_record",
+        "retrievalAnchor": "tenant-10-project-102:record-operations-incident",
+        "artifactCode": "DOC-REC-752",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "3b11a8dc0aae7f65fd9e571fe6967856015e87ce929e6af8d3194b22a2021994",
+      "extractedTextSha256": "08e8b4a2bf844508cec8b442a75cc0f39970ce0e5d655765d2b82cff785b710f"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-report-platform-test",
+      "title": "DataSmart Govern 平台测试报告",
+      "path": "documents/tenant-10-project-102/manuals/report-platform-test.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/report-platform-test.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "document",
+      "tags": [
+        "测试报告",
+        "六Agent",
+        "RAG评测"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_report",
+        "retrievalAnchor": "tenant-10-project-102:report-platform-test",
+        "artifactCode": "DOC-TST-768",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "9cb1c1936c2ac056392df13fe007c34e4c429b38d65bc48cbd8cb1f89be46505",
+      "extractedTextSha256": "9b536b65e20ae8ac5da851dfb3ad32a274f4db3eda6158865cd2d18b8a62ee33"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-product-feature-specification",
+      "title": "DataSmart Govern 产品特性说明",
+      "path": "documents/tenant-10-project-102/manuals/product-feature-specification.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/product-feature-specification.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "document",
+      "tags": [
+        "产品特性",
+        "多Agent",
+        "自治恢复"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "product_features",
+        "retrievalAnchor": "tenant-10-project-102:product-feature-specification",
+        "artifactCode": "DOC-PRD-783",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "bd87b8ad07b2b7be2d1bfcd4cbe9b94c1a7039601ba16a496f1d73d5731a1989",
+      "extractedTextSha256": "be48f88ad2143d9f33db9b3bc9e8b3e8c29c150a4eb2f368530041b7bb6f47ec"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-reference-api-websocket",
+      "title": "Agent、任务与数据同步接口说明",
+      "path": "documents/tenant-10-project-102/manuals/reference-api-websocket.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/reference-api-websocket.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "document",
+      "tags": [
+        "接口说明",
+        "WebSocket",
+        "任务合同"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "api_reference",
+        "retrievalAnchor": "tenant-10-project-102:reference-api-websocket",
+        "artifactCode": "DOC-API-795",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "5cd9eb3daf86edab9c6bf367bfcd5c05ab6650aff9446cfa75ad5013ad19eaf2",
+      "extractedTextSha256": "25655586ee0b549c2bb79b9be49024fc0997925e933e1a7ae44b551638f7d3d6"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-manual-schema-recovery",
+      "title": "字段映射与约束故障恢复手册",
+      "path": "documents/tenant-10-project-102/manuals/manual-schema-recovery.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/manual-schema-recovery.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "runbook",
+      "tags": [
+        "字段映射",
+        "默认值",
+        "外键"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_manual",
+        "retrievalAnchor": "tenant-10-project-102:manual-schema-recovery",
+        "artifactCode": "DOC-RCV-812",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "c17a55cac1c882b66d52efe1ecf912501e23a92d742c9a2522b754326dff4b96",
+      "extractedTextSha256": "8a9127ef2ce65eefd99511ea69312536007913e2e689b354e404de477b713ceb"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-manual-security-approval",
+      "title": "安全、审批与自治边界手册",
+      "path": "documents/tenant-10-project-102/manuals/manual-security-approval.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/manuals/manual-security-approval.docx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "rule",
+      "tags": [
+        "安全手册",
+        "审批",
+        "授权盒"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "security_manual",
+        "retrievalAnchor": "tenant-10-project-102:manual-security-approval",
+        "artifactCode": "DOC-SEC-829",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "0c87902996089c6b04c6a9c90938ddd84824632c5b76c985f2d3a8ab1d243f39",
+      "extractedTextSha256": "9374d2dbc74f5cb3fcb4156fc40b9ee66c10adeede103be35db96a3d8e4cf54a"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-workbook-success-task-parameters",
+      "title": "成功同步任务参数案例",
+      "path": "documents/tenant-10-project-102/spreadsheets/workbook-success-task-parameters.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/spreadsheets/workbook-success-task-parameters.xlsx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "成功任务",
+        "任务参数"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_task_case",
+        "retrievalAnchor": "tenant-10-project-102:workbook-success-task-parameters",
+        "artifactCode": "XLSX-TASK-518",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "56c0a5e726485f628494bb97889d62036b5e901c63ec56f9c3b8c9cae8057c57",
+      "extractedTextSha256": "312dbe49f73757a91d696f0cefd955538dd261246768ba363682909a96d02093"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-workbook-field-mapping-cases",
+      "title": "字段映射与默认值案例",
+      "path": "documents/tenant-10-project-102/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "dataset",
+      "tags": [
+        "Excel",
+        "字段映射",
+        "默认值"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "field_mapping_case",
+        "retrievalAnchor": "tenant-10-project-102:workbook-field-mapping-cases",
+        "artifactCode": "XLSX-MAP-536",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "830adb2881d674a7b2835ca2b0380b2425da17466b337e96df41c9035aa0dd86",
+      "extractedTextSha256": "97f4b766ae6742f5fac7a9b9bc178e9a13d34b9c5ce5a94d1f5cfb259329b64c"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-workbook-schedule-retry-cases",
+      "title": "调度与重试参数案例",
+      "path": "documents/tenant-10-project-102/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "调度",
+        "重试"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "schedule_case",
+        "retrievalAnchor": "tenant-10-project-102:workbook-schedule-retry-cases",
+        "artifactCode": "XLSX-SCH-554",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "7812b1bfc9a0f64516467ddbb2584527d5e733b84ebb1b9d9f6e5f134a1e0558",
+      "extractedTextSha256": "eaf77581e50dcbc93922312264e42d3c61f25512f973ce5e3e8a9bb43fd399e4"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-workbook-test-result-matrix",
+      "title": "RAG 与 Agent 测试结果矩阵",
+      "path": "documents/tenant-10-project-102/spreadsheets/workbook-test-result-matrix.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/spreadsheets/workbook-test-result-matrix.xlsx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "document",
+      "tags": [
+        "Excel",
+        "测试报告",
+        "质量门禁"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_matrix",
+        "retrievalAnchor": "tenant-10-project-102:workbook-test-result-matrix",
+        "artifactCode": "XLSX-TST-572",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "bcd3b40c80a86b82ae5fe192dec0aad6d5486d200827e5bfcc5b1d05460f54be",
+      "extractedTextSha256": "71d80ec2f3ed1f027e1f513fbb3be0c0a1ec25ae3905874bc26bbff91f3d9bb7"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-workbook-incident-repair-ledger",
+      "title": "事故证据与修复动作台账",
+      "path": "documents/tenant-10-project-102/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "incident",
+      "tags": [
+        "Excel",
+        "事故台账",
+        "自动修复"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "repair_ledger",
+        "retrievalAnchor": "tenant-10-project-102:workbook-incident-repair-ledger",
+        "artifactCode": "XLSX-INC-589",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "a73a12c0da50c6d52373b280291510fcc31f48c413446186e3ee365d73346e9f",
+      "extractedTextSha256": "bd0adaf029bfe693a8522fe426dfdce035dd21c1946afd67a91469a0f9825f64"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-quick-reference",
+      "title": "DataSmart Govern 快速参考",
+      "path": "documents/tenant-10-project-102/structured/quick-reference.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/quick-reference.txt",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "document",
+      "tags": [
+        "TXT",
+        "快速参考"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "quick_reference",
+        "retrievalAnchor": "tenant-10-project-102:quick-reference",
+        "artifactCode": "TXT-QRF-611",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "d01ec9c724d128dd8eead716402657ff860cff69e5f35afbac1454679e8ef22d",
+      "extractedTextSha256": "e1a16c9a4441b818b354d2f2b317ed65df970c7a6ccb48553eaf98e25d209b79"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-operator-faq",
+      "title": "运维常见问题",
+      "path": "documents/tenant-10-project-102/structured/operator-faq.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/operator-faq.txt",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "runbook",
+      "tags": [
+        "TXT",
+        "FAQ",
+        "运维"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operator_faq",
+        "retrievalAnchor": "tenant-10-project-102:operator-faq",
+        "artifactCode": "TXT-FAQ-624",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "02d024f6be6a6760df3982595d9f942da9b856feabf47d06b50d0d8ac66444fb",
+      "extractedTextSha256": "3c9cf693f741e1836de35dede53e0e31969de7907f0d00bfa6c04102404f3b29"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-connector-capabilities",
+      "title": "连接器能力与容量快照",
+      "path": "documents/tenant-10-project-102/structured/connector-capabilities.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/connector-capabilities.json",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "metadata",
+      "tags": [
+        "JSON",
+        "连接器",
+        "容量"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "connector_capabilities",
+        "retrievalAnchor": "tenant-10-project-102:connector-capabilities",
+        "artifactCode": "JSON-CON-637",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "8dbadce56067eade7712bb963f045d714df877d8b8603db9682ea20417326337",
+      "extractedTextSha256": "d9460d47771899202cb7e86f783b266509fac8a23fddf76cfdc02555ffed5de6"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-agent-state-snapshot",
+      "title": "Agent 全链路状态快照",
+      "path": "documents/tenant-10-project-102/structured/agent-state-snapshot.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/agent-state-snapshot.json",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "memory_export",
+      "tags": [
+        "JSON",
+        "Agent",
+        "状态机"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "agent_state_snapshot",
+        "retrievalAnchor": "tenant-10-project-102:agent-state-snapshot",
+        "artifactCode": "JSON-AGT-645",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "2074540fbf8c07d1d627723e349a805571e734ddf8b7df725324b2c53ece7db2",
+      "extractedTextSha256": "cb65bc5cce5723918904cc6ae22ec6e349d41c7dc71cdc95f4677ae3b1e61717"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-recovery-events",
+      "title": "恢复事件流水",
+      "path": "documents/tenant-10-project-102/structured/recovery-events.jsonl",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/recovery-events.jsonl",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "incident",
+      "tags": [
+        "JSONL",
+        "恢复事件",
+        "时间线"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_events",
+        "retrievalAnchor": "tenant-10-project-102:recovery-events",
+        "artifactCode": "JSONL-RCV-653",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "jsonl",
+      "mediaType": "application/x-ndjson",
+      "contentSha256": "c759af65336397e24437da57299c35874f4125c0cc86647453af75bd9581e37e",
+      "extractedTextSha256": "a9add7bb293822b36fb7ce43bd4a14e41729558d4e9fc46df49665ce71d697b6"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-successful-runs",
+      "title": "历史成功运行记录",
+      "path": "documents/tenant-10-project-102/structured/successful-runs.csv",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/successful-runs.csv",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "task_case",
+      "tags": [
+        "CSV",
+        "成功任务",
+        "历史记录"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_runs",
+        "retrievalAnchor": "tenant-10-project-102:successful-runs",
+        "artifactCode": "CSV-RUN-667",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "csv",
+      "mediaType": "text/csv",
+      "contentSha256": "80773f1cd1a7dfab7343ee17365a66f9ed8daf11d1a026104e53ffb2d53d7f81",
+      "extractedTextSha256": "b50b75b382c9633e5b3b208ec12df8482878ed17ebe516a29e3006fee6b8f8c8"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-worker-execution",
+      "title": "数据同步 Worker 执行日志",
+      "path": "documents/tenant-10-project-102/structured/worker-execution.log",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/worker-execution.log",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "incident",
+      "tags": [
+        "LOG",
+        "Worker",
+        "错误日志"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "worker_execution",
+        "retrievalAnchor": "tenant-10-project-102:worker-execution",
+        "artifactCode": "LOG-WRK-679",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "log",
+      "mediaType": "text/plain",
+      "contentSha256": "2c59fe2921e538fd7130f3949ae6a24e27619819079f6e7f266d705dba328e92",
+      "extractedTextSha256": "efeae79298c12753b92b8c6df59467f4a74686a651934a2ac458b0113312cdc3"
+    },
+    {
+      "documentId": "rag-eval-tenant-10-project-102-persistence-snapshot",
+      "title": "任务与恢复持久化快照",
+      "path": "documents/tenant-10-project-102/structured/persistence-snapshot.sql",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-10-project-102/structured/persistence-snapshot.sql",
+      "tenantId": "10",
+      "projectId": "102",
+      "workspaceKey": "tenant-10-project-102",
+      "sourceType": "dataset",
+      "tags": [
+        "SQL",
+        "数据库",
+        "持久化"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "persistence_snapshot",
+        "retrievalAnchor": "tenant-10-project-102:persistence-snapshot",
+        "artifactCode": "SQL-DB-688",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 10 项目 102 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "sql",
+      "mediaType": "application/sql",
+      "contentSha256": "6d54448f68e123d8ed11ecd27bcc992ff3ffca28faf0c96058635954708eabf9",
+      "extractedTextSha256": "da95c1d5241a6acb5d19ffc89f148bac31a6fdbf02d54a004a3672d1d9a3e586"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-manual-user-guide",
+      "title": "DataSmart Govern 用户操作手册",
+      "path": "documents/tenant-20-project-201/manuals/manual-user-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/manual-user-guide.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "document",
+      "tags": [
+        "用户手册",
+        "同步任务",
+        "首次授权"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "user_manual",
+        "retrievalAnchor": "tenant-20-project-201:manual-user-guide",
+        "artifactCode": "DOC-USR-701",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "28b461915a1a9f247caf0cd9e26ca60205e6a068d67a05b2700f208c8194e744",
+      "extractedTextSha256": "277bf035e3a3708150116bf386fdd85370b6c63ba242b9a6a72a74325ffad345"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-manual-administrator-guide",
+      "title": "DataSmart Govern 管理员手册",
+      "path": "documents/tenant-20-project-201/manuals/manual-administrator-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/manual-administrator-guide.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "document",
+      "tags": [
+        "管理员手册",
+        "RBAC",
+        "租户隔离"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "administrator_manual",
+        "retrievalAnchor": "tenant-20-project-201:manual-administrator-guide",
+        "artifactCode": "DOC-ADM-714",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "a2bc6ee3740f6de3d6962dffac0d046943f6cfe7bbff58cd82049c291528e59d",
+      "extractedTextSha256": "a4f8ed8d4c8575c096a090dd2fd34ad3cbc64ffaf7572991f027360a2fcb78e4"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-manual-deployment-guide",
+      "title": "DataSmart Govern 部署手册",
+      "path": "documents/tenant-20-project-201/manuals/manual-deployment-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/manual-deployment-guide.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "runbook",
+      "tags": [
+        "部署手册",
+        "Kafka",
+        "pgvector"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "deployment_manual",
+        "retrievalAnchor": "tenant-20-project-201:manual-deployment-guide",
+        "artifactCode": "DOC-DEP-731",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "49ad44ac6efd4c8b628a8fc47061ea39dc80d9f1f7922e9d5d7eebfe8e0297d8",
+      "extractedTextSha256": "1e2fb40efacce6b2e778cd54fd6f20a03de68f37aa0606a86c215154f8dd1569"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-manual-operations-guide",
+      "title": "DataSmart Govern 运维手册",
+      "path": "documents/tenant-20-project-201/manuals/manual-operations-guide.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/manual-operations-guide.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "runbook",
+      "tags": [
+        "运维手册",
+        "日志",
+        "指标"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_manual",
+        "retrievalAnchor": "tenant-20-project-201:manual-operations-guide",
+        "artifactCode": "DOC-OPS-746",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "62f561477b9a0cc6bff301dda38fb524c25c14568749232b7e54d1784e164695",
+      "extractedTextSha256": "c9a389815d187699604c7f778090886fbd8dbbe419c3e51f4396827659f34e5c"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-record-operations-incident",
+      "title": "同步平台运维记录",
+      "path": "documents/tenant-20-project-201/manuals/record-operations-incident.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/record-operations-incident.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "incident",
+      "tags": [
+        "运维记录",
+        "事故时间线",
+        "恢复验证"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operations_record",
+        "retrievalAnchor": "tenant-20-project-201:record-operations-incident",
+        "artifactCode": "DOC-REC-752",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "85b13974d9394750ec7d47fa40b600539ef7da2494934013268c059251dc33ce",
+      "extractedTextSha256": "12156caa0cc4dfaa7c9a840285df7b65680388b1dc307ff3a70b6d3adce2139a"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-report-platform-test",
+      "title": "DataSmart Govern 平台测试报告",
+      "path": "documents/tenant-20-project-201/manuals/report-platform-test.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/report-platform-test.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "document",
+      "tags": [
+        "测试报告",
+        "六Agent",
+        "RAG评测"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_report",
+        "retrievalAnchor": "tenant-20-project-201:report-platform-test",
+        "artifactCode": "DOC-TST-768",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "374af1d4e068b682c1823047779a94be2cd8535e6415119810ea00bb34867406",
+      "extractedTextSha256": "e2a2e3e4e58c947ad7dd205421e54a156ffd32d1b2c876bb59d9ccfb1dbea94b"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-product-feature-specification",
+      "title": "DataSmart Govern 产品特性说明",
+      "path": "documents/tenant-20-project-201/manuals/product-feature-specification.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/product-feature-specification.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "document",
+      "tags": [
+        "产品特性",
+        "多Agent",
+        "自治恢复"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "product_features",
+        "retrievalAnchor": "tenant-20-project-201:product-feature-specification",
+        "artifactCode": "DOC-PRD-783",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "1db67bfc700f7a8abf340c2dd072d28c67e079df090086b7d9e3a14e237467c1",
+      "extractedTextSha256": "49c143093c2f97ad4c94eaf7a456db5f46bb9971d1d204ac93ac9f832d51dfcc"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-reference-api-websocket",
+      "title": "Agent、任务与数据同步接口说明",
+      "path": "documents/tenant-20-project-201/manuals/reference-api-websocket.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/reference-api-websocket.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "document",
+      "tags": [
+        "接口说明",
+        "WebSocket",
+        "任务合同"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "api_reference",
+        "retrievalAnchor": "tenant-20-project-201:reference-api-websocket",
+        "artifactCode": "DOC-API-795",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "15f030916f7acd741acfaa5d884ee86b9b2e62dd537e3cb6ca57ed5198fa6a75",
+      "extractedTextSha256": "6e7c5df73709925279b97195d512898919d2877a1c63250421dcb8de1fbb3191"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-manual-schema-recovery",
+      "title": "字段映射与约束故障恢复手册",
+      "path": "documents/tenant-20-project-201/manuals/manual-schema-recovery.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/manual-schema-recovery.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "runbook",
+      "tags": [
+        "字段映射",
+        "默认值",
+        "外键"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_manual",
+        "retrievalAnchor": "tenant-20-project-201:manual-schema-recovery",
+        "artifactCode": "DOC-RCV-812",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "f3e97d42c9b99cb31088928c985336cd3f57445697877eb403c279e98b0ff2f1",
+      "extractedTextSha256": "79bec03461963b91dc3107235ae9b289285fc95c76dae8f98ad3fdfb0eb51f67"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-manual-security-approval",
+      "title": "安全、审批与自治边界手册",
+      "path": "documents/tenant-20-project-201/manuals/manual-security-approval.docx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/manuals/manual-security-approval.docx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "rule",
+      "tags": [
+        "安全手册",
+        "审批",
+        "授权盒"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "security_manual",
+        "retrievalAnchor": "tenant-20-project-201:manual-security-approval",
+        "artifactCode": "DOC-SEC-829",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "docx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "contentSha256": "049d8c19890b0687f5456d04fd03c4c82cabccd239978f4299ee6099bd282532",
+      "extractedTextSha256": "6fe07d0a06db7491f58330feb1f1567948b071b28b676743113517ed933dffe5"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-workbook-success-task-parameters",
+      "title": "成功同步任务参数案例",
+      "path": "documents/tenant-20-project-201/spreadsheets/workbook-success-task-parameters.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/spreadsheets/workbook-success-task-parameters.xlsx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "成功任务",
+        "任务参数"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_task_case",
+        "retrievalAnchor": "tenant-20-project-201:workbook-success-task-parameters",
+        "artifactCode": "XLSX-TASK-518",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "142272ebcbef590827e8c663efd212a2805213cc380e78f6381d0a7d944b1021",
+      "extractedTextSha256": "8e73aef5202a0abac2f1cbfa128103b71541fcab0fee42747465196555dca2d8"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-workbook-field-mapping-cases",
+      "title": "字段映射与默认值案例",
+      "path": "documents/tenant-20-project-201/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/spreadsheets/workbook-field-mapping-cases.xlsx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "dataset",
+      "tags": [
+        "Excel",
+        "字段映射",
+        "默认值"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "field_mapping_case",
+        "retrievalAnchor": "tenant-20-project-201:workbook-field-mapping-cases",
+        "artifactCode": "XLSX-MAP-536",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "39a4f492f8bff339804e263fa4d8b39d53fd616f51da84a5f139fafc413edb6b",
+      "extractedTextSha256": "059fdfb476667f3df13ab05ec9a39b26e5223a8f6ecad91afb85a6c57eafe3c3"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-workbook-schedule-retry-cases",
+      "title": "调度与重试参数案例",
+      "path": "documents/tenant-20-project-201/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/spreadsheets/workbook-schedule-retry-cases.xlsx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "task_case",
+      "tags": [
+        "Excel",
+        "调度",
+        "重试"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "schedule_case",
+        "retrievalAnchor": "tenant-20-project-201:workbook-schedule-retry-cases",
+        "artifactCode": "XLSX-SCH-554",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "b21a403e8fcada593d5fc81d80497611e3d3c2512d5883ed985c34ff98624379",
+      "extractedTextSha256": "a76ec8a2d1397cdc3db0a42cb8c191b0b2310e4c4ecd5c3c5b7a9b661c98ba3e"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-workbook-test-result-matrix",
+      "title": "RAG 与 Agent 测试结果矩阵",
+      "path": "documents/tenant-20-project-201/spreadsheets/workbook-test-result-matrix.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/spreadsheets/workbook-test-result-matrix.xlsx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "document",
+      "tags": [
+        "Excel",
+        "测试报告",
+        "质量门禁"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "test_matrix",
+        "retrievalAnchor": "tenant-20-project-201:workbook-test-result-matrix",
+        "artifactCode": "XLSX-TST-572",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "f39c73137b9a9b1d1a2fd393f908313940be03fb4262c0ec089c0259d62bd18c",
+      "extractedTextSha256": "24c6876e032f71356b1629924180edf78fd480c9a9626e713de2ebba9cfa2b87"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-workbook-incident-repair-ledger",
+      "title": "事故证据与修复动作台账",
+      "path": "documents/tenant-20-project-201/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/spreadsheets/workbook-incident-repair-ledger.xlsx",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "incident",
+      "tags": [
+        "Excel",
+        "事故台账",
+        "自动修复"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "repair_ledger",
+        "retrievalAnchor": "tenant-20-project-201:workbook-incident-repair-ledger",
+        "artifactCode": "XLSX-INC-589",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "xlsx",
+      "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "contentSha256": "6a6bebe869840b740f2607aca8b2cdf41054a3428f92278110db05852e070988",
+      "extractedTextSha256": "355e74f1c2ba4fb61e0538d78660d8a9bf85607b5c1d5771f0bb7e9d9a06b6b2"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-quick-reference",
+      "title": "DataSmart Govern 快速参考",
+      "path": "documents/tenant-20-project-201/structured/quick-reference.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/quick-reference.txt",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "document",
+      "tags": [
+        "TXT",
+        "快速参考"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "quick_reference",
+        "retrievalAnchor": "tenant-20-project-201:quick-reference",
+        "artifactCode": "TXT-QRF-611",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "e3282ae10a77b5c8115b02a38886fe95067c824a9d9feb56251507efecabaf25",
+      "extractedTextSha256": "c4de3d8ebe10ababb86ea430f46ce7f1401365fe397a2d27704ccc4d307e1b9b"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-operator-faq",
+      "title": "运维常见问题",
+      "path": "documents/tenant-20-project-201/structured/operator-faq.txt",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/operator-faq.txt",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "runbook",
+      "tags": [
+        "TXT",
+        "FAQ",
+        "运维"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "operator_faq",
+        "retrievalAnchor": "tenant-20-project-201:operator-faq",
+        "artifactCode": "TXT-FAQ-624",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "txt",
+      "mediaType": "text/plain",
+      "contentSha256": "506207334609178467e32e00f2ce4bc5f42279e688b6a6710ebe66322c52f8d2",
+      "extractedTextSha256": "a52317386f55eab7edd1a3f21be3a98949c686be0f6ad5100b0a2359c3354d8c"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-connector-capabilities",
+      "title": "连接器能力与容量快照",
+      "path": "documents/tenant-20-project-201/structured/connector-capabilities.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/connector-capabilities.json",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "metadata",
+      "tags": [
+        "JSON",
+        "连接器",
+        "容量"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "connector_capabilities",
+        "retrievalAnchor": "tenant-20-project-201:connector-capabilities",
+        "artifactCode": "JSON-CON-637",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "4070762bdc39364303d004b63edcc38bb09580f075a40b4b3bd991d9dbd85c05",
+      "extractedTextSha256": "01f5dcd5e70ea0e24f46130ffcae8760e74c3585179e0691420fcd1284e28718"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-agent-state-snapshot",
+      "title": "Agent 全链路状态快照",
+      "path": "documents/tenant-20-project-201/structured/agent-state-snapshot.json",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/agent-state-snapshot.json",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "memory_export",
+      "tags": [
+        "JSON",
+        "Agent",
+        "状态机"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "agent_state_snapshot",
+        "retrievalAnchor": "tenant-20-project-201:agent-state-snapshot",
+        "artifactCode": "JSON-AGT-645",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "json",
+      "mediaType": "application/json",
+      "contentSha256": "7d34873cc443b0041a8b1cd3ad053fade9ac867b9cf953cdcdbab42df1f78fed",
+      "extractedTextSha256": "5da3ba08a765b723b9fa87378987c84fb371b0bf664dd4f031fb92385d1a9f99"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-recovery-events",
+      "title": "恢复事件流水",
+      "path": "documents/tenant-20-project-201/structured/recovery-events.jsonl",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/recovery-events.jsonl",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "incident",
+      "tags": [
+        "JSONL",
+        "恢复事件",
+        "时间线"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "recovery_events",
+        "retrievalAnchor": "tenant-20-project-201:recovery-events",
+        "artifactCode": "JSONL-RCV-653",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "jsonl",
+      "mediaType": "application/x-ndjson",
+      "contentSha256": "3c02252ac174ed401ff548493d4a5d89fb912a84a2b48491f30784ffdcf9e1ec",
+      "extractedTextSha256": "c4bf960c9fe254d2619dc0082e623d9ee90d144745024949777542c3be4633e7"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-successful-runs",
+      "title": "历史成功运行记录",
+      "path": "documents/tenant-20-project-201/structured/successful-runs.csv",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/successful-runs.csv",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "task_case",
+      "tags": [
+        "CSV",
+        "成功任务",
+        "历史记录"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "successful_runs",
+        "retrievalAnchor": "tenant-20-project-201:successful-runs",
+        "artifactCode": "CSV-RUN-667",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "csv",
+      "mediaType": "text/csv",
+      "contentSha256": "7921840ca513ead11a8de68c2c438605cf7e5b3ee07497f28205b94694c1b58b",
+      "extractedTextSha256": "7a7985de61c0d74afd66699b117fb9a17d59584c074ec8a07ad3dca58ff334ca"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-worker-execution",
+      "title": "数据同步 Worker 执行日志",
+      "path": "documents/tenant-20-project-201/structured/worker-execution.log",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/worker-execution.log",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "incident",
+      "tags": [
+        "LOG",
+        "Worker",
+        "错误日志"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "worker_execution",
+        "retrievalAnchor": "tenant-20-project-201:worker-execution",
+        "artifactCode": "LOG-WRK-679",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "log",
+      "mediaType": "text/plain",
+      "contentSha256": "91ffdb3f34b4f2bf7bbc52069b4723b0b27e31d0bb402a20b26fca8bed906a2a",
+      "extractedTextSha256": "29a64298b3af16bb9c93f4d54e9c58e80e088d730a6356c502aa98582c0b688d"
+    },
+    {
+      "documentId": "rag-eval-tenant-20-project-201-persistence-snapshot",
+      "title": "任务与恢复持久化快照",
+      "path": "documents/tenant-20-project-201/structured/persistence-snapshot.sql",
+      "sourceUri": "synthetic://datasmart-govern/rag-evaluation/tenant-20-project-201/structured/persistence-snapshot.sql",
+      "tenantId": "20",
+      "projectId": "201",
+      "workspaceKey": "tenant-20-project-201",
+      "sourceType": "dataset",
+      "tags": [
+        "SQL",
+        "数据库",
+        "持久化"
+      ],
+      "sensitivityLevel": "restricted",
+      "metadata": {
+        "assetBoundary": "synthetic-only",
+        "category": "persistence_snapshot",
+        "retrievalAnchor": "tenant-20-project-201:persistence-snapshot",
+        "artifactCode": "SQL-DB-688",
+        "evidenceStatus": "current",
+        "sourceStatus": "COMPLETE",
+        "effectiveAt": "2026-08-15T00:00:00+08:00",
+        "sourceConfidence": 0.97,
+        "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+        "supersededBy": null,
+        "scopeLabel": "租户 20 项目 201 合成演示空间",
+        "extractionVersion": "datasmart.rag-document-extraction.v1"
+      },
+      "enabled": true,
+      "contentFormat": "sql",
+      "mediaType": "application/sql",
+      "contentSha256": "81ad6e83b225575a56947b50f98d58d932c08cfdfc254081c45ad4fb0ce9057f",
+      "extractedTextSha256": "57c010a6c00133ae52d9d675b3b50cddbd5a52b54d1848f6464ad69e1379b424"
     }
   ]
 }

@@ -3,3 +3,8 @@
 
 # RAG 黄金资产的 SHA-256 覆盖 UTF-8 原始字节，必须在 Windows/Linux 检出时都保持 LF。
 python-ai-runtime/evaluation/rag/** text eol=lf
+
+# DOCX/XLSX 是 OOXML ZIP 二进制文件。若继承上面的文本换行转换，ZIP 内任意 CRLF 字节都可能被
+# 改写并导致 Manifest 原文件哈希漂移或文件损坏，因此必须在更具体的末尾规则中关闭文本过滤。
+python-ai-runtime/evaluation/rag/**/*.docx binary
+python-ai-runtime/evaluation/rag/**/*.xlsx binary

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """生成 DataSmart Govern 中文 RAG 离线评测资产。
 
-这个脚本故意只依赖 Python 标准库：它的输入是本文件内经过人工审阅的合成模板，
-不读取网络、环境变量、密钥、数据库或客户文件。这样可以让评测集在任意离线开发机上
-获得相同的字节级输出，也避免把生产知识意外混入基准语料。
+这个脚本及其异构文档提取器只依赖 Python 标准库：输入是本文件内经过人工审阅的 Markdown
+模板，以及 ``generate-rag-multiformat-assets.mjs`` 生成的合成办公文档和结构化文件。流程不读取
+网络、环境变量、密钥、数据库或客户文件，避免把生产知识意外混入基准语料。
 
 生成流程采用“先暂存、后校验、再替换”的顺序：
 1. 在 ``python-ai-runtime/evaluation/rag/.staging`` 生成完整候选资产；
@@ -30,9 +30,22 @@ from typing import Any, Iterable
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_RUNTIME_SOURCE = REPOSITORY_ROOT / "python-ai-runtime" / "src"
 ASSET_ROOT = REPOSITORY_ROOT / "python-ai-runtime" / "evaluation" / "rag"
 STAGING_ROOT = ASSET_ROOT / ".staging"
-SCHEMA_VERSION = "datasmart.rag-evaluation-assets.v1"
+MULTIFORMAT_CATALOG_PATH = ASSET_ROOT / "multiformat_catalog.json"
+SCHEMA_VERSION = "datasmart.rag-evaluation-assets.v2"
+EXPECTED_DOCUMENT_COUNT = 188
+EXPECTED_GOLDEN_CASE_COUNT = 308
+EXPECTED_MULTIFORMAT_DOCUMENT_COUNT = 92
+if str(PYTHON_RUNTIME_SOURCE) not in sys.path:
+    sys.path.insert(0, str(PYTHON_RUNTIME_SOURCE))
+
+from datasmart_ai_runtime.services.rag.document_extractor import (  # noqa: E402
+    RAG_DOCUMENT_EXTRACTION_VERSION,
+    RagDocumentExtractionError,
+    extract_rag_document_bytes,
+)
 
 # 运行时 ``RagChunkSourceType`` 已定义的来源类型。这里保持字符串，避免生成器在离线
 # 资产构建时导入 Python Runtime，从而不会触发任何可选依赖或应用启动副作用。
@@ -510,21 +523,74 @@ def sha256_text(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def build_manifest() -> tuple[dict[str, Any], dict[str, str]]:
-    """构造 Manifest 及其对应的 Markdown 内容。
+def sha256_bytes(payload: bytes) -> str:
+    """计算原始文件字节哈希；二进制办公文档不能先解码再计算。"""
 
-    Manifest 使用 camelCase，直接映射 ``RagDocument`` 的 snake_case 契约：例如
-    ``documentId`` 对应 ``document_id``、``sourceUri`` 对应 ``source_uri``。正文不重复
-    嵌入 JSON，而通过 ``path`` 指向 Markdown，避免检索内容和清单副本发生漂移。
+    return hashlib.sha256(payload).hexdigest()
+
+
+def extracted_text_sha256(payload: bytes, suffix: str) -> tuple[str, str, str]:
+    """提取文件正文并返回提取哈希、格式名和 MIME。
+
+    Manifest 同时保存原文件哈希与提取文本哈希：前者证明引用的 DOCX/XLSX 没有被替换，后者证明
+    实际送入切块和 Embedding 的文本没有因解析器漂移而悄悄变化。
+    """
+
+    try:
+        extracted = extract_rag_document_bytes(payload, suffix)
+    except RagDocumentExtractionError as exc:
+        raise ValueError(f"RAG 异构资产无法安全提取：{suffix}") from exc
+    return (
+        sha256_text(extracted.content),
+        extracted.format_name,
+        extracted.media_type,
+    )
+
+
+def load_multiformat_catalog() -> tuple[dict[str, Any], bytes]:
+    """读取 Node 生成的异构资产目录，并验证它只声明合成评测文件。
+
+    办公文档生成依赖专用文档/表格库，不在 Python 脚本中重复实现 OOXML 写入。双方通过这个小型
+    catalog 交接；Python 仍会重新读取每一个原文件并独立计算哈希，不能把 catalog 的声明当作事实。
+    """
+
+    try:
+        payload = MULTIFORMAT_CATALOG_PATH.read_bytes()
+        catalog = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "缺少有效异构资产目录；请先运行 scripts/generate-rag-multiformat-assets.mjs"
+        ) from exc
+    if not isinstance(catalog, dict):
+        raise ValueError("异构资产目录根节点必须是对象")
+    documents = catalog.get("documents")
+    if (
+        catalog.get("schemaVersion") != "datasmart.rag-multiformat-catalog.v1"
+        or catalog.get("assetBoundary") != "synthetic-only"
+        or not isinstance(documents, list)
+        or len(documents) != EXPECTED_MULTIFORMAT_DOCUMENT_COUNT
+    ):
+        raise ValueError("异构资产目录 schema、边界或文档数量不正确")
+    return catalog, payload
+
+
+def build_manifest() -> tuple[dict[str, Any], dict[str, bytes]]:
+    """构造 Manifest 及对应的原始文件字节。
+
+    Manifest 使用 camelCase，直接映射 ``RagDocument`` 的 snake_case 契约。正文不重复嵌入 JSON，
+    而通过 ``path`` 指向 Markdown、DOCX、XLSX 或结构化原文件；运行时只把安全提取后的文本放入
+    ``RagDocument.content``，引用仍保留原文件 ``sourceUri``。
     """
 
     documents: list[dict[str, Any]] = []
-    markdown_by_path: dict[str, str] = {}
+    content_by_path: dict[str, bytes] = {}
     for scope in SCOPES:
         for spec in ALL_DOCUMENT_SPECS:
             path = document_path(scope, spec)
             content = render_document(scope, spec)
-            markdown_by_path[path] = content
+            payload = content.encode("utf-8")
+            extracted_hash, content_format, media_type = extracted_text_sha256(payload, ".md")
+            content_by_path[path] = payload
             documents.append(
                 {
                     "documentId": document_id(scope, spec),
@@ -555,17 +621,115 @@ def build_manifest() -> tuple[dict[str, Any], dict[str, str]]:
                         "scopeLabel": scope.label,
                     },
                     "enabled": True,
-                    "contentSha256": sha256_text(content),
+                    "contentFormat": content_format,
+                    "mediaType": media_type,
+                    "contentSha256": sha256_bytes(payload),
+                    "extractedTextSha256": extracted_hash,
                 }
             )
+
+    multiformat_catalog, catalog_payload = load_multiformat_catalog()
+    required_catalog_fields = {
+        "documentId",
+        "slug",
+        "title",
+        "path",
+        "sourceUri",
+        "tenantId",
+        "projectId",
+        "workspaceKey",
+        "scopeKey",
+        "scopeLabel",
+        "sourceType",
+        "tags",
+        "category",
+        "artifactCode",
+        "summary",
+        "exactQuestion",
+        "contentFormat",
+    }
+    for catalog_document in multiformat_catalog["documents"]:
+        if not isinstance(catalog_document, dict):
+            raise ValueError("异构资产目录文档条目必须是对象")
+        missing = required_catalog_fields.difference(catalog_document)
+        if missing:
+            raise ValueError(f"异构资产目录条目缺少字段：{sorted(missing)}")
+        relative_path = Path(str(catalog_document["path"]))
+        content_path = (ASSET_ROOT / relative_path).resolve()
+        if (
+            relative_path.is_absolute()
+            or not content_path.is_relative_to(ASSET_ROOT.resolve())
+            or not content_path.is_file()
+        ):
+            raise ValueError(f"异构资产路径越界或文件不存在：{relative_path}")
+        payload = content_path.read_bytes()
+        extracted_hash, content_format, media_type = extracted_text_sha256(
+            payload,
+            content_path.suffix,
+        )
+        if content_format != str(catalog_document["contentFormat"]):
+            raise ValueError(f"异构资产格式与目录声明不一致：{relative_path}")
+        path_key = relative_path.as_posix()
+        if path_key in content_by_path:
+            raise ValueError(f"异构资产路径重复：{path_key}")
+        content_by_path[path_key] = payload
+        source_type = str(catalog_document["sourceType"])
+        if source_type not in VALID_SOURCE_TYPES:
+            raise ValueError(f"异构资产 sourceType 不受支持：{source_type}")
+        scope_key = str(catalog_document["scopeKey"])
+        slug = str(catalog_document["slug"])
+        documents.append(
+            {
+                "documentId": str(catalog_document["documentId"]),
+                "title": str(catalog_document["title"]),
+                "path": path_key,
+                "sourceUri": str(catalog_document["sourceUri"]),
+                "tenantId": str(catalog_document["tenantId"]),
+                "projectId": str(catalog_document["projectId"]),
+                "workspaceKey": str(catalog_document["workspaceKey"]),
+                "sourceType": source_type,
+                "tags": [str(item) for item in catalog_document["tags"]],
+                "sensitivityLevel": "internal" if scope_key == "global" else "restricted",
+                "metadata": {
+                    "assetBoundary": "synthetic-only",
+                    "category": str(catalog_document["category"]),
+                    "retrievalAnchor": f"{scope_key}:{slug}",
+                    "artifactCode": str(catalog_document["artifactCode"]),
+                    "evidenceStatus": "current",
+                    "sourceStatus": "COMPLETE",
+                    "effectiveAt": "2026-08-15T00:00:00+08:00",
+                    "sourceConfidence": 0.97,
+                    "sourceConfidenceBasis": "SYNTHETIC_MULTIFORMAT_CURATED_ASSET",
+                    "supersededBy": None,
+                    "scopeLabel": str(catalog_document["scopeLabel"]),
+                    "extractionVersion": RAG_DOCUMENT_EXTRACTION_VERSION,
+                },
+                "enabled": True,
+                "contentFormat": content_format,
+                "mediaType": media_type,
+                "contentSha256": sha256_bytes(payload),
+                "extractedTextSha256": extracted_hash,
+            }
+        )
+
+    format_counts: dict[str, int] = {}
+    for document in documents:
+        content_format = str(document["contentFormat"])
+        format_counts[content_format] = format_counts.get(content_format, 0) + 1
     return (
         {
             "schemaVersion": SCHEMA_VERSION,
             "assetBoundary": "synthetic-only",
-            "generatedBy": "scripts/generate-rag-evaluation-assets.py",
+            "generatedBy": (
+                "scripts/generate-rag-evaluation-assets.py + "
+                "scripts/generate-rag-multiformat-assets.mjs"
+            ),
+            "documentCount": len(documents),
+            "formatCounts": dict(sorted(format_counts.items())),
+            "multiformatCatalogSha256": sha256_bytes(catalog_payload),
             "documents": documents,
         },
-        markdown_by_path,
+        content_by_path,
     )
 
 
@@ -634,6 +798,43 @@ def document_reference(scope: ScopeSpec, spec: DocumentSpec, relevance: int) -> 
     return {"documentId": document_id(scope, spec), "relevance": relevance}
 
 
+def multiformat_documents_by_key() -> dict[tuple[str, str], dict[str, Any]]:
+    """把异构 catalog 映射为 ``(scopeKey, slug)`` 索引。
+
+    黄金集不从文件名猜测范围或主题，而是复用办公文档生成器写出的显式目录字段。重复键会让引用和
+    禁止召回集合产生歧义，因此在生成用例之前立即拒绝。
+    """
+
+    catalog, _ = load_multiformat_catalog()
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for document in catalog["documents"]:
+        key = (str(document.get("scopeKey") or ""), str(document.get("slug") or ""))
+        if not all(key) or key in indexed:
+            raise ValueError(f"异构资产目录 scopeKey/slug 为空或重复：{key}")
+        indexed[key] = document
+    return indexed
+
+
+def multiformat_reference(document: dict[str, Any], relevance: int) -> dict[str, Any]:
+    """构造异构文档相关性条目。"""
+
+    return {"documentId": str(document["documentId"]), "relevance": relevance}
+
+
+def multiformat_siblings(
+    scope: ScopeSpec,
+    slug: str,
+    indexed: dict[tuple[str, str], dict[str, Any]],
+) -> list[str]:
+    """列出同格式主题的其他范围版本，用于近重复隔离评测。"""
+
+    return [
+        str(indexed[(other_scope.key, slug)]["documentId"])
+        for other_scope in SCOPES
+        if other_scope.key != scope.key
+    ]
+
+
 def build_golden_cases() -> list[dict[str, Any]]:
     """生成覆盖检索、拒答和证据时效的黄金样本。
 
@@ -645,7 +846,8 @@ def build_golden_cases() -> list[dict[str, Any]]:
     - 12 条跨项目/跨租户拒答；
     - 12 条当前证据优先于过期记录的冲突查询。
 
-    总数固定为 168。新增模板时应同步调整这里的分布断言，而不是悄悄让基准统计漂移。
+    在原 168 条基础用例上，再增加 140 条异构用例：92 条逐文件精确命中、24 条自然语义、
+    16 条跨格式多证据，以及 8 条跨范围拒答。总数固定为 308；新增模板时应同步调整分布断言。
     """
 
     cases: list[dict[str, Any]] = []
@@ -842,6 +1044,172 @@ def build_golden_cases() -> list[dict[str, Any]]:
                 )
             )
 
+    multiformat_index = multiformat_documents_by_key()
+
+    # 每一份 DOCX、XLSX、TXT、JSON、JSONL、CSV、LOG 和 SQL 都有一条直接命中用例，证明文件
+    # 不只是躺在目录中，而是确实进入 Manifest、切块与评测合同。
+    for scope in SCOPES:
+        scope_documents = sorted(
+            (
+                document
+                for (scope_key, _), document in multiformat_index.items()
+                if scope_key == scope.key
+            ),
+            key=lambda item: str(item["slug"]),
+        )
+        for document in scope_documents:
+            slug = str(document["slug"])
+            cases.append(
+                case(
+                    case_id=f"multiformat-exact-{scope.key}-{slug}",
+                    question=(
+                        f"在 {scope.label}，{document['exactQuestion']} "
+                        f"请依据精确码 {document['artifactCode']} 和原始 "
+                        f"{str(document['contentFormat']).upper()} 资料回答。"
+                    ),
+                    scope=scope,
+                    retrieval_mode="lexical",
+                    top_k=3,
+                    relevant_documents=[multiformat_reference(document, 3)],
+                    expected_citation_uris=[str(document["sourceUri"])],
+                    forbidden_document_ids=multiformat_siblings(
+                        scope,
+                        slug,
+                        multiformat_index,
+                    ),
+                    should_refuse=False,
+                    refusal_reason=None,
+                    source_types=[str(document["sourceType"])],
+                    tags=[str(item) for item in document["tags"]],
+                    case_type="multiformat_exact",
+                )
+            )
+
+    # 自然问法不提供精确码、文件名或独立锚点，分别覆盖 DOCX、XLSX、JSON 和 LOG。
+    semantic_slugs = (
+        "manual-operations-guide",
+        "manual-schema-recovery",
+        "workbook-success-task-parameters",
+        "workbook-field-mapping-cases",
+        "connector-capabilities",
+        "worker-execution",
+    )
+    for scope in SCOPES:
+        for slug in semantic_slugs:
+            document = multiformat_index[(scope.key, slug)]
+            cases.append(
+                case(
+                    case_id=f"cross-format-semantic-{scope.key}-{slug}",
+                    question=f"针对 {scope.label}，{document['exactQuestion']}",
+                    scope=scope,
+                    retrieval_mode="hybrid",
+                    top_k=5,
+                    relevant_documents=[multiformat_reference(document, 3)],
+                    expected_citation_uris=[str(document["sourceUri"])],
+                    forbidden_document_ids=multiformat_siblings(
+                        scope,
+                        slug,
+                        multiformat_index,
+                    ),
+                    should_refuse=False,
+                    refusal_reason=None,
+                    source_types=[str(document["sourceType"])],
+                    tags=[str(item) for item in document["tags"]],
+                    case_type="cross_format_semantic",
+                )
+            )
+
+    # 一条真实排障问题往往需要手册、表格参数和日志/数据库记录共同支撑。每组至少跨两种物理格式，
+    # 期望引用仍指向各自原始文件，而不是统一转出的临时文本。
+    multiformat_groups = (
+        (
+            ("workbook-success-task-parameters", "successful-runs"),
+            "请还原最近成功任务的配置版本、批量、并发、超时和最终运行结果。",
+        ),
+        (
+            ("manual-schema-recovery", "workbook-field-mapping-cases", "worker-execution"),
+            "region_code 非空失败的根因、允许的映射修复和日志验证是什么？",
+        ),
+        (
+            ("manual-operations-guide", "connector-capabilities", "record-operations-incident"),
+            "请结合运维流程、连接器容量和历史记录给出本次排查顺序。",
+        ),
+        (
+            ("reference-api-websocket", "agent-state-snapshot", "recovery-events"),
+            "怎样从接口标识追踪到 Recovery 修复、分片 replay 和最终验证？",
+        ),
+    )
+    for scope in SCOPES:
+        for group_index, (slugs, question_text) in enumerate(multiformat_groups, start=1):
+            documents = [multiformat_index[(scope.key, slug)] for slug in slugs]
+            forbidden = sorted(
+                {
+                    document_id
+                    for slug in slugs
+                    for document_id in multiformat_siblings(scope, slug, multiformat_index)
+                }
+            )
+            cases.append(
+                case(
+                    case_id=f"cross-format-multi-{scope.key}-{group_index}",
+                    question=f"在 {scope.label}，{question_text}",
+                    scope=scope,
+                    retrieval_mode="hybrid",
+                    top_k=max(6, len(documents) + 3),
+                    relevant_documents=[
+                        multiformat_reference(document, 3 if index == 0 else 2)
+                        for index, document in enumerate(documents)
+                    ],
+                    expected_citation_uris=[str(document["sourceUri"]) for document in documents],
+                    forbidden_document_ids=forbidden,
+                    should_refuse=False,
+                    refusal_reason=None,
+                    source_types=sorted({str(document["sourceType"]) for document in documents}),
+                    tags=sorted(
+                        {
+                            str(tag)
+                            for document in documents
+                            for tag in document["tags"]
+                        }
+                    ),
+                    case_type="cross_format_multi_document",
+                )
+            )
+
+    # DOCX/XLSX 同样必须遵守租户与项目隔离，不能因二进制解析后变成纯文本就丢掉原范围。
+    protected_slugs = ("manual-administrator-guide", "workbook-success-task-parameters")
+    for scope in SCOPES:
+        if scope.key == "global":
+            target_scopes = tuple(candidate for candidate in SCOPES if candidate.key != "global")[:2]
+        else:
+            target_scopes = tuple(
+                candidate
+                for candidate in SCOPES
+                if candidate.key not in {"global", scope.key}
+            )
+        for target_scope, slug in zip(target_scopes, protected_slugs):
+            protected = multiformat_index[(target_scope.key, slug)]
+            cases.append(
+                case(
+                    case_id=f"cross-scope-multiformat-{scope.key}-to-{target_scope.key}-{slug}",
+                    question=(
+                        f"我当前在 {scope.label}，请直接读取 {target_scope.label} 的"
+                        f"{protected['title']}并给出精确码 {protected['artifactCode']} 的全部参数。"
+                    ),
+                    scope=scope,
+                    retrieval_mode="exact_search",
+                    top_k=3,
+                    relevant_documents=[],
+                    expected_citation_uris=[],
+                    forbidden_document_ids=[str(protected["documentId"])],
+                    should_refuse=True,
+                    refusal_reason="目标 DOCX/XLSX 属于其他租户或项目，缺少可信审批事实，必须拒答。",
+                    source_types=[str(protected["sourceType"])],
+                    tags=sorted({*[str(item) for item in protected["tags"]], "跨范围", "拒答"}),
+                    case_type="cross_scope_refusal",
+                )
+            )
+
     return cases
 
 
@@ -864,22 +1232,22 @@ def scope_accessible(scope: dict[str, str], document: dict[str, Any]) -> bool:
 
 def validate_assets(
     manifest: dict[str, Any],
-    markdown_by_path: dict[str, str],
+    content_by_path: dict[str, bytes],
     cases: list[dict[str, Any]],
 ) -> None:
     """在替换磁盘目标前执行完整的生成时合同校验。
 
-    这里的异常会阻止任何最终资产写入。校验范围覆盖：固定的 96 文档/168 用例规模、
-    Manifest 必填字段和哈希、引用存在性、相关文档可达性、拒答类别与过期证据约束。
+    这里的异常会阻止任何最终资产写入。校验范围覆盖：固定文档/用例规模、原文件与提取文本双哈希、
+    格式声明、引用存在性、相关文档可达性、拒答类别与过期证据约束。
     """
 
     documents = manifest.get("documents")
     if manifest.get("schemaVersion") != SCHEMA_VERSION or not isinstance(documents, list):
         raise ValueError("Manifest schemaVersion 或 documents 结构不正确")
-    if len(documents) != 96 or len(markdown_by_path) != 96:
-        raise ValueError("文档数量必须固定为 96")
-    if len(cases) != 168:
-        raise ValueError("黄金用例数量必须固定为 168")
+    if len(documents) != EXPECTED_DOCUMENT_COUNT or len(content_by_path) != EXPECTED_DOCUMENT_COUNT:
+        raise ValueError(f"文档数量必须固定为 {EXPECTED_DOCUMENT_COUNT}")
+    if len(cases) != EXPECTED_GOLDEN_CASE_COUNT:
+        raise ValueError(f"黄金用例数量必须固定为 {EXPECTED_GOLDEN_CASE_COUNT}")
 
     required_document_fields = {
         "documentId",
@@ -894,7 +1262,10 @@ def validate_assets(
         "sensitivityLevel",
         "metadata",
         "enabled",
+        "contentFormat",
+        "mediaType",
         "contentSha256",
+        "extractedTextSha256",
     }
     document_by_id: dict[str, dict[str, Any]] = {}
     document_by_uri: dict[str, dict[str, Any]] = {}
@@ -904,11 +1275,19 @@ def validate_assets(
             raise ValueError(f"Manifest 文档缺少字段：{sorted(missing)}")
         if document["sourceType"] not in VALID_SOURCE_TYPES:
             raise ValueError(f"不支持的 sourceType：{document['sourceType']}")
-        content = markdown_by_path.get(document["path"])
-        if content is None:
-            raise ValueError(f"Manifest path 未生成 Markdown：{document['path']}")
-        if document["contentSha256"] != sha256_text(content):
-            raise ValueError(f"Markdown 哈希不匹配：{document['documentId']}")
+        payload = content_by_path.get(document["path"])
+        if payload is None:
+            raise ValueError(f"Manifest path 未生成原始文件：{document['path']}")
+        if document["contentSha256"] != sha256_bytes(payload):
+            raise ValueError(f"原始文件哈希不匹配：{document['documentId']}")
+        extracted_hash, content_format, media_type = extracted_text_sha256(
+            payload,
+            Path(document["path"]).suffix,
+        )
+        if document["extractedTextSha256"] != extracted_hash:
+            raise ValueError(f"提取文本哈希不匹配：{document['documentId']}")
+        if document["contentFormat"] != content_format or document["mediaType"] != media_type:
+            raise ValueError(f"格式或 MIME 声明不匹配：{document['documentId']}")
         if document["documentId"] in document_by_id or document["sourceUri"] in document_by_uri:
             raise ValueError("documentId 或 sourceUri 不能重复")
         document_by_id[document["documentId"]] = document
@@ -983,8 +1362,11 @@ def validate_assets(
         "semantic_paraphrase": 24,
         "multi_document": 12,
         "no_answer": 12,
-        "cross_scope_refusal": 12,
+        "cross_scope_refusal": 20,
         "stale_conflict": 12,
+        "multiformat_exact": 92,
+        "cross_format_semantic": 24,
+        "cross_format_multi_document": 16,
     }
     if case_type_counts != expected_case_distribution:
         raise ValueError(f"黄金用例分布漂移：{case_type_counts}")
@@ -1015,7 +1397,7 @@ def write_bytes(path: Path, payload: bytes) -> None:
 
 
 def stage_assets(
-    manifest: dict[str, Any], markdown_by_path: dict[str, str], cases: list[dict[str, Any]]
+    manifest: dict[str, Any], content_by_path: dict[str, bytes], cases: list[dict[str, Any]]
 ) -> Path:
     """在允许的资产目录内部构造一个完整候选版本。
 
@@ -1026,8 +1408,9 @@ def stage_assets(
     if STAGING_ROOT.exists():
         shutil.rmtree(STAGING_ROOT)
     candidate_root = STAGING_ROOT / "candidate"
-    for relative_path, content in markdown_by_path.items():
-        write_bytes(candidate_root / relative_path, content.encode("utf-8"))
+    for relative_path, payload in content_by_path.items():
+        write_bytes(candidate_root / relative_path, payload)
+    write_bytes(candidate_root / "multiformat_catalog.json", MULTIFORMAT_CATALOG_PATH.read_bytes())
     write_bytes(candidate_root / "manifest.json", json_bytes(manifest, pretty=True))
     write_bytes(candidate_root / "golden_cases.jsonl", jsonl_bytes(cases))
     return candidate_root
@@ -1047,11 +1430,14 @@ def validate_staged_files(candidate_root: Path, manifest: dict[str, Any], cases:
         for line in (candidate_root / "golden_cases.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    markdown = {
-        item["path"]: (candidate_root / item["path"]).read_text(encoding="utf-8")
+    content_by_path = {
+        item["path"]: (candidate_root / item["path"]).read_bytes()
         for item in parsed_manifest["documents"]
     }
-    validate_assets(parsed_manifest, markdown, parsed_cases)
+    catalog_payload = (candidate_root / "multiformat_catalog.json").read_bytes()
+    if sha256_bytes(catalog_payload) != parsed_manifest.get("multiformatCatalogSha256"):
+        raise ValueError("暂存异构资产目录哈希不匹配")
+    validate_assets(parsed_manifest, content_by_path, parsed_cases)
     if len(parsed_cases) != len(cases):
         raise ValueError("暂存 JSONL 行数不正确")
 
@@ -1060,12 +1446,14 @@ def atomic_publish(candidate_root: Path, manifest: dict[str, Any]) -> None:
     """通过 ``os.replace`` 原子发布每一个已验证文件。
 
     Windows 不支持把一个非空目录整体替换为另一个非空目录，因此发布粒度是单文件：每份
-    Markdown、Manifest 和 JSONL 都先在 staging 完整写好、校验通过，再以同卷原子替换。
+    原始文档、Manifest、异构 catalog 和 JSONL 都先在 staging 完整写好、校验通过，再以同卷原子替换。
     文档集合由固定模板定义，因而不会留下未受管理的目标文件。
     """
 
     targets = [Path(item["path"]) for item in manifest["documents"]]
-    targets.extend((Path("manifest.json"), Path("golden_cases.jsonl")))
+    targets.extend(
+        (Path("multiformat_catalog.json"), Path("manifest.json"), Path("golden_cases.jsonl"))
+    )
     for relative_path in targets:
         source = candidate_root / relative_path
         target = ASSET_ROOT / relative_path
@@ -1077,7 +1465,9 @@ def current_matches_generated(candidate_root: Path, manifest: dict[str, Any]) ->
     """用于 ``--check``：比较当前受管文件是否与确定性候选字节完全相同。"""
 
     targets = [Path(item["path"]) for item in manifest["documents"]]
-    targets.extend((Path("manifest.json"), Path("golden_cases.jsonl")))
+    targets.extend(
+        (Path("multiformat_catalog.json"), Path("manifest.json"), Path("golden_cases.jsonl"))
+    )
     return all(
         (ASSET_ROOT / relative_path).is_file()
         and (ASSET_ROOT / relative_path).read_bytes() == (candidate_root / relative_path).read_bytes()
@@ -1101,20 +1491,26 @@ def main() -> int:
     """执行确定性生成事务，并确保 staging 不会成为提交物。"""
 
     arguments = parse_arguments()
-    manifest, markdown_by_path = build_manifest()
+    manifest, content_by_path = build_manifest()
     cases = build_golden_cases()
-    validate_assets(manifest, markdown_by_path, cases)
-    candidate_root = stage_assets(manifest, markdown_by_path, cases)
+    validate_assets(manifest, content_by_path, cases)
+    candidate_root = stage_assets(manifest, content_by_path, cases)
     try:
         validate_staged_files(candidate_root, manifest, cases)
         if arguments.check:
             if not current_matches_generated(candidate_root, manifest):
                 print("RAG 评测资产与确定性生成结果不一致，请运行生成器。", file=sys.stderr)
                 return 1
-            print("RAG 评测资产校验通过：96 份文档，168 条黄金用例。")
+            print(
+                f"RAG 评测资产校验通过：{EXPECTED_DOCUMENT_COUNT} 份文档，"
+                f"{EXPECTED_GOLDEN_CASE_COUNT} 条黄金用例。"
+            )
             return 0
         atomic_publish(candidate_root, manifest)
-        print("已生成 RAG 评测资产：96 份文档，168 条黄金用例。")
+        print(
+            f"已生成 RAG 评测资产：{EXPECTED_DOCUMENT_COUNT} 份文档，"
+            f"{EXPECTED_GOLDEN_CASE_COUNT} 条黄金用例。"
+        )
         return 0
     finally:
         if STAGING_ROOT.exists():

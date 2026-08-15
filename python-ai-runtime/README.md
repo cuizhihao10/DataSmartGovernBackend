@@ -12,6 +12,8 @@
 
 > 2026-08-11 补充：`RECOVERY_AGENT` 的模型输出现在显式包含 `ragDecision`（`SEARCH`/`SKIP`）、`ragReason` 和 confidence。模型按错误新颖度、诊断事实覆盖度、已有 grounded citation 与置信度自行判断是否检索，不再把每个 Recovery 固定为 RAG-first；缺少 grounded 知识时，`SEARCH` 会强制只生成 `SEARCH_RECOVERY_KNOWLEDGE`，下一 durable turn 取得证据后再评估恢复。`SKIP` 仅表示不重复检索，绝不绕过工具可见性、授权、schema、风险、预算、审批或 Java 控制面。旧 Provider 的 `AUTO` 在无 grounded citation 时归一为 `SEARCH`，已有引用时归一为 `SKIP`。
 
+> 2026-08-16 RAG 异构语料补充：评测集现为 188 份中文原文件和 308 条黄金用例，覆盖 Markdown、DOCX、XLSX、TXT、JSON、JSONL、CSV、LOG、SQL。受限提取器不执行宏、公式或外部关系，Manifest 同时校验原文件和提取文本 SHA-256，引用保留原始办公文件 URI。真实 SiliconFlow BGE 全量运行 0 执行错误，真实 pgvector 摄取写入 313 个 1024 维 chunk；范围泄漏为零，但引用精确率、拒答 F1、禁止文档通过率和单用例通过率仍未达门禁，不能表述为生产 RAG 验收。完整数据见 [RAG 黄金集与硅基流动 BGE 评测 Runbook](../docs/rag-evaluation-siliconflow-runbook.md)。
+
 > 2026-08-12 勘误："平台开放工具"表示工具已注册并受治理，不是模型可任意调用。Recovery action 必须映射到已注册的目标 service/endpoint，并校验 tenant/project 范围、`allowed_actions`、可见性、参数、风险和审批；只有最小的只读、无需审批工具可被受限委派。Python 不创建审批、不直接调用 data-sync 写接口、不派发 worker；`AUTO_APPROVED` 也不是 Python 的执行许可。当前 Java/data-sync 已将它接到首次授权盒内的有界执行分支：`RETRY_EXECUTION` 以稳定幂等键重新排队当前 execution 的失败对象；`APPLY_QUARANTINE` 必须先复核真实只读 preview、精确 selector、范围/预算/指纹并落持久回执，才可改变 quarantine 状态。高风险、越权、证据不足、重复策略未变化或预算耗尽仍停在 `WAITING_APPROVAL`、`REJECTED` 或 `ATTENTION_REQUIRED`。这是源码和聚焦测试事实，不等同于 Docker 或生产 E2E 已通过。
 
 > 2026-08-12 文档复核：普通规划中，结构化意图只把 `knowledge.rag.query` 作为模型可见候选工具开放；模型没有原生 tool call 时，规则层不能补出 RAG ToolPlan。它与 Recovery 的 `SEARCH`/`SKIP` 决策共同实现“模型按需检索”，但不意味着每条旧路径、每种外部工具或每个 Provider 都已完成运行环境验证。`workspace.text.search` 是受控 worker 注入、allowlist 限制的 repository 文件系统根检索能力，不是产品 `Workspace` 层级，也不使用 Elasticsearch、Web Search 或任意网络抓取作为本轮恢复依赖。

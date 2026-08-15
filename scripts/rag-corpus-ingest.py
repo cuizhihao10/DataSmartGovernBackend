@@ -40,7 +40,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--asset-root",
         type=Path,
         default=DEFAULT_ASSET_ROOT,
-        help="包含 Manifest、黄金集和 Markdown 的评测资产目录。",
+        help="包含 Manifest、黄金集和异构原文件的评测资产目录。",
     )
     parser.add_argument("--ingest", action="store_true", help="连接已配置的持久知识库并写入文档。")
     parser.add_argument(

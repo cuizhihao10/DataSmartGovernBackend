@@ -1,0 +1,31 @@
+{
+  "synthetic": true,
+  "documentId": "rag-eval-tenant-20-project-201-connector-capabilities",
+  "artifactCode": "JSON-CON-637",
+  "retrievalAnchor": "tenant-20-project-201:connector-capabilities",
+  "scope": {
+    "tenantId": "20",
+    "projectId": "201",
+    "workspaceKey": "tenant-20-project-201"
+  },
+  "connector": {
+    "name": "synthetic-postgresql-connector",
+    "version": "2.7.4-eval",
+    "rateLimitRowsPerSecond": 8000,
+    "maximumBatchSize": 1000,
+    "maximumChannels": 6,
+    "maximumTimeoutSeconds": 360,
+    "capabilities": [
+      "snapshot",
+      "cdc",
+      "checkpoint-replay",
+      "metadata-refresh"
+    ]
+  },
+  "evidence": {
+    "sourceStatus": "COMPLETE",
+    "effectiveAt": "2026-08-15T00:00:00+08:00",
+    "confidence": 0.97,
+    "basis": "SYNTHETIC_CONNECTOR_CAPABILITY_SNAPSHOT"
+  }
+}

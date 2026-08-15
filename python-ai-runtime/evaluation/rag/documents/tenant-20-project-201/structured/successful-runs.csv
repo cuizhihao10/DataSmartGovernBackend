@@ -1,0 +1,4 @@
+execution_id,task_id,config_version,started_at,rows_read,rows_written,dirty_records,duration_ms,checkpoint,status,artifact_code,retrieval_anchor
+EX-tenant-20-project-201-301,TASK-1001,cfg-v18,2026-08-13T02:00:00+08:00,12000,12000,0,48120,lsn-000301,SUCCEEDED,CSV-RUN-667,tenant-20-project-201:successful-runs
+EX-tenant-20-project-201-302,TASK-1001,cfg-v19,2026-08-14T02:00:00+08:00,12400,12400,0,49280,lsn-000309,SUCCEEDED,CSV-RUN-667,tenant-20-project-201:successful-runs
+EX-tenant-20-project-201-303,TASK-1001,cfg-v20,2026-08-15T02:00:00+08:00,12800,12800,0,50340,lsn-000318,SUCCEEDED,CSV-RUN-667,tenant-20-project-201:successful-runs

@@ -1,0 +1,6 @@
+合成声明：DataSmart Govern RAG 评测原创资料，不含真实客户、个人、凭据或生产数据。
+2026-08-15T02:14:07.124+08:00 level=ERROR traceId=trace-global-901 taskId=TASK-1001 executionId=EX-global-304 objectId=shard-07 errorCode=NOT_NULL_VIOLATION field=region_code retryable=false message="目标字段不允许为空" artifactCode=LOG-WRK-679 retrievalAnchor=global:worker-execution
+2026-08-15T02:14:11.450+08:00 level=INFO traceId=trace-global-901 node=RECOVERY_AGENT action=COMPARE_LAST_SUCCESS_CONFIG baseline=cfg-v20 difference="region_code default missing" source=workbook-field-mapping-cases.xlsx confidence=0.96
+2026-08-15T02:14:19.310+08:00 level=INFO traceId=trace-global-901 action=SET_APPROVED_STATIC_DEFAULT field=region_code value=CN-UNKNOWN risk=LOW governance=WITHIN_AUTHORIZATION_BOX
+2026-08-15T02:14:24.872+08:00 level=INFO traceId=trace-global-901 action=FAILED_SHARD_REPLAY objectId=shard-07 checkpoint=offset-318 cycle=1 maxCycles=3
+2026-08-15T02:15:02.009+08:00 level=INFO traceId=trace-global-901 state=RECOVERED rowsRead=800 rowsWritten=800 dirtyRecords=0 verification=PRECHECK_AND_MONITOR_SUCCEEDED

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import unittest
 from collections import Counter
 from datetime import datetime
@@ -18,6 +19,13 @@ from typing import Any
 
 
 ASSET_ROOT = Path(__file__).resolve().parent
+PYTHON_RUNTIME_SOURCE = ASSET_ROOT.parents[1] / "src"
+if str(PYTHON_RUNTIME_SOURCE) not in sys.path:
+    sys.path.insert(0, str(PYTHON_RUNTIME_SOURCE))
+
+from datasmart_ai_runtime.services.rag.document_extractor import extract_rag_document_bytes  # noqa: E402
+
+
 MANIFEST_PATH = ASSET_ROOT / "manifest.json"
 CASES_PATH = ASSET_ROOT / "golden_cases.jsonl"
 
@@ -34,7 +42,10 @@ REQUIRED_DOCUMENT_FIELDS = {
     "sensitivityLevel",
     "metadata",
     "enabled",
+    "contentFormat",
+    "mediaType",
     "contentSha256",
+    "extractedTextSha256",
 }
 REQUIRED_CASE_FIELDS = {
     "caseId",
@@ -65,10 +76,10 @@ VALID_SOURCE_TYPES = {
     "exact_search",
 }
 EXPECTED_SCOPE_COUNTS = {
-    ("*", "*", "*"): 24,
-    ("10", "101", "tenant-10-project-101"): 24,
-    ("10", "102", "tenant-10-project-102"): 24,
-    ("20", "201", "tenant-20-project-201"): 24,
+    ("*", "*", "*"): 47,
+    ("10", "101", "tenant-10-project-101"): 47,
+    ("10", "102", "tenant-10-project-102"): 47,
+    ("20", "201", "tenant-20-project-201"): 47,
 }
 EXPECTED_CASE_TYPE_COUNTS = {
     "exact_error_code": 80,
@@ -76,8 +87,22 @@ EXPECTED_CASE_TYPE_COUNTS = {
     "semantic_paraphrase": 24,
     "multi_document": 12,
     "no_answer": 12,
-    "cross_scope_refusal": 12,
+    "cross_scope_refusal": 20,
     "stale_conflict": 12,
+    "multiformat_exact": 92,
+    "cross_format_semantic": 24,
+    "cross_format_multi_document": 16,
+}
+EXPECTED_FORMAT_COUNTS = {
+    "csv": 4,
+    "docx": 40,
+    "json": 8,
+    "jsonl": 4,
+    "log": 4,
+    "md": 96,
+    "sql": 4,
+    "txt": 8,
+    "xlsx": 20,
 }
 
 # 合同只扫描实际评测资产，不扫描本测试或生成器，因为代码中的正则字面量本身会包含
@@ -114,7 +139,7 @@ class RagEvaluationAssetsTest(unittest.TestCase):
     def test_document_count_scope_distribution_and_required_categories(self) -> None:
         """防止文档缩水，并证明四个范围的相似干扰文档都存在。"""
 
-        self.assertEqual(96, len(self.documents))
+        self.assertEqual(188, len(self.documents))
         distribution = Counter(
             (document["tenantId"], document["projectId"], document["workspaceKey"])
             for document in self.documents
@@ -129,17 +154,22 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         self.assertTrue({"incident", "task_case", "dataset"}.issubset(source_types))
         for scope_key in ("global", "tenant-10-project-101", "tenant-10-project-102", "tenant-20-project-201"):
             self.assertEqual(
-                24,
+                47,
                 sum(1 for document in self.documents if f"/{scope_key}/" in document["sourceUri"]),
             )
+        self.assertEqual(
+            EXPECTED_FORMAT_COUNTS,
+            dict(Counter(document["contentFormat"] for document in self.documents)),
+        )
 
     def test_manifest_fields_paths_and_content_hashes(self) -> None:
-        """验证 Manifest 可以安全加载，并且其哈希确实覆盖 Markdown 原始 UTF-8 字节。"""
+        """验证 Manifest、原文件哈希、提取文本哈希和格式声明。"""
 
-        self.assertEqual("datasmart.rag-evaluation-assets.v1", self.manifest["schemaVersion"])
+        self.assertEqual("datasmart.rag-evaluation-assets.v2", self.manifest["schemaVersion"])
         self.assertEqual("synthetic-only", self.manifest["assetBoundary"])
-        self.assertEqual(96, len(self.documents_by_id))
-        self.assertEqual(96, len(self.documents_by_uri))
+        self.assertEqual(188, len(self.documents_by_id))
+        self.assertEqual(188, len(self.documents_by_uri))
+        self.assertEqual(EXPECTED_FORMAT_COUNTS, self.manifest["formatCounts"])
 
         for document in self.documents:
             self.assertTrue(REQUIRED_DOCUMENT_FIELDS.issubset(document), document["documentId"])
@@ -153,21 +183,28 @@ class RagEvaluationAssetsTest(unittest.TestCase):
             self.assertTrue(document["metadata"]["sourceConfidenceBasis"])
             self.assertTrue(document["sourceUri"].startswith("synthetic://datasmart-govern/rag-evaluation/"))
             self.assertRegex(document["contentSha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(document["extractedTextSha256"], r"^[0-9a-f]{64}$")
 
             source_path = (ASSET_ROOT / document["path"]).resolve()
             self.assertTrue(source_path.is_relative_to(ASSET_ROOT.resolve()))
-            self.assertEqual(".md", source_path.suffix)
             payload = source_path.read_bytes()
             self.assertEqual(document["contentSha256"], hashlib.sha256(payload).hexdigest())
-            content = payload.decode("utf-8")
-            self.assertIn("合成声明", content)
+            extracted = extract_rag_document_bytes(payload, source_path.suffix)
+            self.assertEqual(document["contentFormat"], extracted.format_name)
+            self.assertEqual(document["mediaType"], extracted.media_type)
+            self.assertEqual(
+                document["extractedTextSha256"],
+                hashlib.sha256(extracted.content.encode("utf-8")).hexdigest(),
+            )
+            content = extracted.content
             self.assertIn(document["metadata"]["retrievalAnchor"], content)
+            self.assertIn(document["metadata"]["artifactCode"], content)
 
     def test_golden_case_count_and_reference_contract(self) -> None:
         """证明至少 120 条用例、每个 URI 有来源、每份文档均有独立检索用例。"""
 
         self.assertGreaterEqual(len(self.cases), 120)
-        self.assertEqual(168, len(self.cases))
+        self.assertEqual(308, len(self.cases))
         case_ids = [golden_case["caseId"] for golden_case in self.cases]
         self.assertEqual(len(case_ids), len(set(case_ids)))
         case_types = Counter(golden_case["caseType"] for golden_case in self.cases)
@@ -176,7 +213,11 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         exact_references = {
             reference["documentId"]
             for golden_case in self.cases
-            if golden_case["caseType"] in {"exact_error_code", "history_lookup"}
+            if golden_case["caseType"] in {
+                "exact_error_code",
+                "history_lookup",
+                "multiformat_exact",
+            }
             for reference in golden_case["relevantDocuments"]
         }
         self.assertEqual(set(self.documents_by_id), exact_references)
@@ -208,7 +249,7 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         """验证无答案、越权和过期冲突都不能被普通可回答用例稀释。"""
 
         refusal_cases = [golden_case for golden_case in self.cases if golden_case["shouldRefuse"]]
-        self.assertEqual(24, len(refusal_cases))
+        self.assertEqual(32, len(refusal_cases))
         for golden_case in refusal_cases:
             self.assertEqual([], golden_case["relevantDocuments"])
             self.assertEqual([], golden_case["expectedCitationUris"])
@@ -217,7 +258,7 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         cross_scope_cases = [
             golden_case for golden_case in self.cases if golden_case["caseType"] == "cross_scope_refusal"
         ]
-        self.assertEqual(12, len(cross_scope_cases))
+        self.assertEqual(20, len(cross_scope_cases))
         for golden_case in cross_scope_cases:
             self.assertTrue(golden_case["shouldRefuse"])
             self.assertTrue(golden_case["forbiddenDocumentIds"])
@@ -254,8 +295,10 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         # 语料字段，也不应该被 PII 检查误报。去掉这一类派生完整性字段后，Manifest 中
         # 的标题、范围、URI、标签和 metadata 仍全部纳入扫描。
         manifest_without_digests = json.loads(json.dumps(self.manifest))
+        manifest_without_digests.pop("multiformatCatalogSha256", None)
         for document in manifest_without_digests["documents"]:
             document.pop("contentSha256")
+            document.pop("extractedTextSha256")
 
         assets_to_scan = [
             ("manifest.json", json.dumps(manifest_without_digests, ensure_ascii=False)),
@@ -263,7 +306,13 @@ class RagEvaluationAssetsTest(unittest.TestCase):
             ("README.md", (ASSET_ROOT / "README.md").read_text(encoding="utf-8")),
         ]
         assets_to_scan.extend(
-            (str(document["path"]), (ASSET_ROOT / document["path"]).read_text(encoding="utf-8"))
+            (
+                str(document["path"]),
+                extract_rag_document_bytes(
+                    (ASSET_ROOT / document["path"]).read_bytes(),
+                    Path(document["path"]).suffix,
+                ).content,
+            )
             for document in self.documents
         )
         for asset_label, content in assets_to_scan:

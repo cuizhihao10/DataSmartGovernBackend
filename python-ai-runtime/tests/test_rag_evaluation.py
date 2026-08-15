@@ -40,13 +40,13 @@ class RagEvaluationTest(unittest.TestCase):
     """保护评测资产完整性、治理指标和报告脱敏边界。"""
 
     def test_repository_dataset_loads_all_documents_and_golden_cases(self) -> None:
-        """仓库中的 96 份文档和 168 条黄金用例应能直接映射到运行时模型。"""
+        """仓库中的 188 份异构文档和 308 条黄金用例应能映射到运行时模型。"""
 
         asset_root = Path(__file__).resolve().parents[1] / "evaluation" / "rag"
         dataset = load_rag_evaluation_dataset(asset_root)
 
-        self.assertEqual(96, len(dataset.documents))
-        self.assertEqual(168, len(dataset.cases))
+        self.assertEqual(188, len(dataset.documents))
+        self.assertEqual(308, len(dataset.cases))
         self.assertEqual("synthetic-only", dataset.asset_boundary)
         self.assertRegex(dataset.fingerprint, r"^[0-9a-f]{64}$")
         self.assertTrue(
@@ -56,14 +56,33 @@ class RagEvaluationTest(unittest.TestCase):
                 RagChunkSourceType.DATASET,
             }.issubset({document.source_type for document in dataset.documents})
         )
+        self.assertEqual(
+            {"csv", "docx", "json", "jsonl", "log", "md", "sql", "txt", "xlsx"},
+            {str(document.metadata.get("contentFormat")) for document in dataset.documents},
+        )
+        self.assertTrue(
+            any(
+                document.metadata.get("contentFormat") == "docx"
+                and document.metadata.get("retrievalAnchor") in document.content
+                for document in dataset.documents
+            )
+        )
+        self.assertTrue(
+            any(
+                document.metadata.get("contentFormat") == "xlsx"
+                and "工作表：数据" in document.content
+                and document.metadata.get("sheetCount") == 3
+                for document in dataset.documents
+            )
+        )
 
     def test_loader_rejects_tampered_document_bytes(self) -> None:
-        """Markdown 被修改但 Manifest 哈希未更新时必须拒绝载入。"""
+        """任一原文件被修改但 Manifest 哈希未更新时必须拒绝载入。"""
 
         source_root = Path(__file__).resolve().parents[1] / "evaluation" / "rag"
         with tempfile.TemporaryDirectory() as temporary_directory:
             copied_root = Path(temporary_directory) / "rag"
-            shutil.copytree(source_root, copied_root)
+            _copy_evaluation_assets(source_root, copied_root)
             manifest = json.loads((copied_root / "manifest.json").read_text(encoding="utf-8"))
             first_document = copied_root / manifest["documents"][0]["path"]
             first_document.write_text(
@@ -74,13 +93,40 @@ class RagEvaluationTest(unittest.TestCase):
             with self.assertRaisesRegex(RagEvaluationDatasetError, "哈希"):
                 load_rag_evaluation_dataset(copied_root)
 
+    def test_loader_rejects_tampered_extracted_text_hash_and_format_declaration(self) -> None:
+        """原文件未变时，提取文本哈希或格式声明漂移也必须拒绝。"""
+
+        source_root = Path(__file__).resolve().parents[1] / "evaluation" / "rag"
+        mutations = (
+            ("extractedTextSha256", "0" * 64, "提取文本哈希"),
+            ("contentFormat", "txt", "格式声明"),
+            ("mediaType", "text/plain", "格式声明"),
+        )
+        for field, value, expected_error in mutations:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary_directory:
+                copied_root = Path(temporary_directory) / "rag"
+                _copy_evaluation_assets(source_root, copied_root)
+                manifest_path = copied_root / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                office_document = next(
+                    item for item in manifest["documents"] if item["contentFormat"] == "docx"
+                )
+                office_document[field] = value
+                manifest_path.write_text(
+                    json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(RagEvaluationDatasetError, expected_error):
+                    load_rag_evaluation_dataset(copied_root)
+
     def test_loader_rejects_invalid_source_evidence_metadata(self) -> None:
         """来源状态、时间或可信度非法时，运行时不能只因 Markdown 哈希正确就接受资产。"""
 
         source_root = Path(__file__).resolve().parents[1] / "evaluation" / "rag"
         with tempfile.TemporaryDirectory() as temporary_directory:
             copied_root = Path(temporary_directory) / "rag"
-            shutil.copytree(source_root, copied_root)
+            _copy_evaluation_assets(source_root, copied_root)
             manifest_path = copied_root / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["documents"][0]["metadata"]["sourceConfidence"] = 1.5
@@ -105,7 +151,7 @@ class RagEvaluationTest(unittest.TestCase):
         for target, field, invalid_value, expected_error in mutations:
             with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary_directory:
                 copied_root = Path(temporary_directory) / "rag"
-                shutil.copytree(source_root, copied_root)
+                _copy_evaluation_assets(source_root, copied_root)
                 if target == "manifest":
                     path = copied_root / "manifest.json"
                     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -234,7 +280,7 @@ class RagEvaluationTest(unittest.TestCase):
         )
         dataset = RagEvaluationDataset(
             root=Path("synthetic-evaluation"),
-            schema_version="datasmart.rag-evaluation-assets.v1",
+            schema_version="datasmart.rag-evaluation-assets.v2",
             asset_boundary="synthetic-only",
             documents=documents,
             cases=cases,
@@ -291,7 +337,7 @@ class RagEvaluationTest(unittest.TestCase):
         document = _document("doc-only", "synthetic://only", "*", "*", "*")
         dataset = RagEvaluationDataset(
             root=Path("synthetic-evaluation"),
-            schema_version="datasmart.rag-evaluation-assets.v1",
+            schema_version="datasmart.rag-evaluation-assets.v2",
             asset_boundary="synthetic-only",
             documents=(document,),
             cases=(
@@ -353,7 +399,7 @@ class RagEvaluationTest(unittest.TestCase):
         )
         dataset = RagEvaluationDataset(
             root=Path("synthetic-evaluation"),
-            schema_version="datasmart.rag-evaluation-assets.v1",
+            schema_version="datasmart.rag-evaluation-assets.v2",
             asset_boundary="synthetic-only",
             documents=(private_document,),
             cases=(golden_case,),
@@ -404,6 +450,20 @@ def _document(
         tenant_id=tenant_id,
         project_id=project_id,
         workspace_key=workspace_key,
+    )
+
+
+def _copy_evaluation_assets(source_root: Path, copied_root: Path) -> None:
+    """复制稳定评测提交物，忽略生成器的瞬态 staging 和 Python 缓存。
+
+    CI 可能并行执行资产 ``--check`` 与加载器测试。主生成器会创建后立即删除 ``.staging``，若
+    ``copytree`` 恰好遍历到其中会出现与产品代码无关的竞态；测试只需要最终提交物，因此明确忽略。
+    """
+
+    shutil.copytree(
+        source_root,
+        copied_root,
+        ignore=shutil.ignore_patterns(".staging", "__pycache__", "*.pyc"),
     )
 
 

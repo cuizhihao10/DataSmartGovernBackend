@@ -2,7 +2,7 @@
 
 本模块把“评测数据是否可信”和“检索结果是否达标”拆成两个阶段：
 
-1. 加载阶段验证 Manifest、Markdown SHA-256、引用、来源类型和租户/项目/工作区范围；
+1. 加载阶段验证 Manifest、异构原文件及提取文本 SHA-256、引用、来源类型和租户/项目/工作区范围；
 2. 执行阶段只把问题保留在内存中调用 RAG 管线，报告仅保存 caseId、文档 ID、来源 URI、指标和异常类型。
 
 这样既能重复评估 embedding、reranker 或检索参数，也不会把黄金问题、模型原文、文档正文和密钥复制到
@@ -27,9 +27,15 @@ from datasmart_ai_runtime.services.rag.models import (
     RagQuery,
     RagScoredChunk,
 )
+from datasmart_ai_runtime.services.rag.document_extractor import (
+    RAG_DOCUMENT_EXTRACTION_VERSION,
+    SUPPORTED_RAG_DOCUMENT_SUFFIXES,
+    RagDocumentExtractionError,
+    extract_rag_document_bytes,
+)
 
 
-RAG_EVALUATION_ASSET_SCHEMA_VERSION = "datasmart.rag-evaluation-assets.v1"
+RAG_EVALUATION_ASSET_SCHEMA_VERSION = "datasmart.rag-evaluation-assets.v2"
 RAG_EVALUATION_REPORT_SCHEMA_VERSION = "datasmart.rag-evaluation-report.v1"
 RAG_EVALUATION_REPORT_PAYLOAD_POLICY = (
     "RAG_EVALUATION_IDS_METRICS_AND_SOURCE_URIS_NO_QUESTION_DOCUMENT_MODEL_BODY_OR_SECRET"
@@ -476,8 +482,9 @@ class RagEvaluationRunner:
 def load_rag_evaluation_dataset(root: str | Path) -> RagEvaluationDataset:
     """从目录加载、验证并映射 RAG 评测资产。
 
-    文件路径必须留在评测根目录内，Markdown 原始字节必须匹配 Manifest SHA-256，所有黄金文档和引用都
-    必须存在且可被用例范围访问。任何一项不满足时整体拒绝，避免在错误基准上得到看似精确的指标。
+    文件路径必须留在评测根目录内，原始文件字节与提取文本必须分别匹配 Manifest SHA-256，所有黄金
+    文档和引用都必须存在且可被用例范围访问。任何一项不满足时整体拒绝，避免在错误基准上得到看似
+    精确的指标。DOCX/XLSX 在这里会经过受限 OOXML 提取器，不执行宏、公式或外部关系。
     """
 
     resolved_root = Path(root).resolve()
@@ -508,16 +515,33 @@ def load_rag_evaluation_dataset(root: str | Path) -> RagEvaluationDataset:
         document_id = _required_text(raw_document.get("documentId"), "documentId")
         relative_path = Path(_required_text(raw_document.get("path"), "path"))
         content_path = (resolved_root / relative_path).resolve()
-        if not content_path.is_relative_to(resolved_root) or content_path.suffix.lower() != ".md":
+        if (
+            not content_path.is_relative_to(resolved_root)
+            or content_path.suffix.lower() not in SUPPORTED_RAG_DOCUMENT_SUFFIXES
+        ):
             raise RagEvaluationDatasetError(f"RAG 评测文档路径越界或扩展名非法：{document_id}")
         try:
             content_bytes = content_path.read_bytes()
-            content = content_bytes.decode("utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
+        except OSError as exc:
             raise RagEvaluationDatasetError(f"RAG 评测文档无法读取：{document_id}") from exc
         expected_hash = _required_text(raw_document.get("contentSha256"), "contentSha256")
         if hashlib.sha256(content_bytes).hexdigest() != expected_hash:
             raise RagEvaluationDatasetError(f"RAG 评测文档哈希不匹配：{document_id}")
+        try:
+            extracted = extract_rag_document_bytes(content_bytes, content_path.suffix)
+        except RagDocumentExtractionError as exc:
+            raise RagEvaluationDatasetError(f"RAG 评测文档内容无法安全提取：{document_id}") from exc
+        content = extracted.content
+        expected_extracted_hash = _required_text(
+            raw_document.get("extractedTextSha256"),
+            "extractedTextSha256",
+        )
+        if hashlib.sha256(content.encode("utf-8")).hexdigest() != expected_extracted_hash:
+            raise RagEvaluationDatasetError(f"RAG 评测文档提取文本哈希不匹配：{document_id}")
+        declared_format = _required_text(raw_document.get("contentFormat"), "contentFormat")
+        declared_media_type = _required_text(raw_document.get("mediaType"), "mediaType")
+        if declared_format != extracted.format_name or declared_media_type != extracted.media_type:
+            raise RagEvaluationDatasetError(f"RAG 评测文档格式声明不匹配：{document_id}")
         try:
             source_type = RagChunkSourceType(
                 _required_text(raw_document.get("sourceType"), "sourceType")
@@ -545,7 +569,13 @@ def load_rag_evaluation_dataset(root: str | Path) -> RagEvaluationDataset:
                 raw_document.get("sensitivityLevel"),
                 "sensitivityLevel",
             ),
-            metadata=dict(metadata),
+            metadata={
+                **dict(metadata),
+                "contentFormat": extracted.format_name,
+                "mediaType": extracted.media_type,
+                "extractionVersion": RAG_DOCUMENT_EXTRACTION_VERSION,
+                "sheetCount": extracted.sheet_count,
+            },
             enabled=_required_boolean(raw_document.get("enabled", True), "enabled"),
         )
         documents.append(document)
@@ -688,7 +718,7 @@ def _quality_gate_failures(
     """比较适用于当前子集的指标与门槛，返回稳定指标名。
 
     例如只跑一条语义改写连通性用例时没有拒答正类，`refusalF1=0` 只是“不可计算”的占位值，不能作为
-    门禁失败；完整 168 条用例包含拒答样本时，该门槛会自动恢复。
+    门禁失败；完整黄金集合包含拒答样本时，该门槛会自动恢复。
     """
 
     checks = (

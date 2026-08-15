@@ -1,0 +1,18 @@
+DataSmart Govern 快速参考
+合成声明：DataSmart Govern RAG 评测原创资料，不含真实客户、个人、凭据或生产数据。
+精确码：TXT-QRF-611
+独立锚点：global:quick-reference
+范围：全局产品基线
+
+结论
+快速参考汇总任务状态、恢复状态、常用错误码和排查顺序。
+
+排查顺序
+1. 按 traceId、taskId、executionId、objectId 和 errorCode 查询结构化日志。
+2. 对比当前配置与上一次成功配置。
+3. 查询连接器版本、限流、容量和目标端约束。
+4. 按需读取 Runbook、历史事故和成功任务案例。
+5. 每条证据记录来源、时间、可信度和可信依据。
+
+自治边界
+授权盒内允许低风险配置修复和失败分片 replay；凭据、权限、DDL、覆盖数据或扩大范围时退出 Loop。

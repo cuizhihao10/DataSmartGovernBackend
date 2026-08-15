@@ -378,6 +378,8 @@ Autopilot 是首次人工授权后运行的有界无人值守低风险恢复控�
 
 普通同步规划的结构化意图只决定 RAG 是否作为 `knowledge.rag.query` 候选工具向模型开放；模型可调用或跳过，规则兜底不得在模型选择跳过后补写 RAG ToolPlan。Recovery 已由模型按诊断事实自主选择 `SEARCH`/`SKIP`，并由 V25 持久化其低敏决策投影。repository workspace 仅指 `workspace.text.search`/文件工具使用的受控、allowlist 文件系统搜索根，不能与产品的 tenant/application/project 层级，或历史 `workspaceId` 数据隔离概念混为一谈；本轮不启用 Elasticsearch 或 Web Search 作为自治恢复依赖。
 
+2026-08-16 的 RAG 基准已从仅 Markdown 扩展为 188 份中文异构原文件和 308 条黄金用例，覆盖 DOCX 用户/管理员/部署/运维/测试/产品/API/恢复资料、XLSX 成功任务参数与字段映射，以及 TXT、JSON、JSONL、CSV、LOG、SQL。Manifest 同时校验原文件与提取文本哈希，citation 保留原始文件 URI；真实 BGE-M3/Reranker 全量运行无执行错误，真实 pgvector 摄取形成 313 个 1024 维 chunk。当前 Recall@K 为 `0.964976`、范围泄漏为 `0`，但引用精确率、拒答 F1、禁止文档通过率和单用例通过率仍未达门禁，因此只能表述为“异构 RAG 链路和评测基础设施已验证”，不能表述为生产质量验收。详见 [RAG 黄金集与硅基流动 BGE 评测 Runbook](docs/rag-evaluation-siliconflow-runbook.md)。
+
 2026-08-10 的六 Agent Recovery 历史 E2E 已证明只读 preview 后存在后置 `PRECHECK_AGENT`/`MONITOR_AGENT` durable turn，但该场景没有执行 Autopilot 写动作。2026-08-13 源码已补齐写动作后的固定复核接线：data-sync 必须返回与原事件同一 `taskId/executionId` 且状态为 `QUEUED/RETRYING` 的强类型 receipt；Java 随后调用 Python 内部 post-action verification，Python 以稳定 checkpoint/turn ID 运行 PRECHECK/MONITOR，并通过既有 Java fact sink 幂等登记两条 durable fact。角色缺失、Specialist 失败、fact sink/HTTP/checkpoint 失败都会抛回 Kafka 有界重试，不会把未复核副作用确认为成功。该源码合同已通过 Python 全量 `1150 passed / 1 skipped` 和 Agent Runtime 全量 `693 passed`；真实 Docker/Kafka/Provider/worker E2E 仍须在重建环境后完成，不能把模块回归重述为生产无人值守验收。
 ### 3.4 Python AI算法层（核心支撑模块）
 

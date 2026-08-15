@@ -35,6 +35,14 @@ from datasmart_ai_runtime.services.rag.command_worker import (
     RagCommandWorkerRunner,
     low_sensitive_rag_worker_summary,
 )
+from datasmart_ai_runtime.services.rag.document_extractor import (
+    RAG_DOCUMENT_EXTRACTION_VERSION,
+    SUPPORTED_RAG_DOCUMENT_SUFFIXES,
+    RagDocumentExtractionError,
+    RagExtractedDocument,
+    extract_rag_document,
+    extract_rag_document_bytes,
+)
 from datasmart_ai_runtime.services.rag.evaluation import (
     RAG_EVALUATION_ASSET_SCHEMA_VERSION,
     RAG_EVALUATION_REPORT_PAYLOAD_POLICY,
@@ -121,6 +129,7 @@ __all__ = [
     "RAG_TOOL_CODE",
     "RAG_KNOWLEDGE_DIAGNOSTICS_PAYLOAD_POLICY",
     "RAG_EVALUATION_ASSET_SCHEMA_VERSION",
+    "RAG_DOCUMENT_EXTRACTION_VERSION",
     "RAG_EVALUATION_REPORT_PAYLOAD_POLICY",
     "RAG_EVALUATION_REPORT_SCHEMA_VERSION",
     "RAG_POSTGRESQL_KNOWLEDGE_SCHEMA_SQL",
@@ -149,6 +158,8 @@ __all__ = [
     "RagEvaluationRunner",
     "RagEvaluationThresholds",
     "RagExpectedDocument",
+    "RagDocumentExtractionError",
+    "RagExtractedDocument",
     "RagGoldenCase",
     "RagHeuristicReranker",
     "RagHybridRetriever",
@@ -184,6 +195,9 @@ __all__ = [
     "jaccard_similarity",
     "lexical_score",
     "load_rag_evaluation_dataset",
+    "extract_rag_document",
+    "extract_rag_document_bytes",
+    "SUPPORTED_RAG_DOCUMENT_SUFFIXES",
     "validate_synthetic_evaluation_ingest_runtime",
     "low_sensitive_rag_worker_summary",
     "rag_answer_artifact_writer_from_env",

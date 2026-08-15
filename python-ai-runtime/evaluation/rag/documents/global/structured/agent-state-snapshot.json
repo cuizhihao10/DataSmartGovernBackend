@@ -1,0 +1,59 @@
+{
+  "synthetic": true,
+  "documentId": "rag-eval-global-agent-state-snapshot",
+  "artifactCode": "JSON-AGT-645",
+  "retrievalAnchor": "global:agent-state-snapshot",
+  "scope": {
+    "tenantId": "*",
+    "projectId": "*",
+    "workspaceKey": "*"
+  },
+  "goal": "把订单增量同步到分析仓库并在授权盒内自动恢复",
+  "states": [
+    {
+      "stage": "AGENT",
+      "node": "KNOWLEDGE_AGENT",
+      "state": "SUCCEEDED",
+      "evidenceCount": 3
+    },
+    {
+      "stage": "AGENT",
+      "node": "DATASOURCE_AGENT",
+      "state": "SUCCEEDED",
+      "evidenceCount": 2
+    },
+    {
+      "stage": "KAFKA",
+      "node": "agent-tool-plan-command",
+      "state": "DELIVERED"
+    },
+    {
+      "stage": "JAVA_AUDIT",
+      "node": "PLAN_INGESTION",
+      "state": "ACCEPTED"
+    },
+    {
+      "stage": "WORKER",
+      "node": "DATA_SYNC",
+      "state": "FAILED",
+      "errorCode": "NOT_NULL_VIOLATION"
+    },
+    {
+      "stage": "RECOVERY",
+      "node": "RECOVERY_AGENT",
+      "state": "REPAIRED",
+      "action": "PATCH_APPROVED_DEFAULT_AND_REPLAY"
+    },
+    {
+      "stage": "FINALIZATION",
+      "node": "PRECHECK_AGENT",
+      "state": "SUCCEEDED"
+    },
+    {
+      "stage": "FINALIZATION",
+      "node": "MONITOR_AGENT",
+      "state": "SUCCEEDED"
+    }
+  ],
+  "finalState": "RECOVERED"
+}
