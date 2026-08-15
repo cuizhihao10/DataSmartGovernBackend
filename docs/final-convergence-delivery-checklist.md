@@ -465,6 +465,16 @@ V26 新增 `data_sync_agent_execution_correlation`，V27 再把入口区分为 `
 - [x] 六 Agent E2E 强制断言 `langgraph / DYNAMIC_SEND_SUBGRAPH / Send 数=子图数 / 稳定父图节点`。
 - [x] 中文方法级注释说明运行时角色选择、子图私有状态、reducer、无 checkpointer 原因和治理边界。
 - [x] 聚焦测试 `18 passed`，更宽六 Agent 与装配回归 `35 passed`，Python 全量 `1182 passed / 1 skipped`，JDK 21 Reactor `1583/0/0/9`，Frontend 全合同/lint/build 通过；离线 E2E 动态断言通过，最新 Python 镜像健康。
-- [ ] 使用有效 Provider 凭据发起全新 Success 请求，并取得动态 fan-out 事实与 lifecycle graph `sourceStatus=COMPLETE` 的同一条黑盒证据。当前容器直连 `/models`、`/responses` 都返回 HTTP `401`，属于外部认证阻塞，不能标记为完成。
+- [x] 使用有效 Provider 凭据发起全新 Success 请求，并取得动态 fan-out 事实与 lifecycle graph `sourceStatus=COMPLETE` 的同一条黑盒证据。完成证据见第 21 节；本项此前的 HTTP `401` 是旧凭据对应的历史环境事实。
 
 固定治理图仍允许使用静态节点：用户确认、审批、checkpoint、执行门禁和最终验证的路径本来就应确定可审计。动态化只用于运行时未知的 Specialist 数量、角色输入和并行波次；不得为了追求“全动态图”而让模型动态创建未注册角色、扩大工具权限或绕过 Java 控制面。
+
+## 21. 2026-08-15 Provider 恢复与动态编排黑盒闭环
+
+本节是第 18 至 20 节的增量复验，不删除当时真实发生的 Provider `401` 记录。当前凭据通过一次性运行时环境注入重新创建 `python-ai-runtime`，没有写入 Git、`.env`、文档或日志。低敏容器探针确认当前模型仍为 `gpt-5.6-sol`，Responses API 返回 HTTP `200` 且响应为 JSON。Provider 的网站根路径对 Chat Completions 会返回 HTML 回退页，因此运行配置继续使用 `https://qa.dashun9527.com/v1` 作为 OpenAI-compatible API 基址；不能为了表面匹配域名而删除 `/v1`。
+
+全新 RequestId `dynamic-send-complete-20260815091548872` 先通过模型规划、Specialist 动态 fan-out、Bridge 和显式首次确认，再由 Java 受治理工具创建 task `120` / execution `2919`。E2E 对 `langgraph`、`DYNAMIC_SEND_SUBGRAPH`、动态 Send 数等于子图收口数及稳定父图节点的断言全部通过。worker 最终为 `SUCCEEDED`，对象账本 1/1 成功，读取 `20`、写入 `20`、失败 `0`；本次首轮执行成功，所以没有伪造 Recovery 或 Kafka 恢复事实。后置 `PRECHECK_AGENT`、`MONITOR_AGENT` 已执行，两个生命周期 session 共取得 4 条低敏 durable facts，脚本统计为 `21 项 / 0 失败 / 0 警告`。
+
+随后使用相同 project-owner 身份通过 Gateway 查询 task `120` / execution `2919` 的统一生命周期图。响应为 `SYNC_EXECUTION_LIFECYCLE / VERIFIED / COMPLETE`，包含 8 个节点、7 条边和 3 条权威证据；3 条证据均具备来源、发生时间、可信度和低敏引用。节点顺序为 `USER_GOAL=ACCEPTED`、`AGENT=BRIDGED`、`COMMAND_DISPATCH=NOT_APPLICABLE`、`JAVA_AUDIT=SUCCEEDED`、`WORKER=SUCCEEDED`、`KAFKA_EVENT=NOT_APPLICABLE`、`RECOVERY=NOT_APPLICABLE`、`FINAL_VERIFICATION=VERIFIED`。数据库只读核对确认关联唯一，入口为 `DIRECT_AGENT_TOOL`，`command_id` 为空而 session/run/audit 均存在，符合六 Specialist 主链不经过初始 command outbox 的合同。
+
+至此，“真实模型 -> 运行时 Specialist 选择 -> LangGraph Send/子图 -> Java 审计 -> worker -> 最终验证 -> lifecycle graph COMPLETE”已经由同一条新请求关闭黑盒门禁。它证明动态编排和正常成功路径，不替代 task `109` 的 transport 自治恢复证据或 task `119` 的字段映射自治修复证据；不同故障动作仍应继续按隔离夹具分别验收。

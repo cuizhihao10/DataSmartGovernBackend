@@ -862,3 +862,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-go
 该命令已通过，并显示动态 fan-out 为 `PASS`。聚焦 Python 回归为 `18 passed`，六 Agent、post-bridge、续跑、装配和接入回归为 `35 passed`，Python 全量为 `1182 passed / 1 skipped`；JDK 21 Reactor 为 `1583 tests / 0 failures / 0 errors / 9 skipped`，Frontend 六项合同、lint、TypeScript 和生产构建全部通过。重建后的 `python-ai-runtime` 为 healthy，容器内 LangGraph 版本为 `1.2.11`。
 
 随后必须先在容器内做低敏 Provider 探针，只记录 HTTP 状态，不打印 API key 或响应正文。2026-08-15 当前重建后实测 `/models=401`、`/responses=401`，因此没有继续调用会创建任务的真实 Success E2E，也没有生成新的 RequestId 失败记录。只有两项探针恢复成功后，才按 8.11 使用全新 RequestId 执行 `-Execute -ConfirmAndExecute -EnableAutopilot`，并把同一 execution 的 `runtimeFanout`、Java audit、worker、Recovery（若触发）和 lifecycle graph `sourceStatus=COMPLETE` 一并归档。HTTP `401` 是 Provider 认证环境阻塞，不能修改模型失败门禁、手工写关联表或复用历史 execution 绕过。
+
+### 8.14 Provider 恢复与动态编排真实复验
+
+8.13 的 `401` 是旧运行时凭据对应的历史结果。更新当前容器凭据时，只允许通过受控环境变量或外部 Secret 注入，不得把 API key 写入 Compose、`.env`、脚本参数、命令输出或提交。当前低敏探针已经确认最小 Responses 请求返回 HTTP `200` JSON，实际模型为 `gpt-5.6-sol`。Provider 根地址的 Chat Completions 会落到 HTML 站点页，故 OpenAI-compatible 基址必须保留 `/v1`；验收应以 JSON wire API 是否成功为准，不能只看根域名是否可访问。
+
+本轮先使用一组已失效的文档样例数据源名称发起新请求，系统正确由 `DATASOURCE_AGENT` 返回 `WAITING_FOR_INPUT`，没有执行 `DATA_SYNC_AGENT`，也没有创建任务。该结果不是 Provider 或动态图失败，而是验收输入已经过期。脚本头部示例已改为占位名称；实际执行前必须通过当前 projectId 的公开数据源列表取得真实名称，已知 ID 时名称和 ID 应同时传入并指向同一条记录。
+
+使用当前租户/项目可见的数据源重新发起 RequestId `dynamic-send-complete-20260815091548872`，并执行 `-Execute -ConfirmAndExecute -EnableAutopilot`。验收结果如下：
+
+1. Provider、意图分析、模型查询、工具建议和 Specialist Bridge 均通过。
+2. `runtimeFanout` 满足 `langgraph / DYNAMIC_SEND_SUBGRAPH`，动态 Send 数等于子图收口数，稳定父图节点完整。
+3. 显式首次确认创建 task `120` / execution `2919`，Autopilot 授权盒固定为 LOW 风险、最多 4 轮和 120 分钟。
+4. worker 为 `SUCCEEDED`，唯一对象账本成功，`read=20`、`written=20`、`failed=0`。
+5. 首轮成功未进入 Recovery；后置 `PRECHECK_AGENT`、`MONITOR_AGENT` 已执行，两个生命周期 session 取得 4 条低敏 durable facts。
+6. 脚本共检查 21 项，失败 0、警告 0。
+
+通过 Gateway 查询同一 task/execution 的 lifecycle graph，结果为 `SYNC_EXECUTION_LIFECYCLE / VERIFIED / COMPLETE`，共 8 节点、7 条边、3 条证据，证据的 `source`、`occurredAt`、`confidence` 和低敏 `reference` 均完整。数据库只读查询只返回一条关联，入口为 `DIRECT_AGENT_TOOL`，没有初始 command，但 session/run/audit 均存在。该结果同时关闭 8.11 的 `COMPLETE` 待补证项和 8.13 的真实动态 fan-out 待补证项。

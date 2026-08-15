@@ -270,3 +270,11 @@ Recovery Kafka 与 Recovery case 已拆分为两类证据。case 只证明恢复
 公开响应的 `specialistAgentExecution.runtimeFanout` 现在记录 `engine`、`dispatchMode`、Send/子图计数、实际角色和稳定图结构。统一 Runtime Event 另记录一条更窄的低敏编排事实，只包含有界枚举和计数；Prompt、模型正文、工具参数、业务对象和未知字段由白名单丢弃。六 Agent E2E 脚本已经把 `langgraph + DYNAMIC_SEND_SUBGRAPH + Send 数等于子图收口数 + 三个父图节点` 纳入强制断言。聚焦回归为 `18 passed`，六 Agent/post-bridge/应用装配等更宽回归为 `35 passed`，离线 E2E 动态编排断言通过；最新 `python-ai-runtime` 镜像健康，并在容器内确认运行 LangGraph `1.2.11` 与 `Send:N` 图边。
 
 最终全量门禁为 JDK 21 Reactor `1583 tests / 0 failures / 0 errors / 9 skipped`、Python `1182 passed / 1 skipped`；Frontend 六项合同、lint、TypeScript 与生产构建全部通过。当前运行态补证仍受 Provider 认证阻塞。重建后的容器直接使用当前配置地址和运行时凭据探测 `/models` 与最小 `/responses`，两者均返回 HTTP `401`；未输出或持久化凭据，也没有复用旧 RequestId。故本轮不能新增 `sourceStatus=COMPLETE` 样本，更不能把离线动态图回归冒充真实模型黑盒。Provider 凭据恢复后，必须用全新请求同时通过动态 fan-out E2E 断言、任务确认、Java 审计、worker 执行和 lifecycle graph `COMPLETE` 门禁。
+
+## 22. 2026-08-15 Provider 恢复后的最终运行态审计
+
+第 19 至 21 节记录的 Provider 阻塞是当时有效的 fail-closed 证据，本节使用全新请求更新当前结论。新凭据仅通过一次性进程环境注入当前 `python-ai-runtime` 容器，没有进入仓库、`.env`、运行日志或文档。容器内最小 Responses 调用返回 HTTP `200` JSON，实际模型仍为 `gpt-5.6-sol`。由于 Provider 根路径的 Chat Completions 是 HTML 站点回退，而 `/v1/chat/completions` 和 `/v1/responses` 才是 JSON API，运行基址保持为 `https://qa.dashun9527.com/v1`。
+
+全新 RequestId `dynamic-send-complete-20260815091548872` 完成真实 Success E2E。动态编排门禁确认 LangGraph 在运行时按实际就绪角色生成 `Send`，每个分支进入可复用 Specialist 私有状态子图，Send 数与子图收口数一致；随后显式首次确认通过 Java 工具创建 task `120` / execution `2919`。worker 写入统计为 `20/20/0`，唯一对象账本为 `SUCCEEDED`，后置 `PRECHECK_AGENT` 与 `MONITOR_AGENT` 已形成 durable facts，21 项验收为 0 失败、0 警告。
+
+同一 execution 的 Gateway 生命周期图实际返回 `overallState=VERIFIED`、`sourceStatus=COMPLETE`、8 个节点、7 条边和 3 条权威证据，所有证据均具备来源、时间、可信度与低敏引用。关联表只存在一条匹配记录，`entry_mode=DIRECT_AGENT_TOOL`、`command_id` 为空，session/run/audit 均已关联；因此命令投递、Recovery Kafka 和 Recovery 节点显示 `NOT_APPLICABLE` 是本次首轮成功的准确事实，不是缺证。审计结论更新为：动态 Specialist 新请求与统一图 `COMPLETE` 黑盒门禁已经关闭，历史 Provider `401` 不再是当前阻塞。

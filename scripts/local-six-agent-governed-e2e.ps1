@@ -26,15 +26,15 @@
     - 成功场景，流式调用 Gateway：
       $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD = '<本地 project-owner 密码>'
       .\scripts\local-six-agent-governed-e2e.ps1 -Execute -ConfirmAndExecute `
-        -SourceDatasourceName 'FlashSync MySQL 源' `
-        -TargetDatasourceName 'FlashSync PostgreSQL 目标' `
+        -SourceDatasourceName '<当前项目可见的 MySQL 数据源名称>' `
+        -TargetDatasourceName '<当前项目可见的 PostgreSQL 数据源名称>' `
         -SourceObjectName 'datasmart_e2e_platform_orders' `
         -TargetSchemaName 'datasmart_e2e' -TargetObjectName 'orders_platform_clean' `
         -Objective '将 MySQL 的 datasmart_e2e_platform_orders 全量同步到 PostgreSQL datasmart_e2e schema 的 orders_platform_clean，并完成预检查后执行'
     - 恢复场景，验证诊断证据 -> 模型按需检索 -> 受治理恢复建议：
       .\scripts\local-six-agent-governed-e2e.ps1 -Execute -Scenario Recovery `
-        -SourceDatasourceName 'FlashSync MySQL 源' `
-        -TargetDatasourceName 'FlashSync PostgreSQL 目标' `
+        -SourceDatasourceName '<当前项目可见的 MySQL 数据源名称>' `
+        -TargetDatasourceName '<当前项目可见的 PostgreSQL 数据源名称>' `
         -TaskId 701 -ExecutionId 9001 -FailureCode 'DIRTY_DATA' `
         -FailureReference '本地失败执行的受控引用' `
         -Objective '排查这次同步失败，结合历史案例提出恢复方案，并在用户审批前停止'
@@ -42,7 +42,8 @@
       .\scripts\local-six-agent-governed-e2e.ps1 -Execute -UsePlanEndpoint ...
 
     注意：
-    - SourceDatasourceName/TargetDatasourceName 必须是当前 project-owner 在 projectId 范围内可见的数据源名称；
+    - SourceDatasourceName/TargetDatasourceName 必须先从当前 projectId 的公开数据源列表读取，不能照抄已经失效的样例名称；
+    - 已知数据源 ID 时应同时传 SourceDatasourceId/TargetDatasourceId，名称与 ID 必须指向同一条可见记录；
     - objective 应该包含真实的表映射、同步模式和必要配置，脚本不会替模型补造表名或字段；
     - -Skip* 选项只用于分阶段排障，不应作为最终验收的替代品；
     - 本脚本默认只验证 Agent 计划和控制面反馈，不代替 data-sync 的数据库数据量、日志和业务结果验收。
