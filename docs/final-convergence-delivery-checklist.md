@@ -478,3 +478,18 @@ V26 新增 `data_sync_agent_execution_correlation`，V27 再把入口区分为 `
 随后使用相同 project-owner 身份通过 Gateway 查询 task `120` / execution `2919` 的统一生命周期图。响应为 `SYNC_EXECUTION_LIFECYCLE / VERIFIED / COMPLETE`，包含 8 个节点、7 条边和 3 条权威证据；3 条证据均具备来源、发生时间、可信度和低敏引用。节点顺序为 `USER_GOAL=ACCEPTED`、`AGENT=BRIDGED`、`COMMAND_DISPATCH=NOT_APPLICABLE`、`JAVA_AUDIT=SUCCEEDED`、`WORKER=SUCCEEDED`、`KAFKA_EVENT=NOT_APPLICABLE`、`RECOVERY=NOT_APPLICABLE`、`FINAL_VERIFICATION=VERIFIED`。数据库只读核对确认关联唯一，入口为 `DIRECT_AGENT_TOOL`，`command_id` 为空而 session/run/audit 均存在，符合六 Specialist 主链不经过初始 command outbox 的合同。
 
 至此，“真实模型 -> 运行时 Specialist 选择 -> LangGraph Send/子图 -> Java 审计 -> worker -> 最终验证 -> lifecycle graph COMPLETE”已经由同一条新请求关闭黑盒门禁。它证明动态编排和正常成功路径，不替代 task `109` 的 transport 自治恢复证据或 task `119` 的字段映射自治修复证据；不同故障动作仍应继续按隔离夹具分别验收。
+
+## 22. 2026-08-16 RAG 高密度资产增量检查
+
+- [x] Manifest 固定为 `356` 份资料、`752` 条黄金用例，覆盖 Markdown、DOCX、XLSX、TXT、JSON、JSONL、CSV、LOG 和 SQL 九种物理格式，以及全局和三个租户/项目范围。
+- [x] 单份资料按内部事实数量扩展，而不是只增加文件数：综合接口文档逐项描述 `153` 个 HTTP/WebSocket 合同；事故类 DOCX 每份 `250` 个完整案例；测试报告类 DOCX 每份 `200` 个案例；运维类 DOCX 每份 `160` 个案例；其余手册每份不少于 `100` 个案例。
+- [x] 每个任务案例都包含任务、execution、对象、trace、事故、Recovery case、事件和配置版本关联标识，并记录失败原因、证据来源、发生时间、可信度及依据、当前/上次成功配置差异、修复动作、权限边界、影响、回滚、验证和最终状态。
+- [x] 每份 XLSX 包含 `说明/数据/失败诊断/字段说明/统计/校验` 六个工作表，普通工作簿至少 `240` 条任务参数和 `240` 条失败诊断，事故修复账本至少 `320 + 320` 条。
+- [x] 单份结构化资料达到可用于长尾检索和日志关联的密度：TXT `200` 个案例、JSON `240` 条记录、JSONL `600` 条事件、CSV `600` 条任务、LOG `1200` 行阶段日志、SQL `320` 个恢复案例及其关联插入。
+- [x] 失败日志、运维记录、事故复盘和任务案例共享稳定关联键，可从日志错误追溯到事故根因、Runbook 修复动作、任务配置差异和恢复验证结果。
+- [x] 静态回归检查上述最低密度、六工作表、`153` 个接口明细、跨格式关联键和全部黄金集范围，防止后续生成退化为少量模板行。
+- [x] XLSX 已按每个工作表及长表开头/中段/结尾完成 `600` 张分段渲染检查；最终像素检查结果记录在本节后续验证中。
+- [x] 使用新 `356/752` 基线完成全量 lexical 评测，0 个执行错误；Recall@K `0.819288`、MRR `0.769242`、nDCG `0.762986`、范围泄漏率 `0`，未达门禁的引用裁剪与拒答指标已如实记录。
+- [ ] 使用新 `356/752` 基线运行 BGE-M3 + BGE-Reranker-v2-M3 全量评测；当前进程没有注入硅基流动 Secret，旧 `188/308` 分数只能作为历史对照。
+- [ ] 在 PostgreSQL FTS/pgvector 上完成新 `356/752` 基线的摄取、检索质量与冷/热性能评测；当前仅完成安全提取和 `VALIDATED_NOT_INGESTED` 校验，不能把内存基线冒充持久化检索结果。
+- [ ] DOCX 结构检查已覆盖全部文件；当前环境缺少 LibreOffice，安装后还需按文档技能要求补做逐页视觉渲染验收。该项是本地渲染工具环境阻塞，不是 DOCX 内容或 OOXML 结构失败。

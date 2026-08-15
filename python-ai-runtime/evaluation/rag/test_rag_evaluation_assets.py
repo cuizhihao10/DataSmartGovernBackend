@@ -76,10 +76,10 @@ VALID_SOURCE_TYPES = {
     "exact_search",
 }
 EXPECTED_SCOPE_COUNTS = {
-    ("*", "*", "*"): 47,
-    ("10", "101", "tenant-10-project-101"): 47,
-    ("10", "102", "tenant-10-project-102"): 47,
-    ("20", "201", "tenant-20-project-201"): 47,
+    ("*", "*", "*"): 89,
+    ("10", "101", "tenant-10-project-101"): 89,
+    ("10", "102", "tenant-10-project-102"): 89,
+    ("20", "201", "tenant-20-project-201"): 89,
 }
 EXPECTED_CASE_TYPE_COUNTS = {
     "exact_error_code": 80,
@@ -87,22 +87,22 @@ EXPECTED_CASE_TYPE_COUNTS = {
     "semantic_paraphrase": 24,
     "multi_document": 12,
     "no_answer": 12,
-    "cross_scope_refusal": 20,
+    "cross_scope_refusal": 28,
     "stale_conflict": 12,
-    "multiformat_exact": 92,
-    "cross_format_semantic": 24,
-    "cross_format_multi_document": 16,
+    "multiformat_exact": 260,
+    "cross_format_semantic": 260,
+    "cross_format_multi_document": 48,
 }
 EXPECTED_FORMAT_COUNTS = {
-    "csv": 4,
-    "docx": 40,
-    "json": 8,
-    "jsonl": 4,
-    "log": 4,
+    "csv": 16,
+    "docx": 120,
+    "json": 16,
+    "jsonl": 16,
+    "log": 8,
     "md": 96,
-    "sql": 4,
-    "txt": 8,
-    "xlsx": 20,
+    "sql": 8,
+    "txt": 16,
+    "xlsx": 60,
 }
 
 # 合同只扫描实际评测资产，不扫描本测试或生成器，因为代码中的正则字面量本身会包含
@@ -139,7 +139,7 @@ class RagEvaluationAssetsTest(unittest.TestCase):
     def test_document_count_scope_distribution_and_required_categories(self) -> None:
         """防止文档缩水，并证明四个范围的相似干扰文档都存在。"""
 
-        self.assertEqual(188, len(self.documents))
+        self.assertEqual(356, len(self.documents))
         distribution = Counter(
             (document["tenantId"], document["projectId"], document["workspaceKey"])
             for document in self.documents
@@ -154,7 +154,7 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         self.assertTrue({"incident", "task_case", "dataset"}.issubset(source_types))
         for scope_key in ("global", "tenant-10-project-101", "tenant-10-project-102", "tenant-20-project-201"):
             self.assertEqual(
-                47,
+                89,
                 sum(1 for document in self.documents if f"/{scope_key}/" in document["sourceUri"]),
             )
         self.assertEqual(
@@ -167,9 +167,10 @@ class RagEvaluationAssetsTest(unittest.TestCase):
 
         self.assertEqual("datasmart.rag-evaluation-assets.v2", self.manifest["schemaVersion"])
         self.assertEqual("synthetic-only", self.manifest["assetBoundary"])
-        self.assertEqual(188, len(self.documents_by_id))
-        self.assertEqual(188, len(self.documents_by_uri))
+        self.assertEqual(356, len(self.documents_by_id))
+        self.assertEqual(356, len(self.documents_by_uri))
         self.assertEqual(EXPECTED_FORMAT_COUNTS, self.manifest["formatCounts"])
+        extracted_by_anchor: dict[str, str] = {}
 
         for document in self.documents:
             self.assertTrue(REQUIRED_DOCUMENT_FIELDS.issubset(document), document["documentId"])
@@ -197,14 +198,54 @@ class RagEvaluationAssetsTest(unittest.TestCase):
                 hashlib.sha256(extracted.content.encode("utf-8")).hexdigest(),
             )
             content = extracted.content
+            extracted_by_anchor[document["metadata"]["retrievalAnchor"]] = content
             self.assertIn(document["metadata"]["retrievalAnchor"], content)
             self.assertIn(document["metadata"]["artifactCode"], content)
+            content_format = document["contentFormat"]
+            if content_format == "docx":
+                self.assertGreaterEqual(len(content), 90_000, document["documentId"])
+                self.assertGreaterEqual(content.count("失败原因："), 100, document["documentId"])
+            elif content_format == "xlsx":
+                self.assertGreaterEqual(len(content), 190_000, document["documentId"])
+                self.assertEqual(6, content.count("工作表："), document["documentId"])
+                self.assertGreaterEqual(content.count("CASE-"), 240, document["documentId"])
+            elif content_format == "txt":
+                self.assertGreaterEqual(content.count("CASE-"), 200, document["documentId"])
+            elif content_format == "json":
+                self.assertGreaterEqual(content.count('"recordId"'), 240, document["documentId"])
+            elif content_format == "jsonl":
+                self.assertGreaterEqual(content.count('"recordId"'), 600, document["documentId"])
+            elif content_format == "csv":
+                self.assertGreaterEqual(content.count("TASK-"), 600, document["documentId"])
+            elif content_format == "log":
+                self.assertGreaterEqual(content.count("traceId="), 1_200, document["documentId"])
+            elif content_format == "sql":
+                self.assertGreaterEqual(
+                    content.count("INSERT INTO synthetic_recovery_case"),
+                    320,
+                    document["documentId"],
+                )
+
+        # 同一合成任务身份必须跨任务案例、日志、恢复事件和数据库台账出现，才能评测 RAG 的
+        # 多来源证据拼接，而不是只在单文件内部命中关键词。
+        correlated_anchors = (
+            "global:workbook-full-load-task-cases",
+            "global:worker-execution",
+            "global:task-case-library",
+            "global:database-recovery-ledger",
+        )
+        for anchor in correlated_anchors:
+            self.assertIn("TASK-global-0001", extracted_by_anchor[anchor])
+        self.assertEqual(
+            153,
+            extracted_by_anchor["global:reference-api-websocket"].count("接口示例号"),
+        )
 
     def test_golden_case_count_and_reference_contract(self) -> None:
         """证明至少 120 条用例、每个 URI 有来源、每份文档均有独立检索用例。"""
 
         self.assertGreaterEqual(len(self.cases), 120)
-        self.assertEqual(308, len(self.cases))
+        self.assertEqual(752, len(self.cases))
         case_ids = [golden_case["caseId"] for golden_case in self.cases]
         self.assertEqual(len(case_ids), len(set(case_ids)))
         case_types = Counter(golden_case["caseType"] for golden_case in self.cases)
@@ -249,7 +290,7 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         """验证无答案、越权和过期冲突都不能被普通可回答用例稀释。"""
 
         refusal_cases = [golden_case for golden_case in self.cases if golden_case["shouldRefuse"]]
-        self.assertEqual(32, len(refusal_cases))
+        self.assertEqual(40, len(refusal_cases))
         for golden_case in refusal_cases:
             self.assertEqual([], golden_case["relevantDocuments"])
             self.assertEqual([], golden_case["expectedCitationUris"])
@@ -258,7 +299,7 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         cross_scope_cases = [
             golden_case for golden_case in self.cases if golden_case["caseType"] == "cross_scope_refusal"
         ]
-        self.assertEqual(20, len(cross_scope_cases))
+        self.assertEqual(28, len(cross_scope_cases))
         for golden_case in cross_scope_cases:
             self.assertTrue(golden_case["shouldRefuse"])
             self.assertTrue(golden_case["forbiddenDocumentIds"])

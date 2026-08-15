@@ -278,3 +278,32 @@ Recovery Kafka 与 Recovery case 已拆分为两类证据。case 只证明恢复
 全新 RequestId `dynamic-send-complete-20260815091548872` 完成真实 Success E2E。动态编排门禁确认 LangGraph 在运行时按实际就绪角色生成 `Send`，每个分支进入可复用 Specialist 私有状态子图，Send 数与子图收口数一致；随后显式首次确认通过 Java 工具创建 task `120` / execution `2919`。worker 写入统计为 `20/20/0`，唯一对象账本为 `SUCCEEDED`，后置 `PRECHECK_AGENT` 与 `MONITOR_AGENT` 已形成 durable facts，21 项验收为 0 失败、0 警告。
 
 同一 execution 的 Gateway 生命周期图实际返回 `overallState=VERIFIED`、`sourceStatus=COMPLETE`、8 个节点、7 条边和 3 条权威证据，所有证据均具备来源、时间、可信度与低敏引用。关联表只存在一条匹配记录，`entry_mode=DIRECT_AGENT_TOOL`、`command_id` 为空，session/run/audit 均已关联；因此命令投递、Recovery Kafka 和 Recovery 节点显示 `NOT_APPLICABLE` 是本次首轮成功的准确事实，不是缺证。审计结论更新为：动态 Specialist 新请求与统一图 `COMPLETE` 黑盒门禁已经关闭，历史 Provider `401` 不再是当前阻塞。
+
+## 23. 2026-08-16 高密度 RAG 评测语料审计
+
+本轮按“单份资料内部事实数量”扩展评测资产，而不是以文件数量替代内容质量。当前 Manifest 固定为 356 份
+文档：96 Markdown、120 DOCX、60 XLSX、16 TXT、16 JSON、16 JSONL、16 CSV、8 LOG 和 8 SQL；
+四个范围各 89 份，340 份现行证据与 16 份过期证据保持显式区分。黄金集固定为 752 条，其中每份异构
+资产都有精确查询和自然语言查询，另有 48 条跨格式多证据与 28 条跨范围拒答。
+
+综合接口 Word 手册包含 153 个逐接口合同，每个合同记录权限、请求字段、响应字段、幂等、错误码、治理
+和审计要求。每份 Excel 有说明、数据、失败诊断、字段说明、统计、校验六张表，主数据和诊断各不少于
+240 行，事故台账各 320 行。事故类 Word 包含 250 个独立案例；每份 LOG 为 1,200 行，每份 JSONL/CSV
+为 600 条，每份 SQL 为 320 组恢复案例。所有格式用相同编号规则关联 task、execution、object、trace、
+incident 和 recovery case，失败原因、证据来源、发生时间、可信度、修复、越权边界、回滚和验证均为
+显式字段。
+
+生成器确定性检查和资产/运行时聚焦测试已经通过。Excel 60 个工作簿的六张工作表全部按长表窗口渲染，
+共 600 张 QA 图片；像素检查无空白图和异常小图，视觉抽查后修复了日期序列号显示。120 份 DOCX 均可
+被 OOXML 和运行时提取器解析，单份结构下限为 925 段、9 表、134 个标题；本机没有 LibreOffice，
+`render_docx.py` 无法完成 PDF/PNG 视觉转换，该项记录为环境阻塞而非代码失败。旧版 188/308 的词法、
+BGE 和 pgvector 指标继续保留为历史对照，不能冒充新 356/752 资产的当前评测结果。
+
+当前 356/752 词法全量评测已经完成，数据集指纹为
+`2ccc8def27e85c556b6c6182e31e147e8c8ad94f1e8755cdf699d26abbe5d84d`，执行错误为 0。Recall@K
+`0.819288`、MRR `0.769242`、nDCG `0.762986`、引用召回率 `0.819288`、范围泄漏率 `0`、过期证据
+抑制率 `1`；引用精确率 `0.443820`、拒答 F1 `0.823529`、禁止文档通过率 `0.495946` 和单用例通过率
+`0.136968` 未通过门禁。内存知识库共形成 111,569 个 chunk，p50/p95 为 `1212/3325 ms`，全量运行
+约 18 分钟；这组结果是离线合同基线，不可冒充 PostgreSQL FTS/pgvector 性能结论。资产聚焦回归为
+`15 passed`，Python Runtime 全套为 `1219 passed / 1 skipped`。当前环境没有注入硅基流动 Secret，
+因此新语料上的 BGE-M3、BGE-Reranker-v2-M3 和 pgvector 全量结果仍待执行。

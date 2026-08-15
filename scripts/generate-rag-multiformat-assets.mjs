@@ -30,6 +30,16 @@ import {
   WidthType,
 } from "docx";
 import { SpreadsheetFile, Workbook } from "@oai/artifact-tool";
+import {
+  buildEnterpriseDocxDetail,
+  buildEnterpriseStructuredPayload,
+  buildEnterpriseWorkbookDataset,
+  extraDocxTopics,
+  extraTextTopics,
+  extraXlsxTopics,
+  workbookColumnWidth,
+  workbookFieldDictionary,
+} from "./rag-enterprise-corpus-library.mjs";
 
 
 const repositoryRoot = process.env.DATASMART_REPOSITORY_ROOT
@@ -333,6 +343,12 @@ const textTopics = [
   question,
 }));
 
+// 扩展主题按同一生成合同进入目录。用户需要的是单份资料中的高密度数据，新增主题用于进一步覆盖
+// 认证、Agent、同步、Recovery、运维和事故等独立知识域，不能替代后续每份文件内部的详细记录。
+docxTopics.push(...extraDocxTopics);
+xlsxTopics.push(...extraXlsxTopics);
+textTopics.push(...extraTextTopics);
+
 
 /** 返回命令行参数值，未知参数由主流程统一拒绝。 */
 function readArgument(name) {
@@ -375,21 +391,17 @@ function catalogEntry(scope, topic, format, directory) {
   };
 }
 
-/** 生成一份具备真实标题层级、表格、页眉页脚和编号步骤的中文 Word 手册。 */
+/** 生成一份具备详细接口、案例、来源和治理字段的中文 Word 手册。 */
 async function buildDocx(scope, topic, entry) {
+  const detail = buildEnterpriseDocxDetail(scope, topic);
   const statusRows = [
     ["文档状态", "当前有效"],
     ["适用范围", scope.label],
     ["检索精确码", topic.code],
     ["独立锚点", `${scope.key}:${topic.slug}`],
+    ["文档标识", entry.documentId],
+    ["内容规模", `${detail.apiDetails.length} 个接口；${detail.caseDetails.length} 个独立案例`],
     ["审计保留", `${scope.retentionDays} 天`],
-  ];
-  const controlRows = [
-    ["同步延迟预算", `${scope.lagBudgetMinutes} 分钟`, "超出预算后触发 MONITOR_AGENT 诊断"],
-    ["最大恢复循环", `${scope.retryLimit} 轮`, "每轮必须产生新证据或新修复动作"],
-    ["基线批量", `${scope.batchSize} 行`, "自动调参只允许降低批量"],
-    ["基线并发", `${scope.channelCount}`, "自动调参只允许降低并发"],
-    ["基线超时", `${scope.timeoutSeconds} 秒`, "只能在授权上界内有界增加"],
   ];
 
   const children = [
@@ -403,44 +415,89 @@ async function buildDocx(scope, topic, entry) {
     }),
     new Paragraph({
       style: "Callout",
-      children: [
-        new TextRun({
-          text: "合成声明：本文档为原创评测样本，不含真实客户、个人、凭据或生产数据。",
-          bold: true,
-        }),
-      ],
+      children: [new TextRun({ text: "合成声明：本文档为原创评测样本，不含真实客户、个人、凭据或生产数据。", bold: true })],
     }),
     buildDocxTable(statusRows, [2400, 6960], true),
-    heading("1. 文档目的"),
-    bodyParagraph(`${topic.summary} 本文档用于验证 DOCX 解析、中文语义召回、来源引用、时间和可信度字段，不代表任何真实环境。`),
-    heading("2. 适用边界"),
-    ...[
-      `tenantId=${scope.tenantId}，projectId=${scope.projectId}，workspaceKey=${scope.workspaceKey}。`,
-      "同主题的其他租户或项目文档属于硬隔离干扰项，必须在向量召回和 Reranker 之前过滤。",
-      "模型输出不能替代权限、审批、幂等或审计事实；没有足够证据时必须拒答。",
-    ].map((text) => bullet(text)),
-    heading("3. 核心流程与说明"),
-    ...topic.sections.flatMap(([name, detail], index) => [
-      new Paragraph({
-        numbering: { reference: "datasmart-steps", level: 0 },
-        children: [new TextRun({ text: name, bold: true }), new TextRun(`：${detail}`)],
-      }),
-      new Paragraph({
-        style: "Note",
-        children: [new TextRun(`验证点 ${index + 1}：记录来源、发生时间、可信度依据和执行结果。`)],
-      }),
+    heading("1. 文档目的与使用边界"),
+    bodyParagraph(`${topic.summary} 本文档既是维护参考，也是异构 RAG 检索与引用评测资料。所有接口、任务、日志和事故记录均为确定性合成数据，不代表真实客户环境。`),
+    ...detail.preconditions.map((text) => bullet(text)),
+    heading("2. 角色、职责与限制"),
+    buildDocxTable([["角色", "职责", "限制"], ...detail.roleRows], [1900, 4300, 3160], false),
+    heading("3. 术语与全链路关联标识"),
+    buildDocxTable([["术语", "含义", "用途"], ...detail.termRows], [1900, 4000, 3460], false),
+    heading("4. 核心章节详解"),
+    ...detail.sectionDetails.flatMap((section, index) => [
+      subheading(`4.${index + 1} ${section.name}`),
+      bodyParagraph(section.detail),
+      bodyParagraph(`输入：${section.inputs}`),
+      ...section.actions.map((text) => bullet(text)),
+      bodyParagraph(`证据：${section.evidence}`),
+      bodyParagraph(`验收：${section.acceptance}`),
     ]),
-    heading("4. 参数与治理控制"),
-    buildDocxTable([["控制项", "本范围值", "治理要求"], ...controlRows], [2400, 2160, 4800], false),
-    heading("5. 异常与升级"),
-    ...[
-      "低风险动作必须落在首次授权盒允许的任务、对象、动作、参数上下界和循环次数内。",
-      "涉及凭据、权限、DDL、删除或覆盖数据、扩大同步范围、不可逆转换时立即退出自治 Loop。",
-      "退出结果必须包含根因、证据来源与时间、所需权限、手工步骤、影响、回滚和验证方法。",
-    ].map((text) => bullet(text)),
-    heading("6. 检索与引用信息"),
-    bodyParagraph(`精确码 ${topic.code}；独立锚点 ${scope.key}:${topic.slug}；文档标识 ${entry.documentId}。RAG 回答必须引用原始 DOCX sourceUri，而不是无来源的中间纯文本。`),
+    heading("5. 标准操作与受治理执行流程"),
+    buildDocxTable([["阶段", "责任主体", "操作", "进入下一步条件"], ...detail.procedureRows], [1300, 1800, 3960, 2300], false),
+    heading("6. 配置字段与自动调整边界"),
+    buildDocxTable([["字段", "当前/基线值", "允许边界", "证据与说明"], ...detail.configurationRows], [1800, 1800, 2300, 3460], false),
+    heading(`7. ${detail.familyTitle}`),
+    buildDocxTable([detail.familyHeaders, ...detail.familyRows], [1500, 2900, 2600, 2360], false),
   ];
+
+  if (detail.apiDetails.length > 0) {
+    children.push(heading(`8. 逐接口详细合同（${detail.apiDetails.length} 个）`));
+    for (const contract of detail.apiDetails) {
+      children.push(
+        subheading(`8.${contract.sequence} ${contract.method} ${contract.endpoint}`),
+        bodyParagraph(`用途：${contract.purpose}`),
+        buildDocxTable([
+          ["合同项", "详细说明"],
+          ["权限", contract.permission],
+          ["请求字段", contract.requestFields.join("；")],
+          ["响应字段", contract.responseFields.join("；")],
+          ["幂等/重连", contract.idempotency],
+          ["错误码", contract.errors.join("、")],
+          ["治理要求", contract.governance],
+          ["审计要求", contract.audit],
+          ["接口示例号", contract.exampleId],
+        ], [1900, 7460], false),
+      );
+    }
+  }
+
+  children.push(
+    heading("9. 错误码、根因和动作边界"),
+    buildDocxTable([["错误码", "常见根因", "必须核对的证据", "允许动作或退出条件"], ...detail.errorRows], [1900, 2200, 2460, 2800], false),
+    heading(`10. 任务失败、运维与事故案例（${detail.caseDetails.length} 个）`),
+    bodyParagraph("以下每个案例都是独立记录。相同 taskId、executionId、objectId、traceId、incidentId 和 recoveryCaseId 也会出现在工作簿、JSONL、CSV、LOG 与 SQL 资料中，可用于跨格式证据关联评测。"),
+  );
+  for (const [index, item] of detail.caseDetails.entries()) {
+    children.push(
+      subheading(`10.${index + 1} ${item.incidentId} / ${item.errorCode}`),
+      bodyParagraph(`关联标识：taskId=${item.taskId}；executionId=${item.executionId}；objectId=${item.objectId}；traceId=${item.traceId}；recoveryCaseId=${item.recoveryCaseId}。`),
+      bodyParagraph(`失败原因：${item.failureReason}`),
+      bodyParagraph(`证据：sourceUri=${item.evidenceSource}；observedAt=${item.observedAt}；confidence=${item.confidence}；confidenceBasis=${item.confidenceBasis}；sourceStatus=${item.sourceStatus}。`),
+      bodyParagraph(`配置对比：当前=${item.currentConfig}；上次成功=${item.lastSuccessConfig}。`),
+      bodyParagraph(`决策：${item.repairAction}；风险=${item.risk}；需要特权=${item.requiresPrivilege}；所需权限=${item.requiredPermission}。`),
+      bodyParagraph(`影响与回滚：${item.impact}；${item.rollback}。`),
+      bodyParagraph(`验证与结论：${item.verification}；cycle=${item.cycle}；finalState=${item.finalState}。`),
+    );
+  }
+  children.push(
+    heading("11. 证据类型、来源时间与可信度"),
+    buildDocxTable([["证据类型", "关键字段", "时间字段", "可信度/限制"], ...detail.evidenceRows], [1900, 3560, 1800, 2100], false),
+    heading("12. 修复动作风险目录"),
+    buildDocxTable([["动作", "风险", "前置条件", "处置"], ...detail.riskRows], [2700, 1100, 3360, 2200], false),
+    heading("13. 执行前、中、后检查清单"),
+    ...detail.checklist.map((text) => bullet(text)),
+    heading("14. 请求、证据、动作与事件示例"),
+    ...detail.exampleBlocks.map((text) => codeParagraph(text)),
+    heading("15. 常见问题"),
+    ...detail.faqRows.flatMap(([question, answer], index) => [
+      subheading(`15.${index + 1} ${question}`),
+      bodyParagraph(answer),
+    ]),
+    heading("16. 检索与引用信息"),
+    bodyParagraph(`精确码 ${topic.code}；独立锚点 ${scope.key}:${topic.slug}；文档标识 ${entry.documentId}。RAG 回答必须引用原始 DOCX sourceUri，并保留来源、时间、可信度、可信依据和 sourceStatus。`),
+  );
 
   const document = new Document({
     creator: "DataSmart Govern",
@@ -450,12 +507,14 @@ async function buildDocx(scope, topic, entry) {
       default: {
         document: { run: { font: "Microsoft YaHei", size: 21, color: "202124" } },
         heading1: { run: { font: "Microsoft YaHei", size: 30, bold: true, color: "17365D" }, paragraph: { spacing: { before: 260, after: 120 } } },
+        heading2: { run: { font: "Microsoft YaHei", size: 25, bold: true, color: "1F4E78" }, paragraph: { spacing: { before: 180, after: 80 } } },
       },
       paragraphStyles: [
         { id: "DocumentTitle", name: "Document Title", basedOn: "Normal", next: "Normal", run: { font: "Microsoft YaHei", size: 52, bold: true, color: "17365D" }, paragraph: { spacing: { before: 0, after: 80 } } },
         { id: "DocumentSubtitle", name: "Document Subtitle", basedOn: "Normal", next: "Normal", run: { font: "Microsoft YaHei", size: 22, color: "5F6368" }, paragraph: { spacing: { after: 240 } } },
         { id: "Callout", name: "Callout", basedOn: "Normal", next: "Normal", run: { font: "Microsoft YaHei", size: 20, color: "7A3E00" }, paragraph: { shading: { type: ShadingType.CLEAR, fill: "FFF4CE" }, spacing: { before: 120, after: 180 }, indent: { left: 160, right: 160 } } },
         { id: "Note", name: "Note", basedOn: "Normal", next: "Normal", run: { font: "Microsoft YaHei", size: 18, color: "5F6368" }, paragraph: { spacing: { after: 100 }, indent: { left: 560 } } },
+        { id: "CodeBlock", name: "Code Block", basedOn: "Normal", next: "Normal", run: { font: "Consolas", size: 17, color: "202124" }, paragraph: { shading: { type: ShadingType.CLEAR, fill: "F4F6F8" }, spacing: { before: 80, after: 120 }, indent: { left: 180, right: 180 } } },
       ],
     },
     numbering: {
@@ -509,9 +568,19 @@ function heading(text) {
   return new Paragraph({ text, heading: HeadingLevel.HEADING_1, keepNext: true });
 }
 
+/** 创建二级标题，用于逐接口和逐事故案例定位。 */
+function subheading(text) {
+  return new Paragraph({ text, heading: HeadingLevel.HEADING_2, keepNext: true });
+}
+
 /** 创建正文段落。 */
 function bodyParagraph(text) {
   return new Paragraph({ children: [new TextRun(text)], spacing: { after: 140, line: 320 } });
+}
+
+/** 创建等宽字体示例块，保留 JSON、事件和请求字段的可读结构。 */
+function codeParagraph(text) {
+  return new Paragraph({ style: "CodeBlock", children: [new TextRun(text)] });
 }
 
 /** 创建真实 Word 项目符号段落。 */
@@ -520,7 +589,7 @@ function bullet(text) {
 }
 
 /** 为一种 XLSX 主题生成可编辑数据行。 */
-function workbookRows(scope, topic) {
+function legacyWorkbookRows(scope, topic) {
   const common = {
     scope: scope.label,
     anchor: `${scope.key}:${topic.slug}`,
@@ -587,12 +656,12 @@ function workbookRows(scope, topic) {
 }
 
 /** 生成一份带说明、数据和校验三个工作表的 XLSX，并可选渲染全部工作表做 QA。 */
-async function buildXlsx(scope, topic, entry) {
+async function buildLegacyXlsx(scope, topic, entry) {
   const workbook = Workbook.create();
   const overview = workbook.worksheets.add("说明");
   const data = workbook.worksheets.add("数据");
   const validation = workbook.worksheets.add("校验");
-  const dataset = workbookRows(scope, topic);
+  const dataset = legacyWorkbookRows(scope, topic);
 
   overview.showGridLines = false;
   overview.getRange("A1:H1").merge();
@@ -673,6 +742,171 @@ async function buildXlsx(scope, topic, entry) {
   }
 }
 
+/** 把二维数据写入工作表，并使用稳定列宽避免 200+ 行数据造成布局漂移。 */
+function populateWorksheetTable(worksheet, headers, rows, headerColor = "#1F4E78") {
+  worksheet.showGridLines = false;
+  const lastColumn = columnName(headers.length);
+  worksheet.getRange(`A1:${lastColumn}1`).values = [headers];
+  if (rows.length > 0) {
+    worksheet.getRange(`A2:${lastColumn}${rows.length + 1}`).values = rows;
+  }
+  worksheet.getRange(`A1:${lastColumn}1`).format = {
+    fill: headerColor,
+    font: { bold: true, color: "#FFFFFF" },
+    rowHeight: 30,
+    horizontalAlignment: "center",
+    verticalAlignment: "center",
+  };
+  worksheet.getRange(`A1:${lastColumn}${rows.length + 1}`).format.borders = {
+    preset: "insideHorizontal",
+    style: "thin",
+    color: "#D9E1E8",
+  };
+  worksheet.getRange(`A1:${lastColumn}${rows.length + 1}`).format.wrapText = true;
+  headers.forEach((header, index) => {
+    const column = columnName(index + 1);
+    worksheet.getRange(`${column}1:${column}${rows.length + 1}`).format.columnWidth = workbookColumnWidth(header);
+    if (rows.length > 0 && /时间|日期|At$|_at$/.test(header)) {
+      worksheet.getRange(`${column}2:${column}${rows.length + 1}`).format.numberFormat = "yyyy-mm-dd hh:mm:ss";
+    } else if (rows.length > 0 && /可信度/.test(header)) {
+      worksheet.getRange(`${column}2:${column}${rows.length + 1}`).format.numberFormat = "0.00";
+    } else if (rows.length > 0 && /通过率|比例|占比/.test(header)) {
+      worksheet.getRange(`${column}2:${column}${rows.length + 1}`).format.numberFormat = "0.00%";
+    }
+  });
+  worksheet.freezePanes.freezeRows(1);
+}
+
+/**
+ * 生成六工作表的高密度 XLSX。
+ *
+ * “数据”保存至少 200 条主题记录；“失败诊断”逐条写出根因、证据、修复、权限、回滚和验证；
+ * “字段说明”“统计”“校验”让初学者能够理解并检查这些数据，而不必猜测列的语义。
+ */
+async function buildXlsx(scope, topic, entry) {
+  const workbook = Workbook.create();
+  const dataset = buildEnterpriseWorkbookDataset(scope, topic);
+  const overview = workbook.worksheets.add("说明");
+  const data = workbook.worksheets.add("数据");
+  const diagnosis = workbook.worksheets.add("失败诊断");
+  const dictionary = workbook.worksheets.add("字段说明");
+  const statistics = workbook.worksheets.add("统计");
+  const validation = workbook.worksheets.add("校验");
+
+  overview.showGridLines = false;
+  overview.getRange("A1:H1").merge();
+  overview.getRange("A1").values = [[topic.title]];
+  overview.getRange("A1:H1").format = { fill: "#17365D", font: { bold: true, color: "#FFFFFF", size: 18 }, rowHeight: 34, verticalAlignment: "center" };
+  overview.getRange("A3:B13").values = [
+    ["合成声明", "原创评测样本，不含真实客户、个人、凭据或生产数据"],
+    ["范围", scope.label],
+    ["tenantId", scope.tenantId],
+    ["projectId", scope.projectId],
+    ["workspaceKey", scope.workspaceKey],
+    ["精确码", topic.code],
+    ["独立锚点", `${scope.key}:${topic.slug}`],
+    ["主数据记录数", dataset.rows.length],
+    ["失败诊断记录数", dataset.diagnosisRows.length],
+    ["内容摘要", topic.summary],
+    ["治理规则", dataset.notes.rule],
+  ];
+  overview.getRange("A3:A13").format = { fill: "#EAF2F8", font: { bold: true, color: "#17365D" } };
+  overview.getRange("A3:B13").format.borders = { preset: "insideHorizontal", style: "thin", color: "#D9E1E8" };
+  overview.getRange("A3:B13").format.wrapText = true;
+  overview.getRange("A3:A13").format.columnWidth = 20;
+  overview.getRange("B3:B13").format.columnWidth = 76;
+
+  populateWorksheetTable(data, dataset.headers, dataset.rows);
+  populateWorksheetTable(diagnosis, dataset.diagnosisHeaders, dataset.diagnosisRows, "#9C3D10");
+
+  const dictionaryRows = [
+    ...workbookFieldDictionary(dataset.headers).map((row) => ["数据", ...row]),
+    ...workbookFieldDictionary(dataset.diagnosisHeaders).map((row) => ["失败诊断", ...row]),
+  ];
+  populateWorksheetTable(dictionary, ["工作表", "字段", "类型", "说明", "校验", "敏感级别"], dictionaryRows, "#355E3B");
+
+  const errorCounts = new Map();
+  const stateCounts = new Map();
+  for (const row of dataset.diagnosisRows) {
+    errorCounts.set(row[6], (errorCounts.get(row[6]) ?? 0) + 1);
+    stateCounts.set(row[19], (stateCounts.get(row[19]) ?? 0) + 1);
+  }
+  const statisticRows = [
+    ...[...errorCounts.entries()].sort(([left], [right]) => String(left).localeCompare(String(right), "zh-CN")).map(([key, count]) => ["错误码", key, count, "按失败诊断表 errorCode 汇总"]),
+    ...[...stateCounts.entries()].sort(([left], [right]) => String(left).localeCompare(String(right), "zh-CN")).map(([key, count]) => ["最终状态", key, count, "按失败诊断表 finalState 汇总"]),
+  ];
+  populateWorksheetTable(statistics, ["统计维度", "取值", "数量", "口径"], statisticRows, "#5B4B8A");
+  statistics.getRange(`B1:B${statisticRows.length + 1}`).format.columnWidth = 34;
+  statistics.getRange(`D1:D${statisticRows.length + 1}`).format.columnWidth = 30;
+
+  validation.showGridLines = false;
+  validation.getRange("A1:D1").merge();
+  validation.getRange("A1").values = [["可审计校验"]];
+  validation.getRange("A1:D1").format = { fill: "#2E7D32", font: { bold: true, color: "#FFFFFF", size: 16 }, rowHeight: 30 };
+  validation.getRange("A3:B11").values = [
+    ["检查项", "结果或规则"],
+    ["主数据行数", null],
+    ["失败诊断行数", null],
+    ["已恢复案例数", null],
+    ["需人工案例数", null],
+    ["范围锚点", dataset.notes.anchor],
+    ["精确码", dataset.notes.code],
+    ["治理规则", dataset.notes.rule],
+    ["来源要求", "引用必须指向原始 XLSX，并保留工作表与单元格坐标、来源、时间和可信度"],
+  ];
+  validation.getRange("B4").formulas = [[`=COUNTA('数据'!A2:A${dataset.rows.length + 1})`]];
+  validation.getRange("B5").formulas = [[`=COUNTA('失败诊断'!A2:A${dataset.diagnosisRows.length + 1})`]];
+  validation.getRange("B6").formulas = [[`=COUNTIF('失败诊断'!T2:T${dataset.diagnosisRows.length + 1},"RECOVERED")`]];
+  validation.getRange("B7").formulas = [[`=COUNTIF('失败诊断'!T2:T${dataset.diagnosisRows.length + 1},"ATTENTION_REQUIRED")`]];
+  validation.getRange("A3:B3").format = { fill: "#E2F0D9", font: { bold: true, color: "#1B5E20" } };
+  validation.getRange("A3:B11").format.borders = { preset: "insideHorizontal", style: "thin", color: "#D9E1E8" };
+  validation.getRange("A3:B11").format.wrapText = true;
+  validation.getRange("A3:A11").format.columnWidth = 22;
+  validation.getRange("B3:B11").format.columnWidth = 76;
+
+  const output = await SpreadsheetFile.exportXlsx(workbook);
+  const target = path.resolve(assetRoot, entry.path);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await output.save(target);
+
+  const errors = await workbook.inspect({
+    kind: "match",
+    searchTerm: "#REF!|#DIV/0!|#VALUE!|#NAME\\?|#N/A",
+    options: { useRegex: true, maxResults: 50 },
+    summary: `${entry.documentId} 公式错误扫描`,
+  });
+  if (/"count"\s*:\s*[1-9]/.test(errors.ndjson ?? "")) {
+    throw new Error(`工作簿存在公式错误：${entry.documentId}`);
+  }
+  await fs.rm(`${target}.inspect.ndjson`, { force: true });
+
+  if (qaRoot) {
+    const dataLastColumn = columnName(dataset.headers.length);
+    const diagnosisLastColumn = columnName(dataset.diagnosisHeaders.length);
+    const dataLastRow = dataset.rows.length + 1;
+    const diagnosisLastRow = dataset.diagnosisRows.length + 1;
+    const renderWindows = [
+      ["说明", "A1:H13", "全表"],
+      ["数据", `A1:${dataLastColumn}${Math.min(31, dataLastRow)}`, "开头"],
+      ["数据", `A${Math.max(2, Math.floor(dataLastRow / 2) - 14)}:${dataLastColumn}${Math.min(dataLastRow, Math.floor(dataLastRow / 2) + 15)}`, "中段"],
+      ["数据", `A${Math.max(2, dataLastRow - 29)}:${dataLastColumn}${dataLastRow}`, "结尾"],
+      ["失败诊断", `A1:${diagnosisLastColumn}${Math.min(31, diagnosisLastRow)}`, "开头"],
+      ["失败诊断", `A${Math.max(2, Math.floor(diagnosisLastRow / 2) - 14)}:${diagnosisLastColumn}${Math.min(diagnosisLastRow, Math.floor(diagnosisLastRow / 2) + 15)}`, "中段"],
+      ["失败诊断", `A${Math.max(2, diagnosisLastRow - 29)}:${diagnosisLastColumn}${diagnosisLastRow}`, "结尾"],
+      ["字段说明", `A1:F${dataset.headers.length + dataset.diagnosisHeaders.length + 1}`, "全表"],
+      ["统计", `A1:D${statisticRows.length + 1}`, "全表"],
+      ["校验", "A1:B11", "全表"],
+    ];
+    for (const [sheetName, range, label] of renderWindows) {
+      const image = await workbook.render({ sheetName, range, scale: 1.0, format: "png" });
+      const bytes = new Uint8Array(await image.arrayBuffer());
+      const qaPath = path.join(qaRoot, "xlsx", scope.key, `${topic.slug}-${sheetName}-${label}.png`);
+      await fs.mkdir(path.dirname(qaPath), { recursive: true });
+      await fs.writeFile(qaPath, bytes);
+    }
+  }
+}
+
 /** 把 1-based 列数转换成 Excel A1 列名。 */
 function columnName(columnCount) {
   let value = columnCount;
@@ -686,7 +920,7 @@ function columnName(columnCount) {
 }
 
 /** 根据主题生成 TXT/JSON/JSONL/CSV/LOG/SQL 的结构化合成正文。 */
-function textPayload(scope, topic, entry) {
+function legacyTextPayload(scope, topic, entry) {
   const anchor = `${scope.key}:${topic.slug}`;
   const header = `合成声明：DataSmart Govern RAG 评测原创资料，不含真实客户、个人、凭据或生产数据。`;
   if (topic.format === "txt") {
@@ -761,6 +995,11 @@ function textPayload(scope, topic, entry) {
     ].join("\n") + "\n";
   }
   return `${header}\n-- 精确码：${topic.code}\n-- 独立锚点：${anchor}\n-- 范围：${scope.label}\nBEGIN;\nINSERT INTO synthetic_task_execution (execution_id, task_id, config_version, state, started_at, completed_at) VALUES\n  ('EX-${scope.key}-304', 'TASK-1001', 'cfg-v21', 'RECOVERED', '2026-08-15T02:14:00+08:00', '2026-08-15T02:15:02+08:00');\nINSERT INTO synthetic_object_ledger (execution_id, object_id, attempt_count, object_state, checkpoint, dirty_records) VALUES\n  ('EX-${scope.key}-304', 'shard-07', 2, 'SUCCEEDED', 'offset-318', 0);\nINSERT INTO synthetic_recovery_case (case_id, execution_id, cycle, max_cycles, case_state, reason_code) VALUES\n  ('RC-${scope.key}-901', 'EX-${scope.key}-304', 1, ${scope.retryLimit}, 'RECOVERED', 'APPROVED_DEFAULT_APPLIED');\nINSERT INTO synthetic_evidence_record (case_id, source_uri, observed_at, confidence, confidence_basis) VALUES\n  ('RC-${scope.key}-901', 'synthetic://worker-execution.log', '2026-08-15T02:14:07+08:00', 0.99, 'STRUCTURED_LOG_EXACT_ERROR');\nCOMMIT;\n`;
+}
+
+/** 使用企业级内容库生成高密度结构化资料，所有格式共享同一关联标识规则。 */
+function textPayload(scope, topic, entry) {
+  return buildEnterpriseStructuredPayload(scope, topic, entry);
 }
 
 /** 生成纯文本类资产。 */

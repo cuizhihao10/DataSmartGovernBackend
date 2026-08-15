@@ -40,13 +40,13 @@ class RagEvaluationTest(unittest.TestCase):
     """保护评测资产完整性、治理指标和报告脱敏边界。"""
 
     def test_repository_dataset_loads_all_documents_and_golden_cases(self) -> None:
-        """仓库中的 188 份异构文档和 308 条黄金用例应能映射到运行时模型。"""
+        """仓库中的 356 份异构文档和 752 条黄金用例应能映射到运行时模型。"""
 
         asset_root = Path(__file__).resolve().parents[1] / "evaluation" / "rag"
         dataset = load_rag_evaluation_dataset(asset_root)
 
-        self.assertEqual(188, len(dataset.documents))
-        self.assertEqual(308, len(dataset.cases))
+        self.assertEqual(356, len(dataset.documents))
+        self.assertEqual(752, len(dataset.cases))
         self.assertEqual("synthetic-only", dataset.asset_boundary)
         self.assertRegex(dataset.fingerprint, r"^[0-9a-f]{64}$")
         self.assertTrue(
@@ -71,7 +71,7 @@ class RagEvaluationTest(unittest.TestCase):
             any(
                 document.metadata.get("contentFormat") == "xlsx"
                 and "工作表：数据" in document.content
-                and document.metadata.get("sheetCount") == 3
+                and document.metadata.get("sheetCount") == 6
                 for document in dataset.documents
             )
         )

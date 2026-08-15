@@ -35,9 +35,9 @@ ASSET_ROOT = REPOSITORY_ROOT / "python-ai-runtime" / "evaluation" / "rag"
 STAGING_ROOT = ASSET_ROOT / ".staging"
 MULTIFORMAT_CATALOG_PATH = ASSET_ROOT / "multiformat_catalog.json"
 SCHEMA_VERSION = "datasmart.rag-evaluation-assets.v2"
-EXPECTED_DOCUMENT_COUNT = 188
-EXPECTED_GOLDEN_CASE_COUNT = 308
-EXPECTED_MULTIFORMAT_DOCUMENT_COUNT = 92
+EXPECTED_DOCUMENT_COUNT = 356
+EXPECTED_GOLDEN_CASE_COUNT = 752
+EXPECTED_MULTIFORMAT_DOCUMENT_COUNT = 260
 if str(PYTHON_RUNTIME_SOURCE) not in sys.path:
     sys.path.insert(0, str(PYTHON_RUNTIME_SOURCE))
 
@@ -846,8 +846,8 @@ def build_golden_cases() -> list[dict[str, Any]]:
     - 12 条跨项目/跨租户拒答；
     - 12 条当前证据优先于过期记录的冲突查询。
 
-    在原 168 条基础用例上，再增加 140 条异构用例：92 条逐文件精确命中、24 条自然语义、
-    16 条跨格式多证据，以及 8 条跨范围拒答。总数固定为 308；新增模板时应同步调整分布断言。
+    在原 168 条基础用例上，再增加 584 条异构用例：260 条逐文件精确命中、260 条自然语义、
+    48 条跨格式多证据，以及 16 条跨范围拒答。总数固定为 752；新增模板时应同步调整分布断言。
     """
 
     cases: list[dict[str, Any]] = []
@@ -1085,15 +1085,13 @@ def build_golden_cases() -> list[dict[str, Any]]:
                 )
             )
 
-    # 自然问法不提供精确码、文件名或独立锚点，分别覆盖 DOCX、XLSX、JSON 和 LOG。
-    semantic_slugs = (
-        "manual-operations-guide",
-        "manual-schema-recovery",
-        "workbook-success-task-parameters",
-        "workbook-field-mapping-cases",
-        "connector-capabilities",
-        "worker-execution",
-    )
+    # 每份异构资料都必须有不包含精确码、文件名或独立锚点的自然问法。这样新增文档不会只依靠
+    # 人工编码命中，而会进入中文语义召回、重排和引用质量回归。
+    semantic_slugs = tuple(sorted(
+        slug
+        for scope_key, slug in multiformat_index
+        if scope_key == "global"
+    ))
     for scope in SCOPES:
         for slug in semantic_slugs:
             document = multiformat_index[(scope.key, slug)]
@@ -1138,6 +1136,38 @@ def build_golden_cases() -> list[dict[str, Any]]:
             ("reference-api-websocket", "agent-state-snapshot", "recovery-events"),
             "怎样从接口标识追踪到 Recovery 修复、分片 replay 和最终验证？",
         ),
+        (
+            ("reference-authentication-api", "manual-security-approval", "audit-events"),
+            "认证、双主体审批和修复审计如何证明一次调用没有越权？",
+        ),
+        (
+            ("reference-task-api", "workbook-schedule-retry-cases", "task-case-library"),
+            "定时任务在非工作时间失败后如何进入有界自治恢复并保留任务案例？",
+        ),
+        (
+            ("reference-data-sync-api", "workbook-full-load-task-cases", "database-recovery-ledger"),
+            "全量任务怎样从执行接口关联到失败对象、恢复台账和最终验证？",
+        ),
+        (
+            ("manual-kafka-operations", "workbook-kafka-task-cases", "kafka-consumer-lag"),
+            "Kafka 同步积压时如何结合任务参数、消费者日志和 DLT 规则处置？",
+        ),
+        (
+            ("manual-postgresql-pgvector", "report-rag-agent-evaluation", "field-profile-statistics"),
+            "RAG 检索异常时怎样同时核对 pgvector、评测指标和字段画像证据？",
+        ),
+        (
+            ("postmortem-schema-drift", "workbook-schema-evolution-task-cases", "task-config-versions"),
+            "Schema 漂移发生后，如何从事故根因、字段演进案例和配置差异确定修复边界？",
+        ),
+        (
+            ("postmortem-rate-limit", "workbook-api-task-cases", "connector-inventory"),
+            "API 目标限流时怎样依据历史事故、任务参数和连接器容量降低压力？",
+        ),
+        (
+            ("postmortem-checkpoint", "workbook-recovery-replay-task-cases", "recovery-decision-trace"),
+            "Checkpoint 漂移后怎样证明安全位点、修复决策和失败对象 replay 一致？",
+        ),
     )
     for scope in SCOPES:
         for group_index, (slugs, question_text) in enumerate(multiformat_groups, start=1):
@@ -1177,17 +1207,23 @@ def build_golden_cases() -> list[dict[str, Any]]:
             )
 
     # DOCX/XLSX 同样必须遵守租户与项目隔离，不能因二进制解析后变成纯文本就丢掉原范围。
-    protected_slugs = ("manual-administrator-guide", "workbook-success-task-parameters")
+    protected_slugs = (
+        "manual-administrator-guide",
+        "workbook-success-task-parameters",
+        "manual-security-approval",
+        "workbook-recovery-replay-task-cases",
+    )
     for scope in SCOPES:
         if scope.key == "global":
-            target_scopes = tuple(candidate for candidate in SCOPES if candidate.key != "global")[:2]
+            target_scopes = tuple(candidate for candidate in SCOPES if candidate.key != "global")
         else:
             target_scopes = tuple(
                 candidate
                 for candidate in SCOPES
                 if candidate.key not in {"global", scope.key}
             )
-        for target_scope, slug in zip(target_scopes, protected_slugs):
+        for index, slug in enumerate(protected_slugs):
+            target_scope = target_scopes[index % len(target_scopes)]
             protected = multiformat_index[(target_scope.key, slug)]
             cases.append(
                 case(
@@ -1362,11 +1398,11 @@ def validate_assets(
         "semantic_paraphrase": 24,
         "multi_document": 12,
         "no_answer": 12,
-        "cross_scope_refusal": 20,
+        "cross_scope_refusal": 28,
         "stale_conflict": 12,
-        "multiformat_exact": 92,
-        "cross_format_semantic": 24,
-        "cross_format_multi_document": 16,
+        "multiformat_exact": 260,
+        "cross_format_semantic": 260,
+        "cross_format_multi_document": 48,
     }
     if case_type_counts != expected_case_distribution:
         raise ValueError(f"黄金用例分布漂移：{case_type_counts}")
