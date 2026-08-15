@@ -452,3 +452,19 @@ V26 新增 `data_sync_agent_execution_correlation`，V27 再把入口区分为 `
 最终重复门禁为：JDK 21 全 Reactor `1583 tests / 0 failures / 0 errors / 9 skipped`；统一图最新聚焦组 `5 tests / 0 failures / 0 errors`；Python Runtime `1178 passed / 1 skipped`；Frontend 六项合同、API adapter、TypeScript、lint 和生产构建全部通过；严格认证与只读诊断 smoke 保持 `PASS=89 / WARN=0 / FAIL=0`。task `8` / execution `2882` 的历史兼容投影仍为 `overallState=VERIFIED`、`sourceStatus=NOT_LINKED`、8 个节点、7 条边和 1 条 worker 权威证据。
 
 当前唯一未关闭的统一图运行证据仍是新 Agent execution 的 `sourceStatus=COMPLETE` 黑盒样本。外部 Provider 在新规划阶段处于 degraded，系统已正确 fail-closed，未产生确认、命令、关联或 worker 副作用；在 Provider 恢复并得到真实新 execution 前，不得用历史 execution、手工关联行或离线测试替代该项证据。
+
+## 20. 2026-08-15 动态 Specialist 编排交付项
+
+- [x] 六个 Specialist 保持稳定能力 roster，不再把 roster 等同于固定执行路径。
+- [x] 协调器继续在 LangGraph 前完成 checkpoint、依赖、双主体作用域、工具白名单和并发预算门禁。
+- [x] 每个运行时就绪波次由 LangGraph `Send` 按实际角色数动态 fan-out，不再使用 `ThreadPoolExecutor`。
+- [x] 每个 Send 调用可复用的 `prepare_specialist_turn -> execute_specialist_turn -> finalize_specialist_turn` 私有状态子图。
+- [x] 父图使用 reducer 汇总并发结果，并核对结果数、角色唯一性、turn 身份和角色一致性。
+- [x] 原有 Java Specialist fact sink、审批、AgentPlan、Kafka 和 data-sync 副作用边界未被绕过。
+- [x] API 返回低敏 `runtimeFanout`，统一 Runtime Event 记录有界编排计数，未知正文和工具参数默认丢弃。
+- [x] 六 Agent E2E 强制断言 `langgraph / DYNAMIC_SEND_SUBGRAPH / Send 数=子图数 / 稳定父图节点`。
+- [x] 中文方法级注释说明运行时角色选择、子图私有状态、reducer、无 checkpointer 原因和治理边界。
+- [x] 聚焦测试 `18 passed`，更宽六 Agent 与装配回归 `35 passed`，Python 全量 `1182 passed / 1 skipped`，JDK 21 Reactor `1583/0/0/9`，Frontend 全合同/lint/build 通过；离线 E2E 动态断言通过，最新 Python 镜像健康。
+- [ ] 使用有效 Provider 凭据发起全新 Success 请求，并取得动态 fan-out 事实与 lifecycle graph `sourceStatus=COMPLETE` 的同一条黑盒证据。当前容器直连 `/models`、`/responses` 都返回 HTTP `401`，属于外部认证阻塞，不能标记为完成。
+
+固定治理图仍允许使用静态节点：用户确认、审批、checkpoint、执行门禁和最终验证的路径本来就应确定可审计。动态化只用于运行时未知的 Specialist 数量、角色输入和并行波次；不得为了追求“全动态图”而让模型动态创建未注册角色、扩大工具权限或绕过 Java 控制面。

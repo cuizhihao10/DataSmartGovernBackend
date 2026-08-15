@@ -260,3 +260,13 @@ Agent Runtime 的命令观察接口按 session/run/command 精确授权和查询
 Recovery Kafka 与 Recovery case 已拆分为两类证据。case 只证明恢复控制面已经形成持久案件，不证明 trigger outbox 已投递或 consumer 已处理；当没有 outbox/consumer 事实时，统一图必须显示 `KAFKA_EVENT=NOT_RECORDED`，不填时间、不附 Kafka 证据。该规则由“仅有 Recovery case 不得编造 Kafka 事实”的最小回归覆盖。异步命令的 `COMMAND_DISPATCH` 同样不再被误标为 Kafka 消费。
 
 最终门禁结果为 JDK 21 Reactor `1583/0/0/9`、Python `1178 passed / 1 skipped`、Frontend 全合同/类型/lint/build 通过、严格 smoke `PASS=89 / WARN=0 / FAIL=0`。六个核心应用服务 healthy，V27 字段约束和历史 task `8` / execution `2882` 的 8 节点、7 边、`NOT_LINKED` 兼容投影均已运行态复核。新 Agent execution 的 `COMPLETE` 黑盒样本仍受外部 Provider degraded 阻塞，审计结论继续保持为“实现与历史兼容已关闭，Provider 恢复后的新链路补证未关闭”。
+
+## 21. 2026-08-15 Specialist 动态 Send 与子图组合审计
+
+六个 Specialist 继续作为稳定能力目录存在，但实际执行路径已经不再由固定六角色边或 Python 线程池决定。`SpecialistAgentCoordinator` 仍先执行租户/项目/应用双主体绑定、checkpoint、依赖、工具白名单和最大并发判断；每个依赖已满足的实际波次随后交给 `LangGraphSpecialistFanoutExecutor`。父图根据本波次的真实角色集合生成 N 个 LangGraph `Send`，每个分支调用同一份 `prepare -> execute -> finalize` Specialist 私有状态子图，再由带 reducer 的父状态在 super-step barrier 后汇总。实现遵循 LangGraph 官方 [Graph API 的 Send 语义](https://docs.langchain.com/oss/python/langgraph/graph-api)和[子图组合边界](https://docs.langchain.com/oss/python/langgraph/use-subgraphs)。
+
+本次没有把所有治理图机械改成动态边。审批、checkpoint、执行门禁和最终验证属于确定性控制流程，继续使用静态节点和条件边更利于审计；运行时角色数量、角色输入和并行波次才使用动态 Send。父图包装节点只向每个私有状态子图传递当前受控 DTO，并只把单元素结果写回 reducer，避免并发分支覆盖父状态。子图不配置 checkpointer，不会把函数 sink、模型上下文或专业输入持久化；原有 Java durable fact sink、异常转 `FAILED`、幂等和副作用边界保持不变。
+
+公开响应的 `specialistAgentExecution.runtimeFanout` 现在记录 `engine`、`dispatchMode`、Send/子图计数、实际角色和稳定图结构。统一 Runtime Event 另记录一条更窄的低敏编排事实，只包含有界枚举和计数；Prompt、模型正文、工具参数、业务对象和未知字段由白名单丢弃。六 Agent E2E 脚本已经把 `langgraph + DYNAMIC_SEND_SUBGRAPH + Send 数等于子图收口数 + 三个父图节点` 纳入强制断言。聚焦回归为 `18 passed`，六 Agent/post-bridge/应用装配等更宽回归为 `35 passed`，离线 E2E 动态编排断言通过；最新 `python-ai-runtime` 镜像健康，并在容器内确认运行 LangGraph `1.2.11` 与 `Send:N` 图边。
+
+最终全量门禁为 JDK 21 Reactor `1583 tests / 0 failures / 0 errors / 9 skipped`、Python `1182 passed / 1 skipped`；Frontend 六项合同、lint、TypeScript 与生产构建全部通过。当前运行态补证仍受 Provider 认证阻塞。重建后的容器直接使用当前配置地址和运行时凭据探测 `/models` 与最小 `/responses`，两者均返回 HTTP `401`；未输出或持久化凭据，也没有复用旧 RequestId。故本轮不能新增 `sourceStatus=COMPLETE` 样本，更不能把离线动态图回归冒充真实模型黑盒。Provider 凭据恢复后，必须用全新请求同时通过动态 fan-out E2E 断言、任务确认、Java 审计、worker 执行和 lifecycle graph `COMPLETE` 门禁。

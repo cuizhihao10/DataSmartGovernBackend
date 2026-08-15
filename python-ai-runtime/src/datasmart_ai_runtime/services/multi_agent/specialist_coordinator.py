@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -22,6 +21,10 @@ from datasmart_ai_runtime.services.multi_agent.specialist_contracts import (
     SpecialistTurnRequest,
     SpecialistTurnResult,
     SpecialistTurnStatus,
+)
+from datasmart_ai_runtime.services.multi_agent.specialist_langgraph_fanout import (
+    LangGraphSpecialistFanoutExecutor,
+    SpecialistFanoutExecution,
 )
 from datasmart_ai_runtime.services.multi_agent.specialist_registry import SpecialistAgentRegistry
 
@@ -57,6 +60,13 @@ class SpecialistExecutionBatchResult:
     results: tuple[SpecialistTurnResult, ...]
     skipped_roles: Mapping[str, str]
     execution_waves: tuple[tuple[str, ...], ...]
+    orchestration_engine: str = "none"
+    dispatch_mode: str = "NONE"
+    dynamic_dispatch_count: int = 0
+    subgraph_invocation_count: int = 0
+    dispatched_roles: tuple[str, ...] = ()
+    fanout_graph_nodes: tuple[str, ...] = ()
+    fanout_graph_edges: tuple[str, ...] = ()
 
     def to_summary(self) -> dict[str, Any]:
         """生成 API、runtime event 和主 Agent 二轮上下文可共同消费的摘要。"""
@@ -72,8 +82,53 @@ class SpecialistExecutionBatchResult:
             "results": tuple(item.to_summary() for item in self.results),
             "skippedRoles": dict(self.skipped_roles),
             "executionWaves": self.execution_waves,
+            # 这组字段只描述 LangGraph 编排事实，不包含专业输入、模型输出、工具参数或 sink 内容。
+            "runtimeFanout": {
+                "engine": self.orchestration_engine,
+                "dispatchMode": self.dispatch_mode,
+                "dynamicDispatchCount": max(0, self.dynamic_dispatch_count),
+                "subgraphInvocationCount": max(0, self.subgraph_invocation_count),
+                "dispatchedRoles": self.dispatched_roles,
+                "graphNodes": self.fanout_graph_nodes,
+                "graphEdges": self.fanout_graph_edges,
+                "runtimeSelectedRoster": (
+                    self.orchestration_engine == "langgraph"
+                    and self.dynamic_dispatch_count > 0
+                ),
+                "javaControlPlaneBoundaryPreserved": True,
+            },
             "executionBoundary": "SPECIALIST_ANALYSIS_ONLY_NO_BUSINESS_SIDE_EFFECTS",
             "payloadPolicy": "LOW_SENSITIVE_SPECIALIST_BATCH_RESULT_ONLY",
+        }
+
+    def to_runtime_event_action(self) -> dict[str, Any]:
+        """生成可进入统一 Runtime Event 的低敏 fan-out 编排事实。
+
+        API 摘要可以携带角色列表和图边名称，但持久事件还会被 WebSocket、Kafka、回放和审计共同消费，
+        因此这里进一步只保留有界枚举与计数。专业输入、模型输出、工具参数和具体业务对象均不会进入
+        该事件；单个 Specialist 的角色与状态仍由原有动作事件分别记录。
+        """
+
+        return {
+            "eventType": "SPECIALIST_RUNTIME_FANOUT_COMPLETED",
+            "action": "specialist.runtime_fanout.completed",
+            "status": self.status,
+            "publicSummary": "Specialist 运行时动态派发已完成。",
+            "statistics": {
+                "dynamicDispatchCount": max(0, self.dynamic_dispatch_count),
+                "subgraphInvocationCount": max(0, self.subgraph_invocation_count),
+                "executionWaveCount": len(self.execution_waves),
+                "graphNodeCount": len(self.fanout_graph_nodes),
+                "graphEdgeCount": len(self.fanout_graph_edges),
+            },
+            "attributes": {
+                "orchestrationEngine": self.orchestration_engine,
+                "dispatchMode": self.dispatch_mode,
+                "runtimeSelectedRoster": (
+                    self.orchestration_engine == "langgraph"
+                    and self.dynamic_dispatch_count > 0
+                ),
+            },
         }
 
 
@@ -92,6 +147,7 @@ class SpecialistAgentCoordinator:
         *,
         default_budget: SpecialistTurnBudget | None = None,
         result_sink: SpecialistTurnResultSink | None = None,
+        fanout_executor: LangGraphSpecialistFanoutExecutor | None = None,
     ) -> None:
         """创建专业 Agent 协调器。
 
@@ -109,6 +165,11 @@ class SpecialistAgentCoordinator:
         self._registry = registry
         self._default_budget = default_budget or SpecialistTurnBudget()
         self._result_sink = result_sink
+        # 执行器延迟编译 LangGraph，因此应用启动时不会调用模型或访问外部服务。注入点保留给聚焦测试，
+        # 生产默认使用真实 Send + Specialist 子图，LangGraph 缺失时在首个真实 turn 上 fail-closed。
+        self._fanout_executor = fanout_executor or LangGraphSpecialistFanoutExecutor(
+            self._execute_and_record
+        )
 
     def run(
         self,
@@ -172,39 +233,34 @@ class SpecialistAgentCoordinator:
             if role == AgentSessionRole.PRECHECK_AGENT:
                 precheck_locators = self._monitor_resource_locators(shared_context)
                 if not precheck_locators:
-                    # The deterministic Java precheck API validates a persisted sync task.  Planning metadata
-                    # is useful to DATA_SYNC_AGENT, but it is not a taskId and must not be sent to the precheck
-                    # adapter as if draft persistence had already happened.  A post-confirm wave schedules
-                    # PRECHECK again after trusted Java feedback exposes the real resource.
+                    # Java 确定性预检接口只能校验已持久化的同步任务。规划元数据可供 DATA_SYNC_AGENT
+                    # 使用，但它不是 taskId，不能假装草稿已经落库后传给预检适配器。可信 Java 回执
+                    # 给出真实资源后，确认后的复核波次会再次调度 PRECHECK。
                     skipped[role.value] = "RUNTIME_RESOURCE_NOT_AVAILABLE_YET"
                     continue
                 shared_context.update(precheck_locators)
             if role == AgentSessionRole.RECOVERY_AGENT:
                 recovery_context = self._recovery_failure_context(shared_context)
                 if not recovery_context:
-                    # Recovery is not a mandatory stage of a successful planning turn.  It is admitted only
-                    # after the control plane exposes one concrete failed execution; otherwise its diagnostic
-                    # client would receive planning data, fail to locate a run, and persist a false specialist
-                    # failure.  The stable skip reason also tells post-failure orchestration that a new Recovery
-                    # turn must be scheduled when trusted failure facts become available.
+                    # Recovery 不是成功规划的必经阶段。只有控制面给出一个确定的失败 execution 后才允许
+                    # 进入；否则诊断客户端会拿规划数据查找不存在的运行，并持久化虚假专业失败。稳定的
+                    # 跳过原因也用于通知失败后编排：可信失败事实到达后需要重新调度 Recovery turn。
                     skipped[role.value] = "FAILED_EXECUTION_NOT_AVAILABLE_YET"
                     continue
-                # Promote only the normalized locator and failure marker selected by the fail-closed helper.
-                # RecoverySpecialistAgent then receives one canonical top-level contract regardless of whether
-                # Gateway/Java originally carried it in failureContext, recoveryContext or controlPlaneFacts.
+                # 只提升 fail-closed 辅助方法选出的规范定位和失败标记。无论 Gateway/Java 最初把事实放在
+                # failureContext、recoveryContext 还是 controlPlaneFacts，RecoverySpecialistAgent 最终都
+                # 只接收同一份规范顶层合同。
                 shared_context.update(recovery_context)
             if role == AgentSessionRole.MONITOR_AGENT:
                 monitor_locators = self._monitor_resource_locators(shared_context)
                 if not monitor_locators:
-                    # A planning turn has no durable task yet. Calling MONITOR in that phase would turn the
-                    # expected absence of a taskId into MONITOR_TASK_ID_REQUIRED and persist a false failure.
-                    # Skip it with a stable lifecycle reason; post-resource verification will schedule a new
-                    # MONITOR turn after trusted Java feedback exposes the real task locator.
+                    # 规划 turn 尚无持久任务；此时调用 MONITOR 会把预期中的 taskId 缺失变成
+                    # MONITOR_TASK_ID_REQUIRED，并登记虚假失败。这里用稳定生命周期原因跳过；可信 Java
+                    # 回执给出真实任务定位后，资源后复核会重新调度 MONITOR turn。
                     skipped[role.value] = "RUNTIME_RESOURCE_NOT_AVAILABLE_YET"
                     continue
-                # Nested recovery/monitoring contexts and control-plane fact arrays are allowed lifecycle
-                # carriers, while MonitorSpecialistAgent intentionally reads one canonical top-level taskId.
-                # Promote only the validated decimal locators so the downstream contract stays deterministic.
+                # 嵌套恢复/监控上下文和控制面事实数组都是允许的生命周期载体，但 MonitorSpecialistAgent
+                # 只读取规范顶层 taskId。这里只提升经过校验的十进制定位，保持下游合同确定性。
                 shared_context.update(monitor_locators)
             pending[role] = attempt
 
@@ -218,6 +274,13 @@ class SpecialistAgentCoordinator:
 
         results_by_role: dict[AgentSessionRole, SpecialistTurnResult] = {}
         waves: list[tuple[str, ...]] = []
+        dispatched_roles: list[str] = []
+        dynamic_dispatch_count = 0
+        subgraph_invocation_count = 0
+        orchestration_engine = "none"
+        dispatch_mode = "NONE"
+        fanout_graph_nodes: tuple[str, ...] = ()
+        fanout_graph_edges: tuple[str, ...] = ()
         max_concurrency = max(1, min(int(turn_runner.get("maxConcurrentAgentTurns") or 1), 8))
         effective_result_sink = result_sink if result_sink is not None else self._result_sink
 
@@ -246,12 +309,19 @@ class SpecialistAgentCoordinator:
                 )
                 for role in wave_roles
             }
-            wave_results = self._execute_wave(
+            wave_execution = self._execute_wave(
                 wave_requests,
                 event_sink,
                 effective_result_sink,
             )
-            for role, result in wave_results.items():
+            orchestration_engine = wave_execution.engine
+            dispatch_mode = wave_execution.dispatch_mode
+            dynamic_dispatch_count += wave_execution.dynamic_dispatch_count
+            subgraph_invocation_count += wave_execution.subgraph_invocation_count
+            dispatched_roles.extend(wave_execution.dispatched_roles)
+            fanout_graph_nodes = wave_execution.graph_nodes
+            fanout_graph_edges = wave_execution.graph_edges
+            for role, result in wave_execution.results.items():
                 results_by_role[role] = result
                 pending.pop(role, None)
 
@@ -261,6 +331,13 @@ class SpecialistAgentCoordinator:
             results=ordered_results,
             skipped_roles=skipped,
             execution_waves=tuple(waves),
+            orchestration_engine=orchestration_engine,
+            dispatch_mode=dispatch_mode,
+            dynamic_dispatch_count=dynamic_dispatch_count,
+            subgraph_invocation_count=subgraph_invocation_count,
+            dispatched_roles=tuple(dispatched_roles),
+            fanout_graph_nodes=fanout_graph_nodes,
+            fanout_graph_edges=fanout_graph_edges,
         )
 
     def _execute_wave(
@@ -268,48 +345,19 @@ class SpecialistAgentCoordinator:
         requests: Mapping[AgentSessionRole, SpecialistTurnRequest],
         event_sink: SpecialistEventSink | None,
         result_sink: SpecialistTurnResultSink | None,
-    ) -> dict[AgentSessionRole, SpecialistTurnResult]:
-        """执行一个没有相互依赖的角色波次，并为每个实际结果登记一次事实。
+    ) -> SpecialistFanoutExecution:
+        """通过 LangGraph 动态 Send 执行一个没有相互依赖的角色波次。
 
-        单角色波次走串行分支，多角色波次走线程池分支，但两者都调用同一个
-        ``_execute_and_record``。把“执行、异常转 FAILED、事实登记”放在一个小边界内，可以避免
-        未来新增第三种调度方式时漏掉异常结果登记。
+        协调器在进入本方法前已经按依赖和并发预算选择了本波次角色，因此 Send 数量始终小于等于
+        ``maxConcurrentAgentTurns``。执行器内部的 Specialist 子图继续调用 ``_execute_and_record``，
+        原有异常转 FAILED、可信双主体绑定和 Java 事实登记语义不会因切换编排引擎而丢失。
         """
 
-        if len(requests) == 1:
-            role, request = next(iter(requests.items()))
-            return {
-                role: self._execute_and_record(
-                    request,
-                    event_sink,
-                    result_sink,
-                )
-            }
-
-        completed: dict[AgentSessionRole, SpecialistTurnResult] = {}
-        with ThreadPoolExecutor(max_workers=len(requests), thread_name_prefix="datasmart-specialist") as executor:
-            future_roles = {
-                executor.submit(
-                    self._execute_and_record,
-                    request,
-                    event_sink,
-                    result_sink,
-                ): role
-                for role, request in requests.items()
-            }
-            sink_errors: list[Exception] = []
-            for future in as_completed(future_roles):
-                role = future_roles[future]
-                try:
-                    completed[role] = future.result()
-                except Exception as exc:  # noqa: BLE001 - 只收集 sink fail-closed，统一等待同波次收口。
-                    # _execute_and_record 已经把注册表执行异常转换为 FAILED；此处剩余的异常来自
-                    # result_sink。先让同一波次其它角色完成并尝试登记，再把第一条 fail-closed 异常
-                    # 传给上层，避免并发线程被过早取消而少登记实际已执行的结果。
-                    sink_errors.append(exc)
-            if sink_errors:
-                raise sink_errors[0]
-        return completed
+        return self._fanout_executor.execute(
+            requests,
+            event_sink=event_sink,
+            result_sink=result_sink,
+        )
 
     def _execute_and_record(
         self,
@@ -532,13 +580,12 @@ class SpecialistAgentCoordinator:
         turn_id: str,
         role: AgentSessionRole,
     ) -> str:
-        """Generate a stable child delegation bound to the current parent delegation.
+        """生成绑定当前父委派的稳定子委派 ID。
 
-        The Java session delegation represents the user's grant to the main Agent.  A Specialist must not
-        reuse that identity because each role/turn has a narrower tool allow-list and a separate audit fact.
-        Including the trusted parent delegation in the digest creates a deterministic child link: Java knows
-        the same scope, parent, turn and role and can recompute the value before treating a fact as completion
-        evidence.  Only the digest prefix is persisted; raw scope values are not embedded in the identifier.
+        Java session 委派代表用户对主 Agent 的授权。Specialist 不能复用该身份，因为每个角色/turn 都有
+        更窄的工具白名单和独立审计事实。摘要材料纳入可信父委派后会形成确定性子链接：Java 持有相同的
+        作用域、父委派、turn 和角色，可在把事实视为完成证据前重算该值。系统只持久化摘要前缀，不把
+        原始作用域值嵌入标识符。
         """
 
         parent_delegation_id = (
@@ -637,17 +684,15 @@ class SpecialistAgentCoordinator:
 
     @classmethod
     def _recovery_failure_context(cls, context: Mapping[str, Any]) -> dict[str, str]:
-        """Extract one concrete failed execution before admitting ``RECOVERY_AGENT``.
+        """在准入 ``RECOVERY_AGENT`` 前提取一个确定的失败 execution。
 
-        Recovery is materially different from monitoring: observing a task can start as soon as ``taskId``
-        exists, while repairing a failure must name both the failed task and the failed execution and must
-        carry an explicit failure marker.  Requiring all three facts in the *same* allow-listed carrier keeps
-        unrelated IDs from separate payload branches from being combined into a fabricated failure context.
+        Recovery 与监控的要求不同：只要存在 ``taskId`` 就能观察任务，但修复故障必须同时指明失败任务、
+        失败 execution 和显式失败标记。这三项事实必须来自同一个白名单载体，防止把不同载荷分支中的
+        无关 ID 拼成虚假失败上下文。
 
-        The helper accepts only lifecycle carriers owned by the control plane.  It deliberately ignores user
-        prose, RAG case evidence and dependency summaries because those inputs may describe a historical failure
-        rather than the execution currently being repaired.  Returned values are bounded, normalized metadata;
-        raw logs, SQL, model output and credentials never cross this admission boundary.
+        本方法只接受控制面拥有的生命周期载体，并主动忽略用户自然语言、RAG 案例证据和依赖摘要，因为
+        它们可能描述历史故障，而不是当前待修复 execution。返回值是有界、规范化元数据；原始日志、SQL、
+        模型输出和凭据都不会穿过该准入边界。
         """
 
         candidate_contexts: list[Mapping[str, Any]] = [context]
@@ -679,7 +724,7 @@ class SpecialistAgentCoordinator:
 
     @classmethod
     def _first_positive_identifier(cls, context: Mapping[str, Any], *field_names: str) -> str | None:
-        """Return the first valid positive database identifier from an explicit field allow-list."""
+        """从显式字段白名单中返回第一个有效的正整数数据库标识。"""
 
         for field_name in field_names:
             value = context.get(field_name)
@@ -689,11 +734,10 @@ class SpecialistAgentCoordinator:
 
     @staticmethod
     def _explicit_failure_marker(context: Mapping[str, Any]) -> tuple[str, str] | None:
-        """Normalize an explicit failure code/reference or a terminal failed status.
+        """规范化显式失败码、失败引用或失败终态。
 
-        Empty strings and successful/running states are rejected.  The 240-character ceiling is intentionally
-        smaller than a log line: these fields are routing metadata, not a channel for exception text.  A status
-        marker is canonicalized to ``failureCode`` so the downstream diagnostic contract stays uniform.
+        空字符串以及成功/运行中状态都会被拒绝。240 字符上限刻意小于普通日志行，因为这些字段只是
+        路由元数据，不是传递异常正文的通道。状态标记统一规范为 ``failureCode``，使下游诊断合同保持一致。
         """
 
         for field_name, canonical_name in (

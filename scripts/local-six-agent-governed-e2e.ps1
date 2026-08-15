@@ -2777,13 +2777,12 @@ function Get-RequiredRolesForStage {
 function Test-RecoveryGovernedWaiting {
     <#
     .SYNOPSIS
-        Recognize a real Recovery specialist wait without treating it as completed execution.
+        识别真实 Recovery Specialist 等待态，且不把它误判为已完成执行。
 
     .DESCRIPTION
-        Recovery is allowed to finish a read-only diagnostic turn in WAITING_FOR_INPUT while it
-        waits for grounded evidence, monitoring facts, user approval, or a Java ToolPlan handoff.
-        This helper only permits the role-participation check to continue; Assert-RagAndRecoveryEvidence
-        and Assert-BridgeEvidence remain the authoritative gates for evidence and approval semantics.
+        Recovery 完成只读诊断后，可以在等待可信证据、监控事实、用户审批或 Java ToolPlan 接管期间进入
+        WAITING_FOR_INPUT。本函数只允许角色参与检查继续执行；证据与审批语义仍分别由
+        Assert-RagAndRecoveryEvidence 和 Assert-BridgeEvidence 作为权威门禁。
     #>
     param([Parameter(Mandatory = $true)][object]$Response)
 
@@ -2983,6 +2982,53 @@ function Add-SpecialistSchedulingDiagnostics {
     Add-Check -Name 'Specialist 调度诊断' -Status $diagnosticStatus -Detail "runner=$runnerStatus；checkpoint=$checkpointState；initialBatch=$($roleEvidence.InitialBatchStatus)；verificationBatch=$($roleEvidence.VerificationBatchStatus)；finalBatch=$($roleEvidence.FinalBatchStatus)；initialExecuted=$executedCount；plannedTools=[$plannedToolText]；readiness=[$readinessText]；workItems=[$workItemText]；attempts=[$attemptText]；finalResults=[$resultText]；recovered=[$recoveredText]；unresolved=[$unresolvedText]；evidence=$evidenceText；skipped=[$skippedText]。"
 }
 
+function Assert-SpecialistRuntimeFanout {
+    <#
+    .SYNOPSIS
+        验证本轮 Specialist 确实由 LangGraph 动态 Send 和可复用子图执行。
+
+    .DESCRIPTION
+        六个 Specialist 是稳定能力目录，不是每次请求的固定执行路径。本断言只读取编排引擎、派发模式、
+        有界计数和固定图节点名称，不读取专业输入、模型输出、工具参数或业务对象。动态 Send 数必须大于零，
+        且与实际收口的子图调用数一致；否则即使角色结果存在，也不能声称已经完成运行时 fan-out 迁移。
+    #>
+    param([Parameter(Mandatory = $true)][object]$Response)
+
+    $specialist = Get-FieldValue -Object $Response -Names @('specialistAgentExecution')
+    $fanout = Get-FieldValue -Object $specialist -Names @('runtimeFanout')
+    if ($null -eq $fanout) {
+        Stop-E2E -Name 'Specialist 动态 fan-out' -Detail '响应缺少 runtimeFanout，无法证明本轮使用 LangGraph 动态 Send。'
+    }
+
+    $engine = Get-SafeStatusToken -Text (Get-FieldValue -Object $fanout -Names @('engine')) -Fallback 'UNKNOWN'
+    $dispatchMode = Get-SafeStatusToken -Text (Get-FieldValue -Object $fanout -Names @('dispatchMode')) -Fallback 'UNKNOWN'
+    $dynamicDispatchCount = [int](Get-FieldValue -Object $fanout -Names @('dynamicDispatchCount'))
+    $subgraphInvocationCount = [int](Get-FieldValue -Object $fanout -Names @('subgraphInvocationCount'))
+    $runtimeSelectedRoster = Test-TrueFlag (Get-FieldValue -Object $fanout -Names @('runtimeSelectedRoster'))
+    $graphNodes = @(
+        Get-Items (Get-FieldValue -Object $fanout -Names @('graphNodes')) |
+            ForEach-Object { [string]$_ }
+    )
+    $requiredNodes = @(
+        'plan_runtime_fanout',
+        'execute_specialist_subgraph',
+        'aggregate_runtime_fanout'
+    )
+    $missingNodes = @($requiredNodes | Where-Object { $graphNodes -notcontains $_ })
+
+    if ($engine -ne 'LANGGRAPH' -or
+        $dispatchMode -ne 'DYNAMIC_SEND_SUBGRAPH' -or
+        -not $runtimeSelectedRoster -or
+        $dynamicDispatchCount -le 0 -or
+        $dynamicDispatchCount -ne $subgraphInvocationCount -or
+        $missingNodes.Count -gt 0) {
+        $missingText = if ($missingNodes.Count -gt 0) { $missingNodes -join '、' } else { '无' }
+        Stop-E2E -Name 'Specialist 动态 fan-out' -Detail "编排事实不完整：engine=$engine、mode=$dispatchMode、Send=$dynamicDispatchCount、subgraph=$subgraphInvocationCount、runtimeRoster=$runtimeSelectedRoster、missingNodes=$missingText。"
+    }
+
+    Add-Check -Name 'Specialist 动态 fan-out' -Status 'PASS' -Detail "LangGraph 运行时按本轮实际角色生成 $dynamicDispatchCount 个 Send，并由 $subgraphInvocationCount 个 Specialist 子图完整收口。"
+}
+
 function Invoke-SpecialistStatusAggregationRegressionTest {
     <#
     .SYNOPSIS
@@ -3066,6 +3112,18 @@ function Invoke-SpecialistStatusAggregationRegressionTest {
     $recoveredResponse = [pscustomobject]@{
         specialistAgentExecution = [pscustomobject]@{
             status = 'PARTIALLY_FAILED'
+            runtimeFanout = [pscustomobject]@{
+                engine = 'langgraph'
+                dispatchMode = 'DYNAMIC_SEND_SUBGRAPH'
+                dynamicDispatchCount = 3
+                subgraphInvocationCount = 3
+                runtimeSelectedRoster = $true
+                graphNodes = @(
+                    'plan_runtime_fanout',
+                    'execute_specialist_subgraph',
+                    'aggregate_runtime_fanout'
+                )
+            }
             results = @(
                 [pscustomobject]@{ agentRole = 'KNOWLEDGE_AGENT'; status = 'COMPLETED'; errorCode = 'NONE' },
                 [pscustomobject]@{ agentRole = 'RECOVERY_AGENT'; status = 'COMPLETED'; errorCode = 'NONE' },
@@ -3092,6 +3150,11 @@ function Invoke-SpecialistStatusAggregationRegressionTest {
     $recoveredDiagnostic = $script:Checks[$script:Checks.Count - 1]
     if ($recoveredDiagnostic.Status -ne 'PASS') {
         throw '回归失败：已恢复的 Specialist 结果仍在调度诊断中显示 WARN。'
+    }
+    Assert-SpecialistRuntimeFanout -Response $recoveredResponse
+    $fanoutDiagnostic = $script:Checks[$script:Checks.Count - 1]
+    if ($fanoutDiagnostic.Status -ne 'PASS') {
+        throw '回归失败：有效动态 Send 和 Specialist 子图事实没有通过 E2E 门禁。'
     }
 
     $regressedResponse = [pscustomobject]@{
@@ -4200,6 +4263,7 @@ try {
     Add-Check -Name 'Agent 最终响应' -Status 'PASS' -Detail '已收到低敏 Agent 计划摘要，服务端内容未回显。'
 
     Add-SpecialistSchedulingDiagnostics -Response $response
+    Assert-SpecialistRuntimeFanout -Response $response
 
     # 首次响应处于用户审批之前，只验收数据源消歧和同步规划；不能要求尚无真实资源的 PRECHECK/MONITOR。
     $roleEvidence = Assert-RoleEvidence -Response $response -Stage 'Planning'

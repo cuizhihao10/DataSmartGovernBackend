@@ -129,11 +129,10 @@ def _parallel_execution_session() -> dict:
 
 
 def _monitor_turn_runner() -> dict:
-    """Build one executable observer attempt without unrelated specialist dependencies.
+    """构造不含无关 Specialist 依赖的单个可执行观察 turn。
 
-    The focused monitor tests must prove the coordinator's admission boundary itself.  Keeping the
-    turn runner to one role prevents a successful planning or knowledge turn from obscuring whether
-    MONITOR_AGENT was correctly skipped before its registry adapter and fact sink were touched.
+    聚焦监控测试需要单独证明协调器准入边界。turn runner 只保留一个角色，可避免成功的规划或知识 turn
+    掩盖 MONITOR_AGENT 是否在触达注册表适配器和事实 sink 前被正确跳过。
     """
 
     return {
@@ -145,11 +144,10 @@ def _monitor_turn_runner() -> dict:
 
 
 def _monitor_execution_session() -> dict:
-    """Build the minimal durable work item required to run a monitor observer turn.
+    """构造运行监控观察 turn 所需的最小持久 work item。
 
-    MONITOR_AGENT is intentionally dependent only on the master orchestrator here.  Resource-location
-    validation belongs to the coordinator's admission gate, so these tests can distinguish an unavailable
-    task/execution reference from a dependency scheduling failure.
+    此处让 MONITOR_AGENT 只依赖主编排 Agent。资源定位校验属于协调器准入门禁，因此测试可以区分
+    “任务/execution 引用不可用”和“依赖调度失败”。
     """
 
     return {
@@ -162,7 +160,7 @@ def _monitor_execution_session() -> dict:
 
 
 def _precheck_turn_runner() -> dict:
-    """Build one deterministic precheck attempt without unrelated planning-role dependencies."""
+    """构造不含无关规划角色依赖的单个确定性预检 attempt。"""
 
     return {
         "maxConcurrentAgentTurns": 1,
@@ -173,7 +171,7 @@ def _precheck_turn_runner() -> dict:
 
 
 def _precheck_execution_session() -> dict:
-    """Build the minimal durable work item used to test precheck resource admission."""
+    """构造测试预检资源准入所需的最小持久 work item。"""
 
     return {
         "sessionId": "session-precheck-1",
@@ -185,7 +183,7 @@ def _precheck_execution_session() -> dict:
 
 
 def _recovery_turn_runner() -> dict:
-    """Build one executable Recovery attempt so admission tests do not depend on other specialists."""
+    """构造单个可执行 Recovery attempt，使准入测试不依赖其他 Specialist。"""
 
     return {
         "maxConcurrentAgentTurns": 1,
@@ -196,7 +194,7 @@ def _recovery_turn_runner() -> dict:
 
 
 def _recovery_execution_session() -> dict:
-    """Build the minimal durable work item for testing failed-execution admission independently."""
+    """构造独立测试失败 execution 准入所需的最小持久 work item。"""
 
     return {
         "sessionId": "session-recovery-1",
@@ -298,14 +296,11 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
         self.assertEqual([], calls)
 
     def test_monitor_without_task_id_or_with_invalid_execution_id_is_skipped_without_failed_fact(self) -> None:
-        """Reject monitor turns before execution when no valid resource locator is available.
+        """缺少有效资源定位时，在执行前拒绝监控 turn。
 
-        A newly planned task has no durable task to observe, so taskId is required and may arrive from the
-        trusted Java receipt either as a positive integer or a positive decimal string.  executionId is
-        optional because a task can be observable before its first execution exists; when supplied, it must
-        use the same positive-integer representation.  Invalid locators must skip with the explicit
-        RUNTIME_RESOURCE_NOT_AVAILABLE_YET reason rather than invoke the monitor or persist a misleading
-        FAILED fact.
+        新规划任务尚无可观察的持久任务，因此 taskId 必填，并允许可信 Java 回执使用正整数或正整数字符串。
+        executionId 可选，因为任务在第一次执行前也可被观察；一旦提供，同样必须是正整数形式。非法定位
+        应以 RUNTIME_RESOURCE_NOT_AVAILABLE_YET 明确跳过，不能调用监控器或持久化误导性的 FAILED 事实。
         """
 
         invalid_contexts = (
@@ -325,7 +320,7 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                 )
 
                 def result_sink(request: SpecialistTurnRequest, result: SpecialistTurnResult) -> None:
-                    """Record actual fact-registration attempts so a skipped observer cannot look failed."""
+                    """记录真实事实登记尝试，确保被跳过的观察器不会被显示为失败。"""
 
                     registrations.append(result)
 
@@ -345,11 +340,10 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                 self.assertFalse(any(item.status == SpecialistTurnStatus.FAILED for item in result.results))
 
     def test_precheck_waits_for_persisted_task_and_executes_after_java_locator_exists(self) -> None:
-        """Do not turn an expected planning-stage absence of taskId into a PRECHECK failure fact.
+        """不要把规划阶段预期的 taskId 缺失变成 PRECHECK 失败事实。
 
-        PRECHECK uses the deterministic Java task endpoint, so it cannot validate a model-only planning object.
-        The negative case proves it skips before registry/sink invocation; the positive case proves a trusted
-        task locator schedules and records the same role after draft creation.
+        PRECHECK 使用确定性 Java 任务接口，无法校验只存在于模型中的规划对象。反例证明调用注册表/sink
+        前会跳过，正例证明草稿创建后，可信任务定位可以调度并登记同一角色。
         """
 
         for base_context, should_execute in (({}, False), ({"taskId": "77"}, True)):
@@ -361,7 +355,7 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                 )
 
                 def result_sink(request: SpecialistTurnRequest, result: SpecialistTurnResult) -> None:
-                    """Capture only actual executions; planning-stage skips must not persist a fact."""
+                    """只记录真实执行；规划阶段的跳过不能持久化为事实。"""
 
                     registrations.append(result)
 
@@ -389,13 +383,11 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                     self.assertEqual([], registrations)
 
     def test_monitor_with_valid_java_resource_identifier_forms_executes_and_records_success(self) -> None:
-        """Permit MONITOR_AGENT for valid integer or decimal-string Java receipt identifiers.
+        """允许 MONITOR_AGENT 使用整数或十进制字符串形式的有效 Java 回执标识。
 
-        The post-confirm path projects trusted Java resource IDs as decimal strings, while some internal
-        control-plane adapters keep numeric values.  This positive control therefore verifies both forms:
-        taskId=77 with executionId="1958" is valid, as is a task-only decimal-string locator before the
-        first execution exists.  Each permitted observer turn must return COMPLETED and register one
-        successful fact, preventing the new admission guard from over-blocking post-confirm monitoring.
+        确认后路径把可信 Java 资源 ID 投影为十进制字符串，部分内部控制面适配器则保留数值。本正例同时
+        验证两种形式：taskId=77、executionId="1958" 有效；第一次执行前只有任务十进制字符串定位也有效。
+        每个获准观察 turn 都必须返回 COMPLETED 并登记一条成功事实，防止新准入门禁过度阻断确认后监控。
         """
 
         valid_contexts = (
@@ -412,7 +404,7 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                 )
 
                 def result_sink(request: SpecialistTurnRequest, result: SpecialistTurnResult) -> None:
-                    """Capture the one expected success fact without exposing implementation internals."""
+                    """记录预期的一条成功事实，不暴露实现内部信息。"""
 
                     registrations.append(result)
 
@@ -432,11 +424,10 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                 self.assertEqual({}, result.skipped_roles)
 
     def test_recovery_without_concrete_failed_execution_is_skipped_without_failed_fact(self) -> None:
-        """Do not diagnose successful/planned tasks or incomplete failure locators.
+        """不要诊断成功/规划中的任务或不完整失败定位。
 
-        A task and execution ID alone can describe a healthy run, while a failure code without executionId
-        cannot identify which attempt should be repaired.  Both shapes must stop at coordinator admission so
-        neither the diagnostic client nor the durable specialist-fact sink records a misleading failure.
+        只有 task 和 execution ID 也可能描述健康运行；缺少 executionId 的失败码则无法定位待修复 attempt。
+        两类输入都必须停在协调器准入边界，避免诊断客户端或持久 Specialist 事实 sink 登记误导性失败。
         """
 
         invalid_contexts = (
@@ -462,7 +453,7 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                 )
 
                 def result_sink(request: SpecialistTurnRequest, result: SpecialistTurnResult) -> None:
-                    """Capture any accidental persistence attempt; skipped Recovery must leave this empty."""
+                    """捕获任何意外持久化尝试；被跳过的 Recovery 必须保持为空。"""
 
                     registrations.append(result)
 
@@ -484,7 +475,7 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
                 self.assertEqual([], registrations)
 
     def test_recovery_with_scoped_failed_execution_executes_and_records_success(self) -> None:
-        """Admit Recovery when one controlled carrier contains task, execution and failure facts."""
+        """同一受控载体包含任务、execution 和失败事实时允许 Recovery。"""
 
         calls: list[str] = []
         registrations: list[SpecialistTurnResult] = []
@@ -493,7 +484,7 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
         )
 
         def result_sink(request: SpecialistTurnRequest, result: SpecialistTurnResult) -> None:
-            """Record the admitted Recovery result to prove the guard does not over-block real failures."""
+            """登记获准的 Recovery 结果，证明门禁不会过度阻断真实失败。"""
 
             registrations.append(result)
 
@@ -519,12 +510,11 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
         self.assertEqual({}, result.skipped_roles)
 
     def test_pure_failed_execution_runs_monitor_and_knowledge_before_recovery(self) -> None:
-        """Prove a persisted failure does not start DATA_SYNC planning or race recovery inputs.
+        """证明持久失败不会启动 DATA_SYNC 规划，也不会让 Recovery 输入发生竞争。
 
-        The coordinator receives the task 76 / execution 1805 locator shape.  KNOWLEDGE_AGENT and
-        MONITOR_AGENT run as read-only first-wave work, while RECOVERY_AGENT waits for both completed
-        summaries and receives them through the controlled dependency context.  DATA_SYNC_AGENT is not
-        registered or executable in this recovery batch.
+        协调器接收 task 76 / execution 1805 定位。KNOWLEDGE_AGENT 和 MONITOR_AGENT 作为首个只读波次
+        运行；RECOVERY_AGENT 等待两者完成，并通过受控依赖上下文接收摘要。本恢复批次不注册或执行
+        DATA_SYNC_AGENT。
         """
 
         calls: list[str] = []
@@ -667,7 +657,7 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
         self.assertEqual("RUNTIMEERROR", registrations[0].error_code)
 
     def test_parallel_results_are_all_registered_once(self) -> None:
-        """并发波次中的所有完成结果都必须登记一次，不能因 future 完成顺序丢失事实。"""
+        """动态 Send 波次中的所有完成结果都必须登记一次，并公开低敏编排事实。"""
 
         calls: list[str] = []
         registrations: list[tuple[str, str]] = []
@@ -707,6 +697,25 @@ class SpecialistAgentCoordinatorTest(unittest.TestCase):
             },
             set(registrations),
         )
+        summary = result.to_summary()["runtimeFanout"]
+        self.assertEqual("langgraph", summary["engine"])
+        self.assertEqual("DYNAMIC_SEND_SUBGRAPH", summary["dispatchMode"])
+        self.assertEqual(3, summary["dynamicDispatchCount"])
+        self.assertEqual(3, summary["subgraphInvocationCount"])
+        self.assertTrue(summary["runtimeSelectedRoster"])
+
+        runtime_action = result.to_runtime_event_action()
+        self.assertEqual(
+            {
+                "dynamicDispatchCount": 3,
+                "subgraphInvocationCount": 3,
+                "executionWaveCount": 1,
+                "graphNodeCount": 3,
+                "graphEdgeCount": 4,
+            },
+            runtime_action["statistics"],
+        )
+        self.assertEqual("langgraph", runtime_action["attributes"]["orchestrationEngine"])
 
     def test_java_fail_open_receipt_does_not_block_dependency_wave(self) -> None:
         """Java 客户端 fail-open 返回 receipt 时，专业结果仍可驱动后续依赖角色。"""

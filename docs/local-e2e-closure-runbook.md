@@ -838,3 +838,27 @@ ORDER BY column_name;
 Recovery 取证必须分别检查 trigger outbox/consumer 和 recovery case。仅查到 case 时，期望图节点为 `KAFKA_EVENT=NOT_RECORDED`、`reasonCode=RECOVERY_KAFKA_NOT_RECORDED`，`occurredAt` 为空且没有 Kafka evidence；不得从 case 创建时间推断消息投递时间。查到真实 outbox/consumer 后，才允许生成 `AUTOPILOT_RECOVERY_KAFKA` 证据；case 自身使用独立的 `AUTOPILOT_RECOVERY_CASE` 证据。初始 command outbox 无论状态为何都只属于 `COMMAND_DISPATCH`。
 
 本轮最终回归为 Java `1583 tests / 0 failures / 0 errors / 9 skipped`，Python `1178 passed / 1 skipped`，Frontend 六项合同、API adapter、类型检查、lint 和生产构建全部通过，严格 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。历史 task `8` / execution `2882` 继续返回 8 个节点、7 条边、`overallState=VERIFIED`、`sourceStatus=NOT_LINKED`，只包含 worker 权威证据。Provider degraded 期间不要反复复用失败 RequestId；恢复后按 8.11 的步骤创建全新任务补齐 `sourceStatus=COMPLETE`。
+
+### 8.13 Specialist 动态 Send 与全新 Provider 请求复验
+
+最新 Python Runtime 已把 Specialist 就绪波次迁移到 LangGraph 动态 Send。运行时由协调器先筛选真实可执行角色，再生成 N 个 Send；每个分支进入同一份三阶段 Specialist 子图，父图通过 reducer 汇总。静态的审批、checkpoint 和最终验证节点不需要改成动态边，它们是确定性治理门禁。
+
+全新 Success/Recovery 请求必须在原有角色、RAG、Bridge 和 durable fact 断言之外，通过脚本新增的 `Specialist 动态 fan-out` 门禁。通过条件如下：
+
+1. `specialistAgentExecution.runtimeFanout.engine=langgraph`。
+2. `dispatchMode=DYNAMIC_SEND_SUBGRAPH`。
+3. `runtimeSelectedRoster=true`，`dynamicDispatchCount > 0`。
+4. `dynamicDispatchCount=subgraphInvocationCount`。
+5. `graphNodes` 至少包含 `plan_runtime_fanout`、`execute_specialist_subgraph`、`aggregate_runtime_fanout`。
+6. Runtime Event 只保存引擎、模式、Send/子图/波次/节点/边计数；不得出现 Prompt、模型正文、工具参数或角色输入。
+
+本机可先运行完全离线的合同回归：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-governed-e2e.ps1 `
+  -RunSpecialistStatusAggregationRegressionTest
+```
+
+该命令已通过，并显示动态 fan-out 为 `PASS`。聚焦 Python 回归为 `18 passed`，六 Agent、post-bridge、续跑、装配和接入回归为 `35 passed`，Python 全量为 `1182 passed / 1 skipped`；JDK 21 Reactor 为 `1583 tests / 0 failures / 0 errors / 9 skipped`，Frontend 六项合同、lint、TypeScript 和生产构建全部通过。重建后的 `python-ai-runtime` 为 healthy，容器内 LangGraph 版本为 `1.2.11`。
+
+随后必须先在容器内做低敏 Provider 探针，只记录 HTTP 状态，不打印 API key 或响应正文。2026-08-15 当前重建后实测 `/models=401`、`/responses=401`，因此没有继续调用会创建任务的真实 Success E2E，也没有生成新的 RequestId 失败记录。只有两项探针恢复成功后，才按 8.11 使用全新 RequestId 执行 `-Execute -ConfirmAndExecute -EnableAutopilot`，并把同一 execution 的 `runtimeFanout`、Java audit、worker、Recovery（若触发）和 lifecycle graph `sourceStatus=COMPLETE` 一并归档。HTTP `401` 是 Provider 认证环境阻塞，不能修改模型失败门禁、手工写关联表或复用历史 execution 绕过。

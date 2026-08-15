@@ -502,6 +502,9 @@ def build_plan_response(
             checkpoint_recorded=agent_turn_runner_checkpoint is not None,
             event_sink=record_specialist_action,
         )
+        # 单个 Specialist 动作已经逐条进入事件总线；协调器收口后再补一条低敏编排事件，证明本次
+        # 运行实际使用了多少个动态 Send 和子图调用。该事件不携带模型正文、工具参数或业务对象。
+        record_specialist_action(specialist_agent_execution.to_runtime_event_action())
         specialist_runtime_events = tuple(streamed_specialist_events)
         if specialist_runtime_events:
             plan = replace(plan, runtime_events=plan.runtime_events + specialist_runtime_events)
