@@ -3312,8 +3312,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d7d73effcf2ebafb353a259b796bd3e73321a16d2eeb9f0a95af8ed8adf57396",
-      "extractedTextSha256": "fb4d24b69744c7be1bae1d3cdc49c743cb5cfe5f5323e7c3888e6ef2a0d99435"
+      "contentSha256": "a66e20d2b95c018d00549406d14fab805f2d89cf452b68524c0c4389f38a2dce",
+      "extractedTextSha256": "e6bdb3c74588b644b75c7a041c72113658c8f7cc65ebbb4421128829d2d4434f"
     },
     {
       "documentId": "rag-eval-global-manual-administrator-guide",
@@ -3347,8 +3347,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "805f2735bcefb3777b346cf848a5793c5f343737eee3a0d961314c1a7ee32cb9",
-      "extractedTextSha256": "bca196acf5c224fe7c4291252df074470c7ea19b0570042647bf66d0af1d27cb"
+      "contentSha256": "cc06d1ce81a9a52fd54c3ab14e259c13791e9a18005bd33945dd7200cba9f459",
+      "extractedTextSha256": "c1f7d5368c9caddacf3267ab36b096aa24e6b3e4bbcd457f7da576c1a5576cda"
     },
     {
       "documentId": "rag-eval-global-manual-deployment-guide",
@@ -3382,8 +3382,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "8b8478febb18b1527b0e65df223ebab1fb283a4f4c748af5b6000f0795a77bdb",
-      "extractedTextSha256": "a189485f5aed89554b490f8969cbcbcd3e96092eefe40be14f044bc11c46abf3"
+      "contentSha256": "735c915d8f56f189a29dcde695cb9a4c666bb91bf86c75f759a63db80493fbaa",
+      "extractedTextSha256": "421ed0cf61117307d6e1a56cea791cbcacc98fc8648176ffdec55c85f934d5cb"
     },
     {
       "documentId": "rag-eval-global-manual-operations-guide",
@@ -3417,8 +3417,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "090d0a89b6f4ef3b0f9b0dab645dee0bef13d2cf51c8c7be48e22bb2a3c734db",
-      "extractedTextSha256": "b6655f8bdda24e16bc7bd58e36f600db7351d3e1bade839df9e9cfb1f7ec16cb"
+      "contentSha256": "f59addc3f2a22955fe5f25f795c77227383448f15eda165bdf2ca79831369e71",
+      "extractedTextSha256": "f38d0bf89995fed2ee58e351ca42486a05baa136857b4adabc06faf9ae4f186c"
     },
     {
       "documentId": "rag-eval-global-record-operations-incident",
@@ -3452,8 +3452,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "82475b16d26d78e8d974393827e77349fdef2c19ec22fe9d3c187a0aa359750f",
-      "extractedTextSha256": "a00f475fcde6d184cd059b28d0e00b15afb53323154e252cc3a020ed45f63929"
+      "contentSha256": "d88c7c9ec410c9b7c04a8edd6657b5101135abb23e274dc4a4ef42cb14d3c9b9",
+      "extractedTextSha256": "5f634dcf239052445376812ced1005c3ef6b1c17c4edce6ddf130d30034eb57b"
     },
     {
       "documentId": "rag-eval-global-report-platform-test",
@@ -3487,8 +3487,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "be9ecebc7c9db81f762ccd63e459b8ab78ab1aab4869bcd051d24415ab3d8ef2",
-      "extractedTextSha256": "17dc7d0a962f5c74ffc4604d128c03aa074fcd90d9157ad06c27be2f87748110"
+      "contentSha256": "ef6dfade1be6961d4d85b9bdd2c5dc39ca34fa0add6730e1c15e0b70f6c53f5a",
+      "extractedTextSha256": "9062232b0c10938c0379cb8e48ebe6cf345122b32cd3837204c4fb0e14313937"
     },
     {
       "documentId": "rag-eval-global-product-feature-specification",
@@ -3522,8 +3522,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "1a32d0c16d1ad486e438ac1ef1aab4d9fef4815a0c06b89bf09c013fb8ba0ec6",
-      "extractedTextSha256": "ac5c8c6d6b71420690c014a7a0dfac1580e84ffeb6c382982a1a250cd9d26e18"
+      "contentSha256": "4e8b2f2c6f141be5f995524e2b39ca9652808b6e2665b84d5fdc07871d1a0045",
+      "extractedTextSha256": "e8346caf176f5078eef91c24547527d3830eebd075ae24dc62384932a0b54545"
     },
     {
       "documentId": "rag-eval-global-reference-api-websocket",
@@ -3557,8 +3557,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "2dea1971b15e20e38c83e8ad357dca06e15b9dd2f459d9fa4316b1a9eeae0005",
-      "extractedTextSha256": "a7f43de6d2157906bb84c51ae91245335fce0953d749dc72d98bd69d7518e943"
+      "contentSha256": "1353732893fd218abf913a2a0a8f3e42d3240fc72ba3421e8765a65f2ab2b162",
+      "extractedTextSha256": "c3fc352b02908e12405898493f120096df6e3d849e7dde590d2c131038c6e05f"
     },
     {
       "documentId": "rag-eval-global-manual-schema-recovery",
@@ -3592,8 +3592,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "65d439d8e3aecc07001d073df1c1eb1cc8ea74c581b092009f8319493a3f1048",
-      "extractedTextSha256": "53369cf15352b013ea907922b62c8ac4c2474d42a776df0629d4d0ba9cc2483d"
+      "contentSha256": "f3533d5a8d96ae8f83ddfdd559b227b30b626016b72248507a64319c999ebdba",
+      "extractedTextSha256": "0a1156e046312987ca91f12d32cecde3259f58542ea90a3671dcfc02bbaad596"
     },
     {
       "documentId": "rag-eval-global-manual-security-approval",
@@ -3627,8 +3627,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "156048b26f9aa2a396ec95fdfbf3f66af95d7c6f02b97ffb51efdb0db7317267",
-      "extractedTextSha256": "d7f61f3cbbc79aa360bbc554102cdcfd1acfb6a9abb05fe76dea8dd378f36205"
+      "contentSha256": "b3ba02e4c00b64002c9c0dde114c66241b5159c9694b8e659d5b125cc7b1f0a8",
+      "extractedTextSha256": "d4a37d637c19c5570bc4580b57a71d50d9762c7cb2ad2819243bbc9dd6bca709"
     },
     {
       "documentId": "rag-eval-global-reference-authentication-api",
@@ -3663,8 +3663,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "eec2edc18e97c65623c122b9e3f6e569d175300d09297c32f64c08349f552a48",
-      "extractedTextSha256": "4191ed6a0ee87b88e8dce745e81cc832bb8b049f75afbf25702ed24bebadaf43"
+      "contentSha256": "2add40678ecc82aa4b160b1f7030b02202dd4e46290c2ba77732b6c72a58a945",
+      "extractedTextSha256": "f8cdb7c02b7503274b2670b912796094810054142897b4723d1d4385cb0875d6"
     },
     {
       "documentId": "rag-eval-global-reference-agent-api",
@@ -3699,8 +3699,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "57a4527c52daa54bdd304f2bb8cd8da819cdb3ce13ab8b2793cf050c7a051209",
-      "extractedTextSha256": "cb1e464171f33cddd8e6e5a2a4a71f2b4f75943cc11cd31e2bd3bc4dd899b11a"
+      "contentSha256": "1be2400fd4fa6186bcdbea43d5d60280014c69dadd5a56f416cb14dc0ae6b609",
+      "extractedTextSha256": "928c107a6defc2f02afde29c5c902bc0356eebb9495f75b8638114e0819db9c6"
     },
     {
       "documentId": "rag-eval-global-reference-task-api",
@@ -3735,8 +3735,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d40f78aff8fbd23d2147ce28fd92580b4aa5a039c577a1d692cf19dfc111e949",
-      "extractedTextSha256": "eb6fdbf5f39a760e93db6cb461016012090d387c36e0850f28fee434cc36026a"
+      "contentSha256": "e3bdd7b16436ce46877d93dd15c95a53c263d3c93c91b0510a8eeec5acffb4e7",
+      "extractedTextSha256": "958a1a38cc515bc5ca9daae419c8bc15448c2ea3f7b492e696891bf1bb24636f"
     },
     {
       "documentId": "rag-eval-global-reference-data-sync-api",
@@ -3771,8 +3771,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "48bb6982f8164521dd2a9e6d9a9ad8821d939cd1304437119f2a7015890f3bc5",
-      "extractedTextSha256": "0424036fc34ee15bec0441e5fe43e723a4aad80744b365e590d3a140b61d1ad0"
+      "contentSha256": "61c620ba152e2644e80dce88fd18f5771161861edb92fda98d3dc0aad33cc02a",
+      "extractedTextSha256": "788db21d134a8cb64b5f629c2ae1da469975ab8532c62713de056cd5ed8869e5"
     },
     {
       "documentId": "rag-eval-global-reference-recovery-api",
@@ -3807,8 +3807,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "6a25dcec0989f26693aa1a41d90d53aa4e0067326fa4621f9a4456ea42cbf3e5",
-      "extractedTextSha256": "f30df6f5e959d03481fa0239416417daceee0e79509a42bd0c14e82afd55a581"
+      "contentSha256": "974b707e51fb9318a44da424262eac637ab77301d62971f94f9a1365397c9be9",
+      "extractedTextSha256": "214bf69f906ca75f5c3ffe1250e8c41aae96c119e86c4d421be637258c54f038"
     },
     {
       "documentId": "rag-eval-global-reference-websocket-events",
@@ -3843,8 +3843,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d2f0e5ddab554ecd30e322d5c5fd9c1eb30411f275cf386f7f2f3b2a3e7da5ac",
-      "extractedTextSha256": "6643413f689cb0d3ad9d405c73b4c848b2654f15a16d6ef9d9e4eefe27b8a7c1"
+      "contentSha256": "2d5da5ffe2e5d1c5ddf55eb4b452e5c0c2cd2786a83cc4e574998e155112b3ef",
+      "extractedTextSha256": "771f85da74f028e96320d3e596bfe8818e3907a1502650544ceb56c501a53daf"
     },
     {
       "documentId": "rag-eval-global-manual-observability",
@@ -3880,8 +3880,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "21aa387d1ea45248cfea249f710561270685ff95709bb6c62f20e1140e12496b",
-      "extractedTextSha256": "606232a1d14edd84730d956b3e791aaddeb3a453f83ca20ba4d38cfe893930e7"
+      "contentSha256": "bd8b4d404d17c0f6397da45a203f4f0ceba5a8043604bb39d0d2ee22a13c27dd",
+      "extractedTextSha256": "8f119d08bf2f8143780d735be84e469fb19dbda811208863f2ba840ba00c1daa"
     },
     {
       "documentId": "rag-eval-global-manual-kafka-operations",
@@ -3916,8 +3916,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d65e8c71cfc83a4e140b0f2903e08b95725811b83133500cf80e85b2d754a514",
-      "extractedTextSha256": "660ee96a0cce758c4c7773e0ca96af26963842d6c887eb668408676db9ec9555"
+      "contentSha256": "cf4d3b174caf93232459b729774e56ff594dd40a85f33da3b7edb8be2aeab537",
+      "extractedTextSha256": "d2319129fd11076bf13eb5e0e6f4984e69df3a2151004e004faaae3cbf6ceeef"
     },
     {
       "documentId": "rag-eval-global-manual-postgresql-pgvector",
@@ -3952,8 +3952,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "cc4c4af6ade1ebdf5003abc0e0df09d0921cd6b1ec84281823a93d09fb0e29a2",
-      "extractedTextSha256": "c75e807298bdff021812ed04b2d2fac3aadb05dda6320a19c8983a48084581b1"
+      "contentSha256": "865f9f9ab38445806501d1cb71b79dbfad76130f3528c0bf454a2a4a42a1f5d4",
+      "extractedTextSha256": "975d6f49dbbe64e7c79ffbd87fd00dcc6638c7bdd31b8a9ea532c7c0fa348cc2"
     },
     {
       "documentId": "rag-eval-global-manual-model-provider",
@@ -3988,8 +3988,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "e0125ed08b1dfbe03915e26ac5c57957dc64e6168a04baa517672bc1c25ab8ca",
-      "extractedTextSha256": "8d1bcaab87c56e762757612aca222a8053879bbe55188e51c857e8d8295f2d28"
+      "contentSha256": "9afad73d0d0d3bad1bb125a886ca4394b7a0dbb38296f278fc05c85e1044a4ff",
+      "extractedTextSha256": "60f06fe3b5b04667b32071e1870ede0f30f6069cf4b13948ca36aeabd76c186b"
     },
     {
       "documentId": "rag-eval-global-manual-backup-disaster-recovery",
@@ -4024,8 +4024,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "03e1c954326684b9976c23cec9a737d7b73af6360c0eb8aea926f641970652e7",
-      "extractedTextSha256": "0c8c1141a43ddd5df7186df0d3e2497f5a20098d0dc9b9f80224b64531ee9247"
+      "contentSha256": "905cf237e567779b26b61a2dec1983833932b853a26b4353faa9c98263c3fdb7",
+      "extractedTextSha256": "3c3dcf7fdf3d202d479836bd825349fbf3f73fabe26290e0edefc35372db1609"
     },
     {
       "documentId": "rag-eval-global-manual-upgrade-rollback",
@@ -4060,8 +4060,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "c0940d441dc005a59936b58da7764eee99cc035c28c67c4ff40b2ea196ebe214",
-      "extractedTextSha256": "6c4ea54a4917f6d4ee27e5ee20d2c15082e53947dc7df7ff6ad9dea8741959e1"
+      "contentSha256": "94c3a8c5d9568cb45d8dd017cf87f34f0f3bfedfea0f07dddacc97f8193a188d",
+      "extractedTextSha256": "f52b3c41835004b8be04536b8ee6d2b544f3efd77792e708599620684cb5575e"
     },
     {
       "documentId": "rag-eval-global-postmortem-schema-drift",
@@ -4095,8 +4095,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "93f4655fbfc15a730b266100778c9c6e54764478a00d524e65c676ec934d6184",
-      "extractedTextSha256": "4d6a5d8e804944f6b2ad164831e985e056ee19ad9a68d41d4c0dc1e4f8704e81"
+      "contentSha256": "d77e9def354eea19af793f27694df0157ba14577a0bc0aca7fdb57c2ef9dd60e",
+      "extractedTextSha256": "103b0734964815792c4e44800d5439f69dbccc4ace790a32a7ef00b5e089637c"
     },
     {
       "documentId": "rag-eval-global-postmortem-foreign-key",
@@ -4130,8 +4130,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "7926eb7fa66414e56a993e64137f54e95b28bc58c13f307423a788441aac3181",
-      "extractedTextSha256": "fa306a229c380999eee0501059de777bd3ea9e8e4e9f7e5e1571bd789154d57e"
+      "contentSha256": "01ea91bfcb0e59af9ef3d01e97f068c899c81b3c65e4270695856c89506d7bd6",
+      "extractedTextSha256": "de45f57bfe3dedca06203e797a842734fc6a86147465f9d3129f5d483de04803"
     },
     {
       "documentId": "rag-eval-global-postmortem-rate-limit",
@@ -4166,8 +4166,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "c842361a67b80fe60bf005a996e0fa36be7df43dac890f103987c6138df28b6b",
-      "extractedTextSha256": "7d604579678ac485922f245aee0514d3dbbf991acd48df80db87396b0a000e3e"
+      "contentSha256": "594e8b8576cb74ac55f72c966c565d3ec0da350015268c8f18f3cc4340230fe7",
+      "extractedTextSha256": "1a8e209ae8d827e60d9e52bdb09ba6bfcde6acb41cf27d451a0150d9e78a860d"
     },
     {
       "documentId": "rag-eval-global-postmortem-checkpoint",
@@ -4202,8 +4202,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "c44bb7626f027a22bac3bb30447bfda71abaca784b94e1b14ada7e6eaf98953f",
-      "extractedTextSha256": "647e3062496fa809b342157fd1e1fe7980e19cbfe7596bb095575ef636e7da22"
+      "contentSha256": "ab0fce9023da5a768d442ebad7396a825892adc3034433c04bb1cf357f1cb915",
+      "extractedTextSha256": "0ca220a22a532724932eb7aeb9ba2fd797b301e1386a4fff15ea538f1fdc0e8e"
     },
     {
       "documentId": "rag-eval-global-postmortem-kafka-backlog",
@@ -4238,8 +4238,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "40ffeb3e7463ce7824c9a729411dfdbac3fdae874fc6e7964655a2a4bb8c934d",
-      "extractedTextSha256": "63ba9aa6b4d9480ea8f40aeea1b9a4e49e56f0c95dbe664fdab92b169e8de4ed"
+      "contentSha256": "a462d8b0cbc2c0b696231ff86852a6f5f1e834847ca4936b2c5b16ccc3133072",
+      "extractedTextSha256": "d88f116f4b93d69772d88a7991d19cf14b1588e2213882ca170ff1fad25dfeb3"
     },
     {
       "documentId": "rag-eval-global-report-e2e-test",
@@ -4274,8 +4274,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "752ac04031b82f6aa41e3ee746a0eadff803929178d4f321b9c9f58fb506b694",
-      "extractedTextSha256": "ac84cfc7fef27b8e6f668840bfa5cf5d321f31ebef6065c2f5639e65e86d2028"
+      "contentSha256": "7c0781da539c31fc50aff6e244afe4a6bfe53a66f2106053af51632eb6f4cd52",
+      "extractedTextSha256": "2fd17c709af63d459135765fea63da4c8fc8bb706391d575ad694d3dfe364876"
     },
     {
       "documentId": "rag-eval-global-report-performance-test",
@@ -4310,8 +4310,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "2b52be0d0e4fa768d24e4d94d559e26145d0c0154c30e28ed9cf15ee6fd559f4",
-      "extractedTextSha256": "db0aa3395cd1e5e9d690ea7f31b652a267ee974427d3305c9b1d44bef866dc4e"
+      "contentSha256": "5ab5b5dbe9d4e1c42ad957e12dc1d6da7c81192b95c8fe082a902f8f8986bec6",
+      "extractedTextSha256": "60961016f4386629eed6c8d91ad951bf5c3a9abee2b5a4b63c05a9bd298c4bce"
     },
     {
       "documentId": "rag-eval-global-report-rag-agent-evaluation",
@@ -4346,8 +4346,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "960adf8519d213fe034ff8367551597c3f8986dc8616271fd2a1c0bb603c65fe",
-      "extractedTextSha256": "b70507bff37aa53117624ab943ef667577ea67028a68a981ce1b4054de2d2405"
+      "contentSha256": "5184fecec4b29cc3b45f7f72dc9d0647f84e12248e026f28ae1f799587c97cd8",
+      "extractedTextSha256": "7f09ca9f7a25d4ef6bb003285d6c815c1b6d656707117a4ff744d720f6a477ba"
     },
     {
       "documentId": "rag-eval-global-workbook-success-task-parameters",
@@ -4381,8 +4381,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "878cafbeeeaf17f2b4c20a53d5ac4fcbe634047395c49e39a656d499b61e928d",
-      "extractedTextSha256": "bc54bc847534a9c71c4d3095471a68f80825434ac7c14b9d3ca7ba83e082190b"
+      "contentSha256": "d8ed8c44296989f4f4620cd5420fad03ddced2e8701e7b6eaae68694a5faf106",
+      "extractedTextSha256": "19fde73324fccb2893b5c3ff544fa86e978c672925c24f5a6398be95fea2a169"
     },
     {
       "documentId": "rag-eval-global-workbook-field-mapping-cases",
@@ -4416,8 +4416,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "fe7f4fce46eb43b5eaf6a8d466c5ef8bed7ccdbaeb0561793b3e26db9d3b8a9f",
-      "extractedTextSha256": "7ebf9ce478b0eba40341615ce39d7517265c33052b498ed1a7ce43cc590fbca8"
+      "contentSha256": "ebbbb7fd8a4ac478767bfe5c3231e9ccd7f4be2e2f9a8ef30239365cd57291ce",
+      "extractedTextSha256": "9b5d87c8aa689a548c6b5b0b640418f5ead147ddd71e854929f50372e8643929"
     },
     {
       "documentId": "rag-eval-global-workbook-schedule-retry-cases",
@@ -4451,8 +4451,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "71fc171245ba8eb5e85e20e641672b7eba6b40270bcbeddf6b6a17e90ad6974e",
-      "extractedTextSha256": "ed7d3831a33c610770909715d268ec159344064a411f085b5e157d47e6e3d883"
+      "contentSha256": "5ebfa74b47ae002d31489c31beec31955e84f61ff049bbacb431e2b7ed351188",
+      "extractedTextSha256": "52078b785977f6a1b40f3421de607f6ea8390ce014da2ffebdeb8521758e3012"
     },
     {
       "documentId": "rag-eval-global-workbook-test-result-matrix",
@@ -4486,8 +4486,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "02d1f901287d65a1b7a2780bda51941e49ce9584fb1daa73f6efdc0b41c5ba75",
-      "extractedTextSha256": "fdeb68dd51b9035b4c572d7b79c1904c28d874d6214415f728b0c1b16bf6a289"
+      "contentSha256": "06a68b68376811a42e6b9cda2c769f86f6c9f9f8960694271aed82a9b43c31de",
+      "extractedTextSha256": "6bec7b2e2c1f2e89ed82df5cc73cbe7ca222439ceef6f9f72a5994fe49d56c97"
     },
     {
       "documentId": "rag-eval-global-workbook-incident-repair-ledger",
@@ -4521,8 +4521,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "a2c77d35e3d847eba0858c5000a20c96365cc6a7b6378d7141b88251bc9638ed",
-      "extractedTextSha256": "41bbde732cb2d6d6e4f47e483478673c793bb40ff9e1be8fbc6d580fedcaf4dd"
+      "contentSha256": "c2076ccdbf4f55e465703d3ba97ca9c4b71071779a0f71ab2caed08a2840b046",
+      "extractedTextSha256": "608fa26cf5a0a66a4a912e8f246a44931ffaa7899688e789b1094db1b30216d7"
     },
     {
       "documentId": "rag-eval-global-workbook-full-load-task-cases",
@@ -4556,8 +4556,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "9952eea44db97a8ab925a71ac93272b5c16d4e5f9aeb3f85e6d2ed7e5f3bc001",
-      "extractedTextSha256": "f2fddb7f2f1accac73d04b0ce490f7d6e6e9e5567cb71621a5b6b5e69ac566ec"
+      "contentSha256": "12fdaabf29c624fe901ca100bb9a165eabb7c508f45999f5e646526bedaf46ea",
+      "extractedTextSha256": "84c765d6e7e31cb726e3b2941aa264728398eba16594b79f3e3389827e406e16"
     },
     {
       "documentId": "rag-eval-global-workbook-incremental-task-cases",
@@ -4591,8 +4591,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "5fa9b35beba7168fd541837b0633a006ccbe747b1c398ccd95f1180b63c5eb40",
-      "extractedTextSha256": "db83e9605fa1529c4f2a7a85513501e7f98b22f521ed48ae7a41c8694591fe6b"
+      "contentSha256": "34295e487f891700cab8a8ab1901042a9b5fa43f2ee115b811f48105009a3bff",
+      "extractedTextSha256": "be91f8e83b892d50f707a0a31e37392390ce8b0823e274e2d7610ec4c9f78120"
     },
     {
       "documentId": "rag-eval-global-workbook-cdc-task-cases",
@@ -4626,8 +4626,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "3a7e58b06d57f13c38425ed9af4094257eceffdf8f1eb9bec482be2e7a6b4804",
-      "extractedTextSha256": "9aa1b66fc5244d3b1609de91ad49e197ea966af7ad97bba0e08328ee60e329ac"
+      "contentSha256": "a1567160343431e361794f10517db3f4e44b88d6ad48179ff2b5b164cbd71b1b",
+      "extractedTextSha256": "10991190497dd8858c343bda8bbea854c41d5f8ba5defdf784f78fb782daa741"
     },
     {
       "documentId": "rag-eval-global-workbook-file-task-cases",
@@ -4662,8 +4662,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "46ad4329dd67069b31b3a72a5b5e2532ffd5f62c588e31c5e0dd23c602349a52",
-      "extractedTextSha256": "84d0c81e75b888803b78a5878cf9daff9bd0364e901dde70454a1b050c70931b"
+      "contentSha256": "54fc578b4a1e01a131114ef6e2bcaf7efad2caa09b04f5ee010dc1deded89d76",
+      "extractedTextSha256": "ad8796b9827c4e4e34b2426ca6c028cd0c24785674b30dfda976f2318b90f71e"
     },
     {
       "documentId": "rag-eval-global-workbook-api-task-cases",
@@ -4698,8 +4698,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "325ede46d625e2ecd7e944c6171467128cc7dc73205a9cde1bb3fa6dfbadcf93",
-      "extractedTextSha256": "852669e1e881718fbcff0b12a97f8b5b5a79161c7104a4b12265e0c16a6e6de4"
+      "contentSha256": "332ba1181c3de00e46fbe9e0e66455734747622144f958aa85b2cc4d9e302529",
+      "extractedTextSha256": "321a4bb79569fcd674406425f79525127589b151a0c250fefba45f74e4d8eacf"
     },
     {
       "documentId": "rag-eval-global-workbook-kafka-task-cases",
@@ -4733,8 +4733,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "92e37223fe55a784fa435e6eaea772c77cea2bdadbb2e7a26cbe152476a2be6b",
-      "extractedTextSha256": "c8682168e17027fc1be2f17d2c5264362c76aadfdd32726d240832356a4f53df"
+      "contentSha256": "abfa8e0b37d85cf0dae3f645fec663682f83c9bd93a63fd3bef950c6723646df",
+      "extractedTextSha256": "eef62e9fb90a217280fb92b934ae5f2c33e69453a0ad80599b64a5d254235c0a"
     },
     {
       "documentId": "rag-eval-global-workbook-object-storage-task-cases",
@@ -4768,8 +4768,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "d15bf9001808b71bd0160f841b61960bdb2bf758d0f927e4038fde2863f0fcee",
-      "extractedTextSha256": "71cb81b8e395b4e8e4da50bea33161e5e6a38bf33efb7f08ac96985e052129c1"
+      "contentSha256": "67c84a019174acd326f5e119ce9c1501de60f8e5ec164e795c89cf1ae600d129",
+      "extractedTextSha256": "0b8585c34d5481809e1056f9eb8fc7938f17e42a6cabe3be9bd32c9b260fc853"
     },
     {
       "documentId": "rag-eval-global-workbook-schema-evolution-task-cases",
@@ -4803,8 +4803,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "cfd43f3e7c1ca52fc1146eff1742db9e54c9a71ef2e24e1ec40b4ff3546be032",
-      "extractedTextSha256": "2a42f56b2287ea2dc9a8424e080f1f4ecfd50d25cfc1ca38646ca366563a671d"
+      "contentSha256": "cdf257607a0b458d365243a3a6c2d34e16567eb9b38873872ff44401e5192424",
+      "extractedTextSha256": "7b33dd2018caa444e223b0cd6357ebb305ffd78b8c4dc18cfad07f83ad5e5f84"
     },
     {
       "documentId": "rag-eval-global-workbook-quality-task-cases",
@@ -4838,8 +4838,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "0bf85dccc884f136f6f26735335b6a8a9cebdc0b488277ae359edc72b4bcb6a1",
-      "extractedTextSha256": "1c04fbece2c9c7af118d04f0180b1ca923baf6e4460041f38038be81a6c7f4ce"
+      "contentSha256": "b59e410536d3965eff81fb9070b23aded9f5bf7ede0ca5d68d8b8bbc798b12c0",
+      "extractedTextSha256": "5787e080229dc771eb3925e808b96a8a356690f4d2fa76d40fd2f4b87038cf81"
     },
     {
       "documentId": "rag-eval-global-workbook-recovery-replay-task-cases",
@@ -4874,8 +4874,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "b5be86f6a8a77aaf372909db7feadebe9529a0716867e592e83691cad4b82d2b",
-      "extractedTextSha256": "1fe85e1af3e5bb638e314f97bb52cb1f259125fb0109757eb0a0f587aef9ae11"
+      "contentSha256": "6e28a5a6cef22e694a443d0c8f02cbe2df2a5a8a3f5a3ff11648ad8571dd0330",
+      "extractedTextSha256": "df82be07bedc297901b1c80637bb11de37660384bce0826e62bfd9a1689acee3"
     },
     {
       "documentId": "rag-eval-global-quick-reference",
@@ -4908,8 +4908,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "f254c1a7f01ab6ec1c571b865bdd56ef1d789f275b398814e9b3b09f8f85ce71",
-      "extractedTextSha256": "061f8d230d0eed71e86dae1c904e117d4712935c534c4afa457bebf5eeb73a45"
+      "contentSha256": "03d0ee8faddcac870a432930020b8ebab810ea638c5fe5b39a71dae62fec0eef",
+      "extractedTextSha256": "592448a1890f7d8116fa4809dc75a3ba491cf8a6caede3efd9f101fedbb422ca"
     },
     {
       "documentId": "rag-eval-global-operator-faq",
@@ -4943,8 +4943,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "ab0c67005ae4883b5c7cffd7f593b5bcea47c9b963eda3743019e7c744f7ac2a",
-      "extractedTextSha256": "5b539ed9f6bb0124ddfabb229161fcbf312ad9331af823f1faf20366df806aa4"
+      "contentSha256": "dd77bcfd5088df6a4046808e3a062a7331a9e300bbb82a81535dc426dfeb7eaa",
+      "extractedTextSha256": "1ad92fa0bb3c98bc38b020608246e9e849f568ca4b6db6bf0d2e2496b0e316ae"
     },
     {
       "documentId": "rag-eval-global-connector-capabilities",
@@ -4978,8 +4978,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "70c11b959fd65d5f8586eb2b8b02820975737dd77a803e0f1fb27bc563cd06e9",
-      "extractedTextSha256": "d595ac5dfea3cee39bca1c08f2e77c8d34d8f70b4c3ca9d70d1aec9c8f420e80"
+      "contentSha256": "e3ae2cd8bf7c2b3ea48eab60c0ebfcc35c68aeb69d87a3c2fb912ed84a31cff9",
+      "extractedTextSha256": "44ac3a443d38b8694d7a27d2b907ec3aad3d3785bbf0e0072850dd7847d93339"
     },
     {
       "documentId": "rag-eval-global-agent-state-snapshot",
@@ -5013,8 +5013,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "bbd792ba75535ac91726f0602097792df26e0613f75c12484b02491b9eeaff39",
-      "extractedTextSha256": "6e7b2e011ce5f52baceacdcbb16b676ce191aaf76a17e5013676cdc6f79ad4d9"
+      "contentSha256": "b5f732349b32a438afc246d78b1f20ea342486188a0280b97a3abc3ad35930f0",
+      "extractedTextSha256": "2b6bde274b10efbc1c2391200e69d9dd7326c7c6d96c3ef78edbbf5666b8c9ab"
     },
     {
       "documentId": "rag-eval-global-recovery-events",
@@ -5048,8 +5048,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "1cb64e7414845646cca50133b9816104b0702d3d773cf4485d37408c530718cc",
-      "extractedTextSha256": "ba4f9bab085695a67396ac2b8e01d684c1b9ffd8cb366987854aec31b7b6afa2"
+      "contentSha256": "87cf333beddd1bedee1a9598eecb4284cc1ccbc643edd751f298c0bfd38470b7",
+      "extractedTextSha256": "707202b67fad32637f35597685489f3dd88d8a8745af57becc288395d89cb974"
     },
     {
       "documentId": "rag-eval-global-successful-runs",
@@ -5083,8 +5083,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "2956fa19ca6b4930818162449059530bb4349134e1160816445c958c77a3010d",
-      "extractedTextSha256": "e3a27b75148eac2db303c30afd071beb81d41d5ed594c0dcca9b2afa863ccac0"
+      "contentSha256": "a6807b300a0293dc1e724aed6862ff61d96f03cb3187e9789f32bf269ec2424d",
+      "extractedTextSha256": "a9b28c3e5d3e99c1fb18fb11e8cda690593c788d64f9486a27323e3273340e55"
     },
     {
       "documentId": "rag-eval-global-worker-execution",
@@ -5118,8 +5118,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "0405636d86b18ef8b5f40bce27ad56534889bc93a3f66a2d53cad1dd715fd9e1",
-      "extractedTextSha256": "237331041d132cc65416ba4e80f3c18774415f13ed356c9e442390ec258bde94"
+      "contentSha256": "e473fe383e3a276d5bc9486e67060f9f16b6a681dfe094e83198c55700f25137",
+      "extractedTextSha256": "f6b42257dc9de20925cb30bc6f7247bb94322399904cb1d0efcc93aa86ae544a"
     },
     {
       "documentId": "rag-eval-global-persistence-snapshot",
@@ -5153,8 +5153,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "a92762bf11ee52c4b96cf5488e97c5f1262af5ecf91931a037a635ef2e429e99",
-      "extractedTextSha256": "1f98d196b880d8a0862524f099d1e1a10f58b5108aa119397cbb22209b52fc92"
+      "contentSha256": "0b66fa9b51ea279e8ada119d68c7dc004b585a8d3c51cf44420e59effc55c5a7",
+      "extractedTextSha256": "d5b30c55ca07678c1e0b667b5d163aaf612c36f39390bf00434096bcbe0e33b6"
     },
     {
       "documentId": "rag-eval-global-runbook-command-reference",
@@ -5188,8 +5188,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "7f0095206630ecfd9df445a78ce20b27737a4b2b026b1ab900d2c0bbf1935f98",
-      "extractedTextSha256": "e7c8b36e9704e6240fb6256f1b25caaa991c8df70bb660f2e2bbb566d7fc750b"
+      "contentSha256": "071f16e9477847bed5a4bc087e11b265c380e06ef0420cbe06bda21c95a2c3e4",
+      "extractedTextSha256": "e131a9c82b805c6fe7f367d74496d920d7ff2248f6b885283e8231028c8a1f71"
     },
     {
       "documentId": "rag-eval-global-error-code-catalog",
@@ -5223,8 +5223,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "9fad5c211986a2ce5570ad0711c3bd2e3a18f25745351fbeb5a61e9975c47dea",
-      "extractedTextSha256": "33992486885ecdcaa3fcee92290125446ed8e634935a85f958931a4d843b23a1"
+      "contentSha256": "0da7f4d229e86dcdf49ffaae6ef04ba32a6346714078c0fe25e82337ed2986d3",
+      "extractedTextSha256": "966249de80168bb4ac2bb546066e0af13bad7eef932c195740974e158ac0b3fa"
     },
     {
       "documentId": "rag-eval-global-api-contract-snapshot",
@@ -5258,8 +5258,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "c8944d2d9ae29c20d3abec67d9acb3c52c44ee23c35334b71496c9d9efec236e",
-      "extractedTextSha256": "f4f2f447c56ec5e0430988a407dff4325b89fa6300f59166637e1221634ead16"
+      "contentSha256": "4c0d49e933fbcb33bffaf5b4f40c90ec7ea9e361d0131d96c239e24966b1c71c",
+      "extractedTextSha256": "4fba4168ba9b92a8fbe620b99601900c48af3133801c031c365f4bbc4dc00115"
     },
     {
       "documentId": "rag-eval-global-task-config-versions",
@@ -5293,8 +5293,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "b7e5cc4e9de10cb1327e7b351398daa779fb9c521ac42661fb7e09d00ed7ac9c",
-      "extractedTextSha256": "0e448984f1468bdfde7fb88c5d5875309a18376ebe404279432423357ae0aa0a"
+      "contentSha256": "1a77f193b518dfae066887f7703b453e60731ca7c9f043f80850b0da5db42ef3",
+      "extractedTextSha256": "6524faa0a836fab1bf1b58dc0e106ef3b3de8fe9e94fe375e5cd05d17f3441e9"
     },
     {
       "documentId": "rag-eval-global-task-case-library",
@@ -5328,8 +5328,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "81250a948c8772be8f17f0607baaf3376aca2360d3a761f5600709eb750a3a21",
-      "extractedTextSha256": "780eca0850cec18cab5ae3a1c53faeab2fb16a17c0305b08ebfa41a8aa4639cb"
+      "contentSha256": "0fea4c37885071d5f216d8265e42a953cea88969b0ede10c131170ad784e5e62",
+      "extractedTextSha256": "7981d620485c747774f71d5e566054919fb0bdbda2f408df276cc5cc5ac5e642"
     },
     {
       "documentId": "rag-eval-global-audit-events",
@@ -5363,8 +5363,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "7c54a5bb0da72d1ee8c6bebd72dc43bb78ac11632f5127b28690b48551769710",
-      "extractedTextSha256": "a2178257bb0d3096c41d7d764823050a6ae2d0576701d6e535834297f640d4e4"
+      "contentSha256": "73919fc9624b8ff6ce7974412c2e688d2f27cc270b11fb3796328f6896110387",
+      "extractedTextSha256": "95bf8f9ba3bda48d1d2fe54243dbfac47e051f1ce1b012a84e75673a851af12e"
     },
     {
       "documentId": "rag-eval-global-recovery-decision-trace",
@@ -5398,8 +5398,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "9400e4ffee2db010ddb3940c3618b8f971186d0b51114065ef286e06d98e2967",
-      "extractedTextSha256": "dc9868d74850ec0e1146382a6f91273a00eedb3d90ba769a578ac286d516db58"
+      "contentSha256": "0c52378fabead0ebe4578a370d7364ab840fe3905430f360554eeef5d216f480",
+      "extractedTextSha256": "79219ad443dec19392bda855de9c3e166ad86fcc699ffa28552dc6804106bdf7"
     },
     {
       "documentId": "rag-eval-global-connector-inventory",
@@ -5433,8 +5433,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "1209b783e509c13500a83b0fb34cec401948019120ca911d94dd5f178d1807db",
-      "extractedTextSha256": "dbfd17d3e85516eeac483db4aaa296737de2ee42f8da4ef2521178546cfacc9f"
+      "contentSha256": "1e30dda25f226f88fdf6a50d91a6234bb9e38067dafd848fb3ea771a4b045132",
+      "extractedTextSha256": "f2768f359df616fda8a96a119669ef90343a237567a2f4d7b1140b1294c007d6"
     },
     {
       "documentId": "rag-eval-global-field-profile-statistics",
@@ -5468,8 +5468,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "f976926920862e33c93d952ad442a097ece851d696e0c3a284767ef2152b6b32",
-      "extractedTextSha256": "0ca646d99b66b75d52fc1733bf6f312f1b341a76973a906b5f4d8002642a646e"
+      "contentSha256": "64a496297b811a89aca8ea2308813ac925e5abb800b5c4cc20e5b07c6f2debc6",
+      "extractedTextSha256": "420d41410ecbf3c94bdae32cbe9bccaaa76ab7af1f5c398e0c977bd1a8180694"
     },
     {
       "documentId": "rag-eval-global-alert-history",
@@ -5503,8 +5503,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "67b318b13ccc3513b8909a8e3cdd701b80966f5c998c5ddcc40627962cf5dff7",
-      "extractedTextSha256": "933855a98ce547c608304ed2a0094eb5610ea7b0fed8bfb0220caecb39f31b69"
+      "contentSha256": "7ca876ea25bb4d445dfabad02b4c267265852442d0be0a45da97677c181654d4",
+      "extractedTextSha256": "b3d9075e9f61e8dcaa38826f1b0b6de3e5509e7067b337cb138b3462624ce637"
     },
     {
       "documentId": "rag-eval-global-kafka-consumer-lag",
@@ -5538,8 +5538,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "484eb663768e4c331196b02af5ef5d0d09d401c334313f135faba26f728c4522",
-      "extractedTextSha256": "ee3fae181ea13523ec4aaeb3531af1f84898b51de68962e2dc0222034a2d9b2b"
+      "contentSha256": "bcc9b13cf35ca4f20a54ba8caba733ab92a5bae1648aff78158b08655c89ff1e",
+      "extractedTextSha256": "ac7e3de7710263179328a6f73cdb8b1ac6a0b07620849427de1a7f7174964396"
     },
     {
       "documentId": "rag-eval-global-database-recovery-ledger",
@@ -5573,8 +5573,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "e11792a5e8aa3e8ea106fb7a48f09c87cc829e743a24f78b46456f6c3b3597bf",
-      "extractedTextSha256": "059abce37f95f614e857de166e231bb72be1da46140032dcda1ca2a176440bd9"
+      "contentSha256": "f25e98767930ff59447828ed93b407bb13efdb34f7d3cc7192e37cd35b6acd0a",
+      "extractedTextSha256": "11f6c1a03337434333ec1343321231fd28a67da639eedbd8e4a9b2f8178675e7"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-user-guide",
@@ -5608,8 +5608,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "590f099bb9edf912784b76fab11bf223f208f49f861d10fa702e7ae42463a5e7",
-      "extractedTextSha256": "cc1931eef58f90b6ada5916fea3e620eedbe3b8ae989b0c077dbae23915bd9a3"
+      "contentSha256": "e1163267ad55259d055b24311743a67ada4e9363fbe68e2ac62111932902fe2f",
+      "extractedTextSha256": "1389c91b427467dc54d6459f0f4220867e87cda9bb088db1ef84258bc52db33f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-administrator-guide",
@@ -5643,8 +5643,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "fa192f4cc03470291555ff90d10f252102a6894682f2c61b63f1b83a59a6d975",
-      "extractedTextSha256": "597df29ca5221bbcfa9f3c0049397d01014b68998ec1b5d2b85cb40b580485fe"
+      "contentSha256": "2d33fe534cd99a7a34079485a3d089c19211ec3e17182b9cb884b53e5edf5583",
+      "extractedTextSha256": "799e57def3ad8af1754b6641af7029c08dd8608250c06da7ffe0ce48fc6f9cef"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-deployment-guide",
@@ -5678,8 +5678,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d1a27ce203ff3f5199924852f702becba2b7542ff4534b1ec3604e7a3529661f",
-      "extractedTextSha256": "3c07f272cbae18721432f331635d1dd347c128e91f20e69f6cc35afcb9d8e241"
+      "contentSha256": "9a121623b026b0cfac8e3d0153cbb588f4dfcea6e2e3cd1ce1683c2a5f9c9e14",
+      "extractedTextSha256": "db6d7bca44738b046c8c70292ce0577027b1d491f1615b69f766d24d530ed103"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-operations-guide",
@@ -5713,8 +5713,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "fee689c88c35ac794589f522aa683cb9c6841937694d487d10e494befa94080b",
-      "extractedTextSha256": "bab393bcdebf61b23396bc9e423f1b848ac0efb6e41816ee7da44bbe23a1e1fe"
+      "contentSha256": "b27b1b0b8fad7eb70a9b8480d93feeeb69b46a15951964028b479bda678964ec",
+      "extractedTextSha256": "160e52245e1cec038a09f53e4c436e09f7efbac3fb5d12ac888bdcc898de99d5"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-record-operations-incident",
@@ -5748,8 +5748,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "ffce9075e084e7c3b051f09bdbb1465af7263f91fbd222cbc159307e3aa3d35d",
-      "extractedTextSha256": "07e22f40cf173956efad5154cae8cdf5e052a15fb2cabe9164ec0d0d4e72ac24"
+      "contentSha256": "c3378427bd9bc792d1e589e18e82fdb6066c73ace6181a1a73c93f572770aa2e",
+      "extractedTextSha256": "50c8440e6c4a2c730c6dc13fa65d2d63c67c0961e9145a6735bd0af5b9fbeadc"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-report-platform-test",
@@ -5783,8 +5783,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "ebbe829143acdf4cfa26272d1f2d5c96a7442e0d7ab7c7556099811eb62f7cdd",
-      "extractedTextSha256": "963a48bd2e396d3764c2afc03062d1f3620fccfa184ae6cc9e7f54508a000a3f"
+      "contentSha256": "b52aced794c1fb3ccc7d4c6d1d339a8350b55ad98263f86ac880230021f1627f",
+      "extractedTextSha256": "81d0044f02eee78d805a1bbadf39942df33aaa1abd7060cabdeade1974ffd1af"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-product-feature-specification",
@@ -5818,8 +5818,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "781075b39067bb8fbf8cf9b35524659b3a78e0521ca328db8a02a05fb0c33ec9",
-      "extractedTextSha256": "ff4745060f605582ce0634a465d6e7f1f8c8d5068ca8ed0b049c6d65f9367c58"
+      "contentSha256": "cecc4106aa2c759ccc3936e811612f8acbbae1449c3f94a29fb103574474df8a",
+      "extractedTextSha256": "ca8fe8dc481cce09de08a68f9c8aff413688182f2419a83a99e1c81ad515aade"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-reference-api-websocket",
@@ -5853,8 +5853,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "bb2d5b29fa2b72c813bac35074594d6afccd271acd4de85161b15ed821635458",
-      "extractedTextSha256": "c1c1f27bf75e603d168a9fe482b0e18c4292bb8921100707a21474d4be870e40"
+      "contentSha256": "ed3d0002cb380f50b90cd37336265480a0386237822259f353a90bd3f273a4b9",
+      "extractedTextSha256": "e060cca286cedb2ffa32a8a54dcc03d2d5959d83259d8fbc03d882651250f059"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-schema-recovery",
@@ -5888,8 +5888,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "76737bda899c65bbc1191a71a0a3f0e2fefd4a85e57f04e3a81e8669672233ba",
-      "extractedTextSha256": "1189d95d9f79c6723e9e7ebaff816f95a3994085770c74086336c709c7462b8b"
+      "contentSha256": "10f00452596022c441a80da35c292f5e2674ca93f7bf1e82acfa0429fcbd340e",
+      "extractedTextSha256": "5da5ef116603a8dd3e2e48a7575c806b28c7e388dca89dd856999e631a917a96"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-security-approval",
@@ -5923,8 +5923,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "f45885fd0afc8c1e85fa9900345f2a5dd61f72b0440c88f7363ac560ce0c3e81",
-      "extractedTextSha256": "72d82ba67721ad8fce47d3537a8885bd231dbea7b04090462cb356b8ac739c9c"
+      "contentSha256": "ddca9b45c96af1c6ad6764218d303428b5404c5bc6445fd55cd26cfdba3bc981",
+      "extractedTextSha256": "a7d3ef9293b30c0af0bd861e7645b4a7f0950c7126b3ab5690623de3c2312195"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-reference-authentication-api",
@@ -5959,8 +5959,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "fd4232e2c5aa7d2bd113552fe83c0444dd9f328736d452a695a0b1e089ee0d91",
-      "extractedTextSha256": "bbf0c9f0d1c03872632803a283437d7213318b97b064615cdf314214a512d5fb"
+      "contentSha256": "92070b206db0d7cfc3aa3e36e7e81f1da1e1f818f29749126ceab715a929648c",
+      "extractedTextSha256": "d89f58eeab398186a2e80dc758e0898c74afb70fb6d99bf54563fbbc4c414b04"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-reference-agent-api",
@@ -5995,8 +5995,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "b00c2195f85e4fd44e9f848e1632675c834158b7b355100f290004d13ea54a74",
-      "extractedTextSha256": "757e0aaff5f378660472685531703ecb0f53ad446777e05edb433d76501dc26b"
+      "contentSha256": "96a7070a6c048fc89685daea3d6f6262faac4a2382e6bd1f38e74e6ef3604442",
+      "extractedTextSha256": "00aaa913aa96c6983b38a86b58a817a569b8acd05a37d491da7bfad844076251"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-reference-task-api",
@@ -6031,8 +6031,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "884010036afcd78aeb148e34592487679de30a3c8759f71a63a6faecbabde930",
-      "extractedTextSha256": "fd6a452f07016bce1627f15fe8cbbe046c1035e01b899f6c63b9a2090cbf4b36"
+      "contentSha256": "6f6d2c7f7f0866cb6e21400e0d7fba9f57040b12645bd7e2691b15780b6abf13",
+      "extractedTextSha256": "eda32c8ba07873a532b3c3ba46464180af6cd0a98f9a2a38a16b3fe66ba99353"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-reference-data-sync-api",
@@ -6067,8 +6067,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "5114327a38a4408dc2fa96efc2d3a6e0aee09bab364e3f2f3bbf78cd3e499786",
-      "extractedTextSha256": "0ea9a2e411d763cb5c532c58a9c843540042ffd8fc27ebbf8c3fdd443b9150bf"
+      "contentSha256": "cb4c2bcb5bbba0f0f922f371e5a360843f985ca2d78a11d8a669b27da54cec3d",
+      "extractedTextSha256": "dd2fd83db4b3ef107472e73818dcf16a1585ec3b492ffa25ebf7cafad4406752"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-reference-recovery-api",
@@ -6103,8 +6103,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "3c94833da9b51efd4745ade84e7db1ffb50d4ccea185b3252d79a8bd24f25d19",
-      "extractedTextSha256": "a9f0439bbb2105a46d474dec9f94bd7adf6b5ff41fcbb3b489fd1d2203f1c1a7"
+      "contentSha256": "9efbf2f41a9fc550155f9bdd5b25eec85b3714c84c83f901fa9804f2a1bdd224",
+      "extractedTextSha256": "5fe3ece00e3411a61eb05bedcc1ae4c82f5a7e02aa642b6b53b724f427c7cd63"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-reference-websocket-events",
@@ -6139,8 +6139,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "f3322df0a29230d5f0874d64f24c8f3c446ae886a6d89dbe71b7c3a5b11db74d",
-      "extractedTextSha256": "6d13c741c0ab1940dad496b5e3bcea2853b7763cb649ddbd9c98c92c890e624e"
+      "contentSha256": "16f3b1708e5d3832b5f1fc81a277c6bbe39ca9d7b4257d0e965a60cd2b545a84",
+      "extractedTextSha256": "466636a545bba852d5425f73b71123a31e58ac74df9eb64354545000b7a4f709"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-observability",
@@ -6176,8 +6176,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d53c3a6ddb4eeacbcfdf69236d6874d2eca567a2eb8e186b3dcb847e3ad423d8",
-      "extractedTextSha256": "b635a840c9fcdd8cd77119894fde88a552882d2c4b1c4f206fde9c9135089ad7"
+      "contentSha256": "1772169a425d1fca9f27f292087c83cae15240147b7b0c90b65732529c6845c0",
+      "extractedTextSha256": "30942deed1ef93e6be8f6691f96225736fe2203b7b354c47b578d0e7dba553c9"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-kafka-operations",
@@ -6212,8 +6212,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "3a40aca0d60a4b4ec81106a538bd316cdd9b3006156577a5425f90cd57401ca6",
-      "extractedTextSha256": "21e526d327a227ca6bdf45d88ea5ecf7a6aae6caab9dc50b83a921188aa86d4f"
+      "contentSha256": "96644f171386f11aa72e4060bccc0273f04f6205cfefc491e23e08900c362c2e",
+      "extractedTextSha256": "406fc0ba5c1eb0af0250df295b82bf213151b9f85cc2775eb9c2f152e40c134a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-postgresql-pgvector",
@@ -6248,8 +6248,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "e5b67b2ae4879be3204d9c6be2962c988f2e25ba53fa412e66c1c693fe74c02e",
-      "extractedTextSha256": "c008ec33feb0e6a73fb3c8aafd8dcc1b773d2c0988b2798cc3b276b2853697df"
+      "contentSha256": "c2e89f1cecf648ace69f92c26b1a8b848a16a1855df550151b787e0f929cafa9",
+      "extractedTextSha256": "46a57c43621fcffe8afb2ce89bf1bb6baab96fde4c0073803d023afee5613464"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-model-provider",
@@ -6284,8 +6284,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "5840127f0599535136da1399cd2b97a2899f061c43cf4fb134f7f1859cf08c4a",
-      "extractedTextSha256": "d6daa9e640d0d412c40eb167fb50fbd21c03f9d3bf38c1da59b96f40e9d0fea8"
+      "contentSha256": "c3f8a13a4590162a970f90024849b8885ef5dd6cdcdb7f25d873bfb3c3a77631",
+      "extractedTextSha256": "eaec6841715f7ba62ca428cb9597dd3a2b9b8887a8a2f1ac98cf309e975b6439"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-backup-disaster-recovery",
@@ -6320,8 +6320,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "5abceb23251223d8c195af06258c6e55921060a0fd319801c1bcb2a057a76892",
-      "extractedTextSha256": "a6bc355194d44ec5dff3c345a836528908f8b235d7f87b64caa764222c9d7529"
+      "contentSha256": "b0ab55540a0c50456bfe1fe3e9a74fccc4d562765247a2cbb0dfd442990e7bf4",
+      "extractedTextSha256": "81aaf333cca3f3bc40fd3de761bc77a7ef38e678f95c60cfe724094cd4537696"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-manual-upgrade-rollback",
@@ -6356,8 +6356,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "180288e980ac94158434fa95cf34066b3eca98d5aaf1351dba26e07c9c6243c3",
-      "extractedTextSha256": "58cf1aff2a5158fa868f46d3193bdce0ec416d4a55688f74dc5005de530d5e2d"
+      "contentSha256": "99d3c68a2462d9af7fab893421bd614fa3af30287b3e58c52456810bcbbe3293",
+      "extractedTextSha256": "abc0dc11c97a8c9a6cfadb139aec3db3d43407e596af7275d0b5740207e3174f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-postmortem-schema-drift",
@@ -6391,8 +6391,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "52649f694ecaafd838c26e24b6b5aee3b8e5fae13eaef166c631b27af7ea54f0",
-      "extractedTextSha256": "ca09c40a56db9e8632981761167256b5e0a1341a811d74f472a1da7b63717b1d"
+      "contentSha256": "a968c76d8b453e4f5c67e23e16c7fd30678646d035f5c4c75b77cf23bc60e769",
+      "extractedTextSha256": "3f6553e842f7fbcf6b2732c5c7d8a98a4280ee25d7c02ea8ea30212a06179401"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-postmortem-foreign-key",
@@ -6426,8 +6426,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "53a7c92573c79006fae78ed914721d4875d22426c1e445e32660301c00d35c66",
-      "extractedTextSha256": "0b8420ba5a5c5c35555ae91e7fea52f5746a7e2b99f7b99fbcaa60105b85dea5"
+      "contentSha256": "5f0face87ee87779e11c85ad2bff8005db76763980dd441887585dd31c7675db",
+      "extractedTextSha256": "07123f5536b9b8a54791698a1bcb701bfa03cf92637de476f4f2a454aa05fc0c"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-postmortem-rate-limit",
@@ -6462,8 +6462,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "18582d02900d7aace386f481f3cb7c117144f8df508d175f0f333ccfdb73e808",
-      "extractedTextSha256": "27d949a19e54ff53177cbccd0b060e8ac2aa2db3ed79cf1763dc9a695ca73f31"
+      "contentSha256": "ed5b26e17636233440e297d514a5a34138f079fba1b7571f3d4cb609067057b8",
+      "extractedTextSha256": "8c1bf1e3cc9cdf39ac0e83efab69ca34a17f982ed67f61723c827456b0f7613e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-postmortem-checkpoint",
@@ -6498,8 +6498,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "9812eabccc838a97d88696561c5ed33fa1c2e125ee741d3dc4ab4b3e45bd7774",
-      "extractedTextSha256": "ef0d88b3ead2292bc796e61636715cb548e3c6d63df0393d8f4260228df51f8d"
+      "contentSha256": "12ac628693e77301750a4795638c6d705ab4ee0dea5fec2d41115053c6a51dc6",
+      "extractedTextSha256": "b64d011e9eaf1f5c1312f7830198b16b49b11f10c5c47d5763bdb1b1c60e64a7"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-postmortem-kafka-backlog",
@@ -6534,8 +6534,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "9a866b2db23206c9c70fa10da994ae3d8c306f187e98514ca72c99a09c2ebd74",
-      "extractedTextSha256": "6859d70abaa69cc9397df39cd5ba73ae0b52f8ef88cda081534e329c89ed2550"
+      "contentSha256": "1643f23e6e6c61e600572d456fdd67cdfec979dc84e5b19ea12ecf297fb406e8",
+      "extractedTextSha256": "32981991896ea0c2570ced0b5ecfefe8aa59c9d7c9941a36e584e96d103aa18b"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-report-e2e-test",
@@ -6570,8 +6570,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "23df6fd4371e0635e62b761ec30e3c72ce986c87b1e0316b80ddb6d764d90b36",
-      "extractedTextSha256": "f72eb56ae361c1261bd5c8f8721257d3cb980aab934bf69db844e0dc1aa00370"
+      "contentSha256": "7e9baa83e1131affb230feb73a30a1ed8fdf21d1312d931e822c9d0db94c54d1",
+      "extractedTextSha256": "4bf27211b91ac0a4d6a720d1a7a5b6dbc8044ef46189d2081c407782dd89c08e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-report-performance-test",
@@ -6606,8 +6606,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "82ebcb069dd2f7dd66185356e9a9147dee0ef699651b345d692cbe9c4a7526e2",
-      "extractedTextSha256": "bcf3c690cb97a10f987915e8625787bef5055a1a2bc31c8c4c69e7b066d61d8b"
+      "contentSha256": "effb73835c02f2639eb1602ad6e93770ec70262dfe3f8dcc78f481b0c6b7f96f",
+      "extractedTextSha256": "f2b160ca1b6a4ff780d86b6a4d5b5db6384905ff6bf189b7f743d54e1a60313a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-report-rag-agent-evaluation",
@@ -6642,8 +6642,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "099e1cf1dc07922bc14dc229ae6c563e093ff1933aa8229437ac165ea58a887f",
-      "extractedTextSha256": "b67cc081046ae661e65cdcfbb6e5d08ae8f324fe1cc2c9b578413918520b44e9"
+      "contentSha256": "b56ee660319d65886e8e9f61412476fbbdc86d452b198d7661dfc16687b3330c",
+      "extractedTextSha256": "6c404479cc8fd2488369c5da7b344f19f6467a66cd60b9eb6e8bcdef78fa4853"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-success-task-parameters",
@@ -6677,8 +6677,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "e715c4007c3abb3657ee7be2b45b2732ff5691b8e018ed03d7df227a821d88fe",
-      "extractedTextSha256": "dbca0045acc2053eaf4a434c2acf65b0450fedf38dad3afad967a70eb4ec4be5"
+      "contentSha256": "a8833358fe7cc6307973ed5db28ba9edfb9ea9e275e8d0d63dd4964303b6de5e",
+      "extractedTextSha256": "f5725f45f9906ccd91cb96dd899cbdbf95e384154ca459c70328cdf727d5d741"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-field-mapping-cases",
@@ -6712,8 +6712,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "556771b46ff4c4c7314816f0095890f9c2e65876179a86db28bd8213cf0aa5ef",
-      "extractedTextSha256": "621aa135d61e6bfcf48fd7785fdeba9e1fe68331194bfda1e36b2337640b79b3"
+      "contentSha256": "f34b2de7caec427760cb427ba05398715e68cda16569baab875fa55a36ddcf89",
+      "extractedTextSha256": "ebdedb40be7decc652d8e75c48989b321cc1eb3451db1749c69a8d04c5c49e20"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-schedule-retry-cases",
@@ -6747,8 +6747,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "f1dacc253283a9e5cac3b513be29630f3617401b19f0a12fae5217de1ed10d36",
-      "extractedTextSha256": "d2112aace42e8a373a0153482befb1883c616e1684a6ca433f5f13f2c8d516b2"
+      "contentSha256": "d851d1a9860f69427ce82f44000bf8221f4040ad6863ea760e0bf7e601fe1e37",
+      "extractedTextSha256": "dfcf5ee245e5910007e03b8a643699acb87c22be494eb99daaba94cc169aa498"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-test-result-matrix",
@@ -6782,8 +6782,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "9cf7382996af56945693bd53055919921f6c4560849d097f8a2e1c5e8f8d8c83",
-      "extractedTextSha256": "7b9402ee382609b4858872f7de977acad0a462eb9443892260444c3e3e6bae21"
+      "contentSha256": "2c94f82e99e898e4f89aa2524d54c496a97dbbbde4c5a78759cea9bfee431032",
+      "extractedTextSha256": "28db0f4ecb7ef75c1d404d411e984143ff021e11f7282b99585f6d642b0fdc1f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-incident-repair-ledger",
@@ -6817,8 +6817,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "fa7e09b6ff5ffdb6c9a7269bc573b3fc03cd2eca1b7faff622f158fb4b330a88",
-      "extractedTextSha256": "ead44e0d571042345179c63b83dd15ebc82d76a4577cddbeec13bd822912c367"
+      "contentSha256": "872ab88fd92b1d9ce80a4701e5d3aeee39593cba667413f65e4a3a9bc51ad77f",
+      "extractedTextSha256": "8392ae1b60f40631906070e099f7a3f907193d4462ac572c71384479d20c8db4"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-full-load-task-cases",
@@ -6852,8 +6852,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "e9e4addeac684751e55edefc7a4a6dc9dcc5c2c4eb6e74c5cf9b8f36581f6e61",
-      "extractedTextSha256": "480b852e5a00ba55eee7a0d2a4e57f4e9db6f48f603e8291a9f53a8846790c94"
+      "contentSha256": "be0200ca262cb69818760b0606ffe974699d96c7b27edc0b9986e8c45c704164",
+      "extractedTextSha256": "3055a13f7fd71cbacbe9031b131bb8b18a4e46bdd2420d08acec6254c073641f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-incremental-task-cases",
@@ -6887,8 +6887,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "fc0bbf0fc5030421760a94c27f4e25d473eb82065aafcd82878811ea481b7daa",
-      "extractedTextSha256": "50dd04e517fffce496646ba87b3010eea619c7259607f7966a02fdf045923d3b"
+      "contentSha256": "9de7c87e8d7cc162fc4ee6cf7ee757f27bdeb273c6dfc25e2f05a6ed142e0c05",
+      "extractedTextSha256": "d57bbe5957367996344346279615a3e9c7def5d9984395e5e8741e29216c44a5"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-cdc-task-cases",
@@ -6922,8 +6922,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "9e8bc462fa220642a188f8587c34c4d42da665ba1fee42a505a82f2f73f47a31",
-      "extractedTextSha256": "4ab187771b8437516d868b12faf259606601aa174e862227e979977f62984972"
+      "contentSha256": "d9bc34062759c0416ceba112fe1ae8b4257fb6862d7fc5c8401b92024b6987b7",
+      "extractedTextSha256": "e1638e5eecd9ead7d6cae5f5dd88cf5448ffcec143eab4af3a955283f3ca7e02"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-file-task-cases",
@@ -6958,8 +6958,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "c90dd2c667b222ff0260d7a3f25c5e88d0f77d68ac51aa2d4df51a71bb922e9f",
-      "extractedTextSha256": "e9a4dbf2db782716fc8053017aa55bc346fc5513572395e4d834d1f534f5bdab"
+      "contentSha256": "7d6de98988043f520f2e0564548aaa3dec6a99f32a0d15583a477a6f751f6741",
+      "extractedTextSha256": "f2cd5690e127276523ef27ca2267460753a4a933884fa0d85eaf74c9599ffb87"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-api-task-cases",
@@ -6994,8 +6994,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "54bd10bce806b4c812518fc48e5d0a2de63c19bbf45a9586751db7cf392540de",
-      "extractedTextSha256": "8aa5c1fd277d2f25f45e48cbd295e83e125238d869cf822e2fea828bba8c1cd2"
+      "contentSha256": "575347417299fae1e86dcc91c450e6c7f51e6a40926afc79c05c69e297865b7d",
+      "extractedTextSha256": "e2e39661f2bc51ce8c94d5d48fcfcb6241b0faf3c982fc3259ce657d350f9d6e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-kafka-task-cases",
@@ -7029,8 +7029,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "501b271f14a1a3633cf4da2b0cde21a7349721e636b0fac7fc927e678ef07649",
-      "extractedTextSha256": "00c3e8f93be4490a62066b3a8e15600cabcf6a772278b71188f5c31a1620094e"
+      "contentSha256": "84fb3b481fbd84aa3f6459d9e86921d9e562f33f49f49d97cce8230a3a4e17a7",
+      "extractedTextSha256": "d255a113f9893e0d59d1259d663b84d460482648d82ad2208ec25b5b9a0044aa"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-object-storage-task-cases",
@@ -7064,8 +7064,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "0c13cf1b29d3d3254524ef085ff00fe56e15d5c282f467c2aee48c1959ad6755",
-      "extractedTextSha256": "59c618cfc931451b15e8e7416a1da18825481e65f533c6fb53c818a485a7eb0a"
+      "contentSha256": "e9238e0b7bd23a08da1ac4cef223a9b66648af4dad4982049e6bac294f1566db",
+      "extractedTextSha256": "1cf379e2b2a226d269f9af9288b1f598a65dbd3856a586712682c1d9f0968180"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-schema-evolution-task-cases",
@@ -7099,8 +7099,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "f039b6b3d358706e95961cdc96d420905f1af1bf77d1d7aa5c5525f07b343c43",
-      "extractedTextSha256": "6ddf762dad6531006d61881a8e0f48048289c7b765b1ce47637ab10f32ac64fd"
+      "contentSha256": "fef91a2c9c2eb6175bc88215eb5e4fbcae6ec409b2f1a7b1a5e4faf22858eeda",
+      "extractedTextSha256": "a6ea56674cb47d6193b60d3385ec9d7ea1b2ad4f35ea0bdc1753215eb13a3c45"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-quality-task-cases",
@@ -7134,8 +7134,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "0050cd90f0883bfd13423dee78437d0e9886884a701eb771888f61d8c2222dfe",
-      "extractedTextSha256": "4e98c0a2cde4fbfcbbc1a315b2f5dd0d56c5250ff0b3d658f1815c10cd958ae3"
+      "contentSha256": "627088a26f0758335477fbc13d2ad6c2d7b1ba78cd78e6a904416c2ce977b707",
+      "extractedTextSha256": "c9986c46a808bdad6cef5601130cc6fd9e2a022496cfe4a92a55afb203aa52ef"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-workbook-recovery-replay-task-cases",
@@ -7170,8 +7170,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "baf4753d018cd4f960659b30943b319fcfba0fee92ad1e6744fd612cb85ff42e",
-      "extractedTextSha256": "8fd074ec2f899ea7841f44a45e237bc382eaa97d99ed823703af73a40699251e"
+      "contentSha256": "3abc21833acabd62f47971a68e2f13dd4dcb00262ca52b605982a275f50f7dab",
+      "extractedTextSha256": "2d3781dce9ceee67470e282581545dbacd3234b0e14eb539cfaaf0bef5c949ad"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-quick-reference",
@@ -7204,8 +7204,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "aa3fd16f01106ed5ef42551460cafb58a47b88725ec0469adfbcdc1789442aef",
-      "extractedTextSha256": "dd4decf103fcf5f640cf747c9803d7e5ec32520e24e4a3e06e7c8fb3088b9a76"
+      "contentSha256": "ee722882fad68366a76171c62a0a56d5bf782d7195aef418711f79397477fe06",
+      "extractedTextSha256": "3c2e6b4ea0873acf824d91a7bd495251d64f11c80ef529e56a32e084a1a30b66"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-operator-faq",
@@ -7239,8 +7239,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "afe9f8249f460b4d7871879904d36b75d67762ffd81e718e7adaefe2216c9fdf",
-      "extractedTextSha256": "119f3992dabc14cb505e19009dc6698f2bdb6df1b5e111e59d53d0299ce778e8"
+      "contentSha256": "3f486e6eb72a5b049f71e2ec1898da72dc0cd827bbfa3a90cadf96acc2ca19c3",
+      "extractedTextSha256": "07aa1fe3ed77152c13960a3b9df180761d9061927dcd6ce355eab2404d73f906"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-connector-capabilities",
@@ -7274,8 +7274,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "1272fda8c3d6150ac5e0be1725e8c13d811ea3e21dda8de403c7bcdea8edc7cb",
-      "extractedTextSha256": "59878c74df04b30f2989479cc4803e3757699e170b039406173f4e05fa7eafd3"
+      "contentSha256": "fa352631765696ae6fec23304988ccdd2499cbe8d5271ac59520e0222d01dd3a",
+      "extractedTextSha256": "218470890a5fcd35cad83cf26c68eaa0b0271f0eb02c588e06018750371fb9ac"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-agent-state-snapshot",
@@ -7309,8 +7309,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "d7dac69053f3b0eec1e5d8231caa482b93afa72670f6cd3daeb6442bec668c40",
-      "extractedTextSha256": "dce1d38e33b14b66ac7aa8f9e7d573da7ec9077c1faca783cf1b71df14055d6e"
+      "contentSha256": "a11cb5f83c462cf8c7a704824340dc8e97c2937d64275fb56ec6cad06573e076",
+      "extractedTextSha256": "2446f0c76b2ed57196c88856d5f8be8cbe0ece37b20818b093a97669ff9230ba"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-recovery-events",
@@ -7344,8 +7344,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "8914c81308ebffc95479e5999bec80d7955d0839f0467df85b1d23b75f9580a1",
-      "extractedTextSha256": "258902c1d76fbfad77fb7422a311a4583c9ee2093bdc73242fde2866312bcbe3"
+      "contentSha256": "9b18af84e780f9afdca3133b1727e3926eab02775f52a6fffdf2a79b59d765f4",
+      "extractedTextSha256": "7e90216896806e3b1e1b5059e2128f775e41f4f055a818844a9483cade4b5c15"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-successful-runs",
@@ -7379,8 +7379,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "490e080540b5abf2fd77311e6562c05f144b26f2fa8644f2a29c4491b725cc5f",
-      "extractedTextSha256": "df1870ed940119c909d7b1e51345ab0c1e2fc56449d2ab3550b73a4cbaaa3f30"
+      "contentSha256": "1fe838d773da203091310dbae3dfee090742a9a222b73c06d09d3cdb4f862620",
+      "extractedTextSha256": "2f4369d0358b540c1ff157e91e63d84e7c172fc7a51895798ba50e921b30e024"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-worker-execution",
@@ -7414,8 +7414,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "cbf0bf839c7660a461ea1a1cb0f926fb6086863ebdf2630fce4cac34a5d545b4",
-      "extractedTextSha256": "2198af7793ba01554cbdafb72cb19c7840e86c71a2f04b1963b5f96356e6d8c7"
+      "contentSha256": "dbe0587543383881bfd030bba62190f933954f3059b096d2b3617675f08b306c",
+      "extractedTextSha256": "9af3ef2b0d41c2f17a5fa0e2fccbd0fb2a067051a1216d91797f529664b49b8f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-persistence-snapshot",
@@ -7449,8 +7449,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "1bbd8454c30e295604ebde0a368d93ca1478b82a0228e42b52799f717838de67",
-      "extractedTextSha256": "c665d83997ffe59ad69e0532bdec4c646a3729273d38d953c0258f86b1300d1a"
+      "contentSha256": "e543796b8af7dec483337d459d3377503f9586b62b8ccb052d638df83be55f30",
+      "extractedTextSha256": "7a10a3596c8bf2e91457eed869575a06c49a44bbc1311b08921c0df926f0b0ef"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-runbook-command-reference",
@@ -7484,8 +7484,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "50547a6c35cdf007cceb175088826d27e8fafdd007207f9901e376f624e2fc70",
-      "extractedTextSha256": "4217ac04a9bc250d23a9e86e32036b64f344cf978e3dce3a9fb8c8cba2fac042"
+      "contentSha256": "3a1cb1625ab7bbcd3c1af55ee4d4ea2a0343262ee6193cc9567662c00357c9a9",
+      "extractedTextSha256": "c2e15d9cb3b1999ebfa70550ad2c935d88b9f8fbfc61301e19dfb14fb709a33e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-error-code-catalog",
@@ -7519,8 +7519,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "a50787daa31696f0fb4a0da745b4b32b31a7e1f9a9ec5a88269518bca9e333b5",
-      "extractedTextSha256": "9a58fedefdab615dd37a50b8f8d6ee78cfcd11a285092027edd222b976e8d8c4"
+      "contentSha256": "3d20e138006602236e120ddeff86d245d9455c679804ed72f56fa4c074cbaec9",
+      "extractedTextSha256": "731e54d4a5dcac11028f412eb101faf9f44dc8ed10ff5bc4f7726ac40780ec09"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-api-contract-snapshot",
@@ -7554,8 +7554,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "0d725f9cc1b9a9623f5532555da1fa662daaf4d98a8fbe75c34181c7f53f052d",
-      "extractedTextSha256": "056f898944ade9e3feb5588e59d3b5e831a88a2174ef2046cc091f46678b586d"
+      "contentSha256": "bd9411b1cd21c58fe99d31ed036e5781da325b807499e2a6cd352bcad2d21f38",
+      "extractedTextSha256": "a8a711c311d813fc6329a99ebae080fced869dccfde189c131bde12155a99d6d"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-task-config-versions",
@@ -7589,8 +7589,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "4c487b3a17869c8255aed4efd6c6b6bb61fa3ae350f6ae96189871b7e24e7159",
-      "extractedTextSha256": "cc37aabae1767ba66eceb269fa270ef3ae381c686152f045658424cb7d0469f3"
+      "contentSha256": "d5fc815c94586f16bdf2bd7850eae9453b528285bf6411755ac4c998e7dff3ca",
+      "extractedTextSha256": "bf86bee2e0b3f85546015333b1f5ff8546609868c1d3a133fa5648857cbff82c"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-task-case-library",
@@ -7624,8 +7624,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "235f2ad9d4967bd4b02e4ad119ba70ba5a51f1583d417baf45da5da3f00707b8",
-      "extractedTextSha256": "867c9464064ae4159b5032e6d79a4b549d2d527beacc7031c89bf18b8feae4b1"
+      "contentSha256": "ef2b7587301233cc751c3b0cd55d2b23b9900699ec2c7a6bb28258cb79e5c850",
+      "extractedTextSha256": "900f59cb3317dfe7d3ec3bf5e3bb325f87e425588593da1c49dba125a7232fd2"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-audit-events",
@@ -7659,8 +7659,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "45ec58c2fc861e7a93b06eec339da3780a37bc5e0b6b9fa9c80ebe34db3df85c",
-      "extractedTextSha256": "00f9cc3727009fad17168aa321941f865d78bc91548ca762417f9a91780f0272"
+      "contentSha256": "27e93cec135a50b50968f44b878381512d1d066d4e3dbe7861f9223863f89314",
+      "extractedTextSha256": "d3c6495eb9c8fb2523bed8fd7d0a2c68e068d0dbbc8905e515f2feb47fdd4694"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-recovery-decision-trace",
@@ -7694,8 +7694,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "4faa75a9b4bdaa93db789524cd83f89e528650cb0ebe67e6bcf4f38c0bfde11e",
-      "extractedTextSha256": "253b040fa7dcc48d17593e554611907ec6e3d38c0efed5df8f4c8012d3972ed3"
+      "contentSha256": "909975cb195240774c706084212420cea36f85a928650cb20de5a6a6fa6da72c",
+      "extractedTextSha256": "6e100a606e3b136b1c1d70f434d64906236420b805a1cbe0ae8feb35e53463df"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-connector-inventory",
@@ -7729,8 +7729,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "9a842f44325494306967917a7c7ceaa5e38a038b7818885f58277afb27cb99f9",
-      "extractedTextSha256": "190787f557f5172761ad9461e495701c480d7274f28e0ce1545bd31c5540767e"
+      "contentSha256": "90039977b32a9c916433dc1628468d60f400689fa2f192c1cfbf6b7d399cc916",
+      "extractedTextSha256": "474d13eaa8d7813be0166040e170555fdbbdbfc281a2f5cf5ea0608da66e9df7"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-field-profile-statistics",
@@ -7764,8 +7764,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "47e0e591d829eb5263507338f855ed83657d906167a631183a8b34a2964dc9f9",
-      "extractedTextSha256": "c730f213b3c48b6b1a0e6c27ca3bf649ed7dcd1c263f1ef668a9662eac723585"
+      "contentSha256": "9df77fa243c53e88b80685f2e42b3174ea10fc6baa4aa902e75e64f229bd6606",
+      "extractedTextSha256": "8e03cf163cb20f241cc0c79785a41c82b8b7413e5f97e95e96f639778da2d967"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-alert-history",
@@ -7799,8 +7799,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "70d04556e1ed4d3071fcc2382dad4ebb962f457b35d5b8b292449d36fe06f416",
-      "extractedTextSha256": "cdd478ad8b39e249ca9fd6ba97f2f9e6c9dcb65216245ef5c128b0f97a2d853c"
+      "contentSha256": "5d0dec6dc9667d1ef20a43440463f3f6b435fc992b0c7311715317a6768d4142",
+      "extractedTextSha256": "5a121fd337386c24929deee3221e28acd051df0e6347f5cc36b1378e4e71c991"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-kafka-consumer-lag",
@@ -7834,8 +7834,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "7a6d8a0a7865ed2c8f37bd72f7156d61aebe28900b16b3d6b4709268693e2812",
-      "extractedTextSha256": "54664e858e73c6f60c31e326315a77ff38757e9c85eb94e5a556f2209ea05670"
+      "contentSha256": "dd533470d5c8a4318b59d882ca69033e6ce26979ca71a57ca4f9244257aa63d6",
+      "extractedTextSha256": "412e52d49fffa38271a58a14e8026fff1bfeea840b44b66c7fa174a654445b51"
     },
     {
       "documentId": "rag-eval-tenant-10-project-101-database-recovery-ledger",
@@ -7869,8 +7869,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "4969b3e410f4579fe65ceb811003c665e0611f5405a0be9933cd6393ee5e3c23",
-      "extractedTextSha256": "e876e40d8bf69933083650eb489bcc471fcd7c73d4c3e2e06ce2a7c121e9a964"
+      "contentSha256": "411a011620bf7861035d0861ddfa90b66719e807f796c60c6fa1ad80847774df",
+      "extractedTextSha256": "de23cece677f307ac3ca02db8492192ab1fc8ab20d063ef11d3b757a2a4ce8af"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-user-guide",
@@ -7904,8 +7904,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "bcef237108286546b545a1d07e2ac310342b4ec3785174a310fcf030902794b8",
-      "extractedTextSha256": "b2feb3db2ccad9b5e63c999295b3cee2b474121067f2200c4e32fa8c696ec780"
+      "contentSha256": "9de97fcbac57ba130ad12e8023fd8d417ca240459b83ecdcd3bf604f028f1723",
+      "extractedTextSha256": "021cee103360f8e7c004103a624d6194993a11c352f24efbc719ab11a83fb2ed"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-administrator-guide",
@@ -7939,8 +7939,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "194a07907ef8a1fe840a64360219ccfc0f8d6a74fb73aa54b2289d13737b2bb4",
-      "extractedTextSha256": "414ef2e7bca2bfaddf53866263f38f907c5dfbd0adbdf408083d8543de0e873f"
+      "contentSha256": "059c587d38030041a498b17e59e96806da56f894c2ca722a4d5e6fd52bb49f31",
+      "extractedTextSha256": "e9532ba50620baeb0d3173e9c58ed7c6eab22efb618e0b03d9cc0cb7de6cb29a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-deployment-guide",
@@ -7974,8 +7974,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "a6a52c3d2a72bed3d6e62ce07c86e6c365b4c1ff868d6ae4f88e4f18a7a504ec",
-      "extractedTextSha256": "f0381524ca227b3d98c0f7be91ad27027da594a6b5069200f94aafc030eb11fb"
+      "contentSha256": "53980836f863012ea86a3506c779f4ab86cf98f778c4eda22b08993b5d5e5dd4",
+      "extractedTextSha256": "0f118472260237b24aaad0382b69c3d0f01afed0cb1dd79c9148640dab3819ee"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-operations-guide",
@@ -8009,8 +8009,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "f01b6fcf6fdc38a6f1b0c1f463d391af92fc87a19d95de56fd3ef9d1135c5e06",
-      "extractedTextSha256": "35f17ebf9a7d6757b5f20446c18b7f5271205d93ea717b06ffb5a7afee7a035f"
+      "contentSha256": "12cdc2eba4895acee9346b135ff504440383761a8c7274407d5272300bd71a6b",
+      "extractedTextSha256": "96f3759395dd725c4cee63562bc0253e804ab1a0a72cf9963525b50298aa006c"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-record-operations-incident",
@@ -8044,8 +8044,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "65940277cebb437c64b8ae53a56b7b75203734728be2026c92a500b6e5fd3c5d",
-      "extractedTextSha256": "4b060cebf9fdf7d4e3164ae0f92855bc251ed3bc65dbcad5a42ff10c71408bcf"
+      "contentSha256": "2da0c599c5ef6d960579e76aacd9ed472c851748cf3549f5058d70fdffeaf417",
+      "extractedTextSha256": "7985585e5f6eac5d91db3972da058c02cedca1b657f85a8d9ba8c437d15431af"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-report-platform-test",
@@ -8079,8 +8079,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "dbef2db4ae74b9b282b48d36198b8a57d51e21e3576ae6090b745698ed57e1ee",
-      "extractedTextSha256": "1111d3a9aaecdba8e199f25a901b9c153207a63176dbcc004e0abc19d8a5e080"
+      "contentSha256": "a5a834f8c067d3cc1920317399f545d8497a8173f9936319662647e4e8ca5485",
+      "extractedTextSha256": "868ce3c8e29e006275006886c53f19716fdfdcaad783e9e41cd24f52e05346c9"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-product-feature-specification",
@@ -8114,8 +8114,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "c333a4266e8fc2bc7110be6dffd6a56965d5869524eff3ed88f67cb658781d89",
-      "extractedTextSha256": "1d0cd31bd9a2b52adfe23def985450ac1026b353578b06005ea63b4e1cd71499"
+      "contentSha256": "4a77e6e1e17dda10556594d4fd9a717b3e9a389e3d2908a744989dc37d1f4b45",
+      "extractedTextSha256": "e921bbca3223e913b94fcdc1ca2959f18cb77d9f9e327ac73023f11ba742262d"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-reference-api-websocket",
@@ -8149,8 +8149,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "dea6ce6d7b672ce4c9aaaa3e51eb66b10319193940bf1687f5d813ba75961f10",
-      "extractedTextSha256": "bf8e82f956cdd5fbbdf6d5b1a596dd482da14335e3bcdb4d3e052b2b4d3814ec"
+      "contentSha256": "53435f8eeb4c7355db8b1f67bb64c9e6b8ead48c34233d119ee63d2dca87b273",
+      "extractedTextSha256": "c3b1b46959ff4cd3beb7d2bc0af1b61e77ebb0a1d010670c0123187220446d62"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-schema-recovery",
@@ -8184,8 +8184,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "2fc83dbd2243c63a953dc7be81a4af4d24caf6dbd5e4c83e3c9e49e0fc21429c",
-      "extractedTextSha256": "58f3dacb26e2c104cab819b037e0308b6c2b82feb11c52fa529a08d88c24205f"
+      "contentSha256": "31d061ecf3b38c95ddcf3fed6bd78a86a620c76347d3d87b82ae449b7f46eb02",
+      "extractedTextSha256": "cff451b5921d4f9ab1653a87d1b633399515eec4daad32cd370aeea1b3137dea"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-security-approval",
@@ -8219,8 +8219,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "5aed8b878d1e06c4feefbf6f3959449e51fbd988c63ca464f91b1dd0a1f0fbb8",
-      "extractedTextSha256": "5bcb4b1c10c7781fc2171fbadbfe3a0a8b75d5e72b8f9174e972950b3c64dd31"
+      "contentSha256": "a7ce7799cbae7533f5b4a247115b123005a6b3ab3fa1d4405e9361a9026cb4e1",
+      "extractedTextSha256": "32a2f01d753e910bb855aaeab57482e1f7203c7e6bcc3c61a34b7863b21cec72"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-reference-authentication-api",
@@ -8255,8 +8255,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "f53b8bbc767c993f407aff48fbb944938e1a9e21199bbff9d4566c5ecdfb097c",
-      "extractedTextSha256": "0e331787851f8e474be8d2bb9ad916426783435b96114fb421a5e4c73f6cf083"
+      "contentSha256": "d69fe860c117009a0c7a041ae00df7c84d3541aa150e80600582b99f01af175a",
+      "extractedTextSha256": "720da292d1bd9b983ccf0bf468362b36d0f26d6a8c15ae6210b368b780aed6a9"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-reference-agent-api",
@@ -8291,8 +8291,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "b5823a70e57b3e83f66e4673f18aad7a1f6a4e880c8421508e611dcef011aef8",
-      "extractedTextSha256": "96ce981d5cc24e343dbd9d0de0bcb8459929ce83c39dcc344d01edb3b021cf07"
+      "contentSha256": "e595f58d4831cac0d05d17f4bb2edd6bac2cdb8dfb8ab1f1430f3c8203ea6bdc",
+      "extractedTextSha256": "01c3bf4e318653e5b2f5ea270c19b33d7d801046affbf84cdf5eb3af985d367a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-reference-task-api",
@@ -8327,8 +8327,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "5a6a43195c8c8360141f93a8b04349120c47ba12f658e31e7aa7b3a9eefbe778",
-      "extractedTextSha256": "34d3920629e5453b7b85c6ed5823c933a2411b65006cf983a00fcb4eddf8368c"
+      "contentSha256": "cbce3458c0da67fbf3b3d1893d2c7dbb191e916d40bc11820577bd055fb8d214",
+      "extractedTextSha256": "3179236023ce52b98d75008fb1e8c192869b9f096c01cb3ada5a35f06838535a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-reference-data-sync-api",
@@ -8363,8 +8363,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "884c19cb5fed79619f9161a2d1f4c19de54a419eabdd9aa95c24fc7d75c1feaa",
-      "extractedTextSha256": "c4c4de1d064e847f5745ad4163627348ae3a6e24cc4997352d7cf221e2a40781"
+      "contentSha256": "15c0da64c7f605ec8391fc8d1cf3a3a4cefc795c3451c25c4490929bde60c94e",
+      "extractedTextSha256": "3d3cdea8b027a069c4871f70b4a612f3bd776fb35f6f2818cfbc0bf646f3ab1b"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-reference-recovery-api",
@@ -8399,8 +8399,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "061f1f30b0af06f32f2bc89ef7517bff52c612a3b09986efe70e3556028513dd",
-      "extractedTextSha256": "d34f73d2442fe5d33889019af83b592441424ece70acd1b435e2c7ea5072f584"
+      "contentSha256": "153763d4ac8394289de31ca6630885ce82698a328931e86e7881c3870026ab9e",
+      "extractedTextSha256": "55666b897069600399e85b8a373ff5f420301b950b6779e66efc8937e978efca"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-reference-websocket-events",
@@ -8435,8 +8435,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "46c5a2528630d1cc0e79c37c448d3ed09ed7ee690a063c9f4c692f19e9a809aa",
-      "extractedTextSha256": "e901d3e323aab548a943ce95cf5caa3bf315480768dde489001070784621a9e8"
+      "contentSha256": "69207a706c8ecbc91a09d42affb9a4027fb663452789d4c1688a2cdd64eb2256",
+      "extractedTextSha256": "876de4db68c88918c95e29f0468dc7ef22cf250eeeebfc947cd529a41de111b5"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-observability",
@@ -8472,8 +8472,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "b7d8bfd210a9979d3845295d8a813a60f02d220beecd798a94d66cb6999c2b5c",
-      "extractedTextSha256": "44b94601cad2821cf05dc7566c1daa5aa84de66e6a7b4eae4cdb2fe6e9faf01e"
+      "contentSha256": "cb1ebd3066cf52acfec41891ce3ae624c4873ef060b3b77160fe53a7a7123914",
+      "extractedTextSha256": "5670a5ff79683c2431c33cc7f702cf51cbb688219f54b4fcc754f18ffad7df17"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-kafka-operations",
@@ -8508,8 +8508,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "21456153945ea92ba47044e6d0e72d8c04d751bd7f79c76ad93ba9514003aafb",
-      "extractedTextSha256": "aada1b9a5b73da82f5fc43b507050e2dafac44fc05446335501cbf6ee9a98384"
+      "contentSha256": "908353f34af3111463fafc804b9f35643155a02c817560615c4c7ae6c03cee66",
+      "extractedTextSha256": "a0dd1fcc0b1baca984f3fa133f9f272ed35c71a38259cec31f07e024870f3e26"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-postgresql-pgvector",
@@ -8544,8 +8544,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "1de2cba4413474fe65c2d34e320c1032895e4ace829e859e5431ef1939d0e4ae",
-      "extractedTextSha256": "3329abfeefc777a0971c85bab995c0216c3467f7e2dbf24356710ad4efbf0558"
+      "contentSha256": "4c6b6329329950149daf06912a73a6833e927a14ca96b8d25d440913a3042e7d",
+      "extractedTextSha256": "3cc58bed7ce5fae665b90eabbb5885df03387f873168eef394e0c98e7cb84fb0"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-model-provider",
@@ -8580,8 +8580,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "4cf4a13222ba584f67ba100072e650610f06af68384d021a59beac39eb0fc732",
-      "extractedTextSha256": "07b1bc4393386e387df0e5b17fd6827e9fa57a81b2d4b5a146bb80bb798e279e"
+      "contentSha256": "e0fdba57575a49f9f90f961f812a53f2d69924beca44d373ea95d17f0b0d140d",
+      "extractedTextSha256": "9eed51941d11975dc690e5c03741901d127ff913b1b12bf547628489dfa7c670"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-backup-disaster-recovery",
@@ -8616,8 +8616,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d2d852ff69413de84a65872804074776f38c1fae32114a3b86c5db4a6ee70dff",
-      "extractedTextSha256": "9f7d6085bf7472be54a48f0b6e502acbc3a4c2df8835dc5a428a9a21ab203dce"
+      "contentSha256": "53b6eec253123d66dea37d91e199ee89808eb910202e2ede31a6ae2b827d5e33",
+      "extractedTextSha256": "2863d7390531303cfb816c34b1e31363b26b40031099bb6d036c24fcd884d45e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-manual-upgrade-rollback",
@@ -8652,8 +8652,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "ad4ee2791df7e24c205ce62790cd57f4253d8d18f90d4c46374a9dc0fc745cfb",
-      "extractedTextSha256": "8467229fc29ce5541e035d9067760283cbde4e7a0b0a2eec35a287f32bcebc0f"
+      "contentSha256": "d86cb9bd82c8a2dff126a9cd9604a7d3920d3aa0f2b6b1bfa5ec28b325b992b5",
+      "extractedTextSha256": "5eef087776fecfd8f76cfcb87f24c8bef54462a1c24db39658d9b1654b9fa8ea"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-postmortem-schema-drift",
@@ -8687,8 +8687,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "f5c777315fc3424cbe98c48308affa307384d9da030c2efa4a10801a5397d211",
-      "extractedTextSha256": "f2d5d60e10949aeae2f35c4d7fe3472b1455d1efefd10cb10dd99012fee5824c"
+      "contentSha256": "4c1e766ffb268ee2be76929975ec971762605a0356265a61d22ed3e933442279",
+      "extractedTextSha256": "5cc5c82683c466f2479eaef09d742427fbe8cbb290a9cae90fd853fe1a78608b"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-postmortem-foreign-key",
@@ -8722,8 +8722,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "6ae0d89e424dad5551efc4c400bbb1bc32c63a7571d3e520a21fd17495f6c3f5",
-      "extractedTextSha256": "391d7ef3e268a68b28effb34e800db4c8545cd6bc4b7a7250395a0ab2f34527b"
+      "contentSha256": "c71e0b3625ac76fe3eb4dc95f0737bfd80981377e13465df2c89eac0ec6305d6",
+      "extractedTextSha256": "9b7d781d62873c5c2333da0ec725d2470c3b3c50a5f0d0c9f6a8c8ad809b5ebe"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-postmortem-rate-limit",
@@ -8758,8 +8758,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "a756de12342bef27981a60f05feff647a9cc84b2037ec98cf7ad47293cd1b31f",
-      "extractedTextSha256": "1a81b6e842c5f74447df139823026506ac7ca444aba6ed7656e879022ea1116b"
+      "contentSha256": "40591ef1dd0386981f7e0e456a33fd4df462be6b293052e64ebd6975a9bf0662",
+      "extractedTextSha256": "bee1f20857bccf70d6970596afab644cab9f392fe5915ebfc974c31f09b1eb94"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-postmortem-checkpoint",
@@ -8794,8 +8794,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "1e09523d7f0543ce0af158058823cb95eb445500adcc00f0a1e20b7d60cb64b2",
-      "extractedTextSha256": "ffc0de1a9e295aca80bfc051963142cf2b5a28f2ce9cb5f1637fb926705965f8"
+      "contentSha256": "ab5564f5070b5b2dfb14afdcda7cff6c204e2ee49a38b1b640549d3f9ff44bab",
+      "extractedTextSha256": "1405e43c47d5e9f3680819785d9bef821e91f460a4b87d51d0818ccd666d39e8"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-postmortem-kafka-backlog",
@@ -8830,8 +8830,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "7b919b77a6283a12d1ad3ee9711b242bc70c4c91afa92d971d3362bd9ad08651",
-      "extractedTextSha256": "cdadbed266dbdc73b05088ead0421c4d5e979fc0b0a2df76248433c57f65c010"
+      "contentSha256": "3b000efa61662e466fa5389d0a730bf2546967788ebb8e82b5673520c166a6f5",
+      "extractedTextSha256": "4cb4b191e16909f77fdce1122d906f27476c02a94afe72f54fd79f99e540010f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-report-e2e-test",
@@ -8866,8 +8866,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "5f33168879e713c319e043958ae40526499f2bc4fd719ea1bb169549a3869620",
-      "extractedTextSha256": "1185456f75648123ef53bd0b9f8ac49f536436719ff19da838072619e64f8826"
+      "contentSha256": "5f723f71bdf6b5697ca3f57069816825ac6167de064cfbe9e139810889a17c1a",
+      "extractedTextSha256": "e302508fc12463ebb41f015ecebe8e2d579a68c6e481beb4be22f8c782816a59"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-report-performance-test",
@@ -8902,8 +8902,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "e8352d34f3e58ee9a2f6675b3708b7524306c64d391ef628f1fcfafc9dcb5cb0",
-      "extractedTextSha256": "c53e3751905be93a37ecf1c75b72c022c96e8db063acfd97491db7a371f71717"
+      "contentSha256": "5fc81fbe74b70b9e5a74cf45a85a8d472e8ff372ecf68cd45ce3b4086281c1d4",
+      "extractedTextSha256": "d7c510ceae1f2092ffe7fd7d5b8a4e13e0e39ca4d8ece46281929553ee2e31bf"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-report-rag-agent-evaluation",
@@ -8938,8 +8938,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "a2419877e127432a55f192beb55c594b6570ca9fffae9b9c32a0e6a04e14a172",
-      "extractedTextSha256": "dac9601b2f46254a4099a810eaed960eb911e03810d1b92c7a17c7589c3d7519"
+      "contentSha256": "a217e3b74e3d1292332a1eb2040975adbf9e47f60f09789ff4696a8066eef4f0",
+      "extractedTextSha256": "e1916a3ed935da19cccf5d84eb963df16d695fd229f4426065640b79a2efb5de"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-success-task-parameters",
@@ -8973,8 +8973,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "d9db7c2e23bb776a343975b9bba1a734d3ad727d6e47111ef04ae680d6ade696",
-      "extractedTextSha256": "0b5407654ac4fc1768bb85245d552b0d0738c8edbd1297f8e63789676a5c6c81"
+      "contentSha256": "96df81b0f660b646abaa96f7a902f187b541e9e7dd829afa0f46366f17408c9b",
+      "extractedTextSha256": "2371fec4725a4daf08f8205f0e72722f878590c0e997fe09e4d4d953c98eaa3f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-field-mapping-cases",
@@ -9008,8 +9008,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "2a6513ad48f810472054204627a52a2ed4082ec07b6e01b20cdcf8858c2c5ea2",
-      "extractedTextSha256": "52e1a9dbd87873c6d4d075c957dcbffbe4bae3bed7d80e22ddb4dc5f47103305"
+      "contentSha256": "81badcb1fb93eccfc682c215b807cefbd10d3aa1d648f0dd241f97c4ee84f3c1",
+      "extractedTextSha256": "46d3dfcc9fb0b5281281c8534702d6367798d4054eb16ad4621b640be5cf40fb"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-schedule-retry-cases",
@@ -9043,8 +9043,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "9aa5aee55ee3657f9f420c95e9e0a9dfd32aa914c9e74150c42b12d82500ba63",
-      "extractedTextSha256": "00124ddb6700b8e8eede9610e01c5a6fa1f879b2ea58ac6a0aa4ce74685cc2c3"
+      "contentSha256": "8cc41e954de063632ba222527227a61af867284a1febe9561eb2e7abb56d48b7",
+      "extractedTextSha256": "04cfc8b492b0211491b3dbdd4bcef43623747fe73d13e1c0e79133433f1f9a7c"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-test-result-matrix",
@@ -9078,8 +9078,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "9612a00e27572df96283e553540500be20251210cae98860ea98b70bcc45ed84",
-      "extractedTextSha256": "c24861a923c3b79a7f602fc724cac0c21a638ff703b5d64db70bd6b64904cf11"
+      "contentSha256": "e0cc2d9f474204d22f572638c023c1af9a917875b79ea8336e15e66a4d90bb53",
+      "extractedTextSha256": "2938dd16a2ef145e6a9fb9a60191ee5f132368441daa389368c802e6a6774924"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-incident-repair-ledger",
@@ -9113,8 +9113,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "f1dd614e0073391258bb8a5d6e7a191218505e71f4cdd2dcb8af09cc12f102ac",
-      "extractedTextSha256": "bb89d8d7ae51de974f4c9c213a1dd9e37970f30b48f0f27e7d68c06b3cc7e9b9"
+      "contentSha256": "9148d28818869bc02307e3f740d7202c29ae66e92f8f9afe7fe2c03aee579de7",
+      "extractedTextSha256": "ce3e6262da5b5ba0dd1adc8b7002ee91f776dc8965f90424427a884cb50c8467"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-full-load-task-cases",
@@ -9148,8 +9148,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "5087fd3d064dd70caa189c3614703f5eaea4094c58a1cd8aac26cbd337c6b7d9",
-      "extractedTextSha256": "6bce01c7e3d792085b28f82cf106dcbe6f0dd5b850d6a1d4a70d98c2ead80353"
+      "contentSha256": "23276946b8eeda199ed259cdf34b45346c6f12a6f6a3d2e77a9ff3281773cb3e",
+      "extractedTextSha256": "28ca1ce9a20b89260ce5cf7038d20bee8cfb49e691536c9734c7dedcfdd23896"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-incremental-task-cases",
@@ -9183,8 +9183,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "03f6b9aab2a69b979012ccbbeeef9fa9213640bc13610e96e333941d53ae7396",
-      "extractedTextSha256": "d90a8acd50c92f4c4de2b992e076187be9503857b471ddab6f639c591cf00743"
+      "contentSha256": "b742e0558b63ab253198969eb5df8944a109a48166dd6a0916b4147da5edf0d3",
+      "extractedTextSha256": "1a04a809b33a8012b173a81bc14bb5a26dc4a7d413382dd0ee3634dfc2601987"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-cdc-task-cases",
@@ -9218,8 +9218,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "0d728a42531ffdc82b171824ed937c43f9318bae72e87ce805840275938af800",
-      "extractedTextSha256": "8e6966d5888c7a322d007b3fb12ed691a8d994294062966439bc1cea595ce8cf"
+      "contentSha256": "1bb6a2d6d4d1c7f7583b4750fed6d2e28448d3e99585531b113b5664d332528a",
+      "extractedTextSha256": "75abd232f048db98c6133250973ef51b91efee636bd8cd141f3a34e3b7dd6fa4"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-file-task-cases",
@@ -9254,8 +9254,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "8efb1dba0d98e9ba784de60d64c8b18b3166c029199e080dbbd137e96ddb9eff",
-      "extractedTextSha256": "caa1f1731de9919bbfb2aa8ab245dff1394e9e1c6fa4eb848a48329522709438"
+      "contentSha256": "bdf11443a152277c624d8e06e044891ebec00b348da02e31956a3655bf17c6ab",
+      "extractedTextSha256": "ebf32d3b3080e975cf8f05085d84190a311366e7cc06816c0efc15d915f2342a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-api-task-cases",
@@ -9290,8 +9290,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "681608a6a32e2274b8b6841ebc764b00be18000bd709c8132a7d60c2bd46cfd5",
-      "extractedTextSha256": "52a5d0c2ae6bd4830d09924271093e0bb930fc4d5348c4e4b36a9302d9ce12d2"
+      "contentSha256": "8ea43af3a31f537d9acb905327e94b253b710bc4857673772df3564a8ec3e43c",
+      "extractedTextSha256": "2138f87c69bec49c1adc48206f75114d4e4b3565a9dfd373e11734816e19ee56"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-kafka-task-cases",
@@ -9325,8 +9325,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "2da60c9ff5b982aceb8d149164be7e078c9ef85f5b556b710eef270127f80179",
-      "extractedTextSha256": "e99b8029858c5c4aa3371a6ca433ec3a0af11066d731a42c36a3645ca40eed01"
+      "contentSha256": "c30fb8980753c0a6f08e348352d8dd63f1a8fd229a70d842bdcb026c0ee3c34e",
+      "extractedTextSha256": "2abee3a8828d77b50dee5c3bd794058fa2e96ef730725514b6ce5cbceed753fc"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-object-storage-task-cases",
@@ -9360,8 +9360,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "f4dd6a216523f7f3734a3d96480ddd5c09dea68dce886b03298939b8911eab64",
-      "extractedTextSha256": "816fd049c9a4d9cbfe61340c8cc70f60a7c6a4604d34011999181b5b5dd0f189"
+      "contentSha256": "d543fb3372b0781622b371c20bc5c4f574a54bbc84e9fdb0accc6e0972e332c7",
+      "extractedTextSha256": "0002af54dbc4b2989414d61d8c1d1567622183f0e4e73d4ec5e21ad738ba89ce"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-schema-evolution-task-cases",
@@ -9395,8 +9395,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "dc092366b93924eb369dc555ad3d0c04b24771317a470c9ece8cacb4f452d275",
-      "extractedTextSha256": "2203e9e32fc7a8ba05721eb609f5493cb39636d076d13987cfdd772b223de319"
+      "contentSha256": "20894556121381d4baae72054e3f7948c69d4ab65807b1d9f5b92986677c67d5",
+      "extractedTextSha256": "99159e87225a0ac0b29d3a8908d89c8367dbaa441c1f7ef5c04538a69d660820"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-quality-task-cases",
@@ -9430,8 +9430,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "2f43622c0a64657c2888916438b3fcc1a9d0604918ba7d589c7bf190bc81057b",
-      "extractedTextSha256": "634aa9b5e714c6dbe25712b0a1e2c2b12e1178da0e9f24b147d7b24d729295ff"
+      "contentSha256": "ac3e5e1915d1be293e2750a332986465a3696794b69732ae2488f340f43e87d7",
+      "extractedTextSha256": "cfc2dc077eea3303af38e0e43f01348d24744115118c899345a3ec362a2914f6"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-workbook-recovery-replay-task-cases",
@@ -9466,8 +9466,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "5869ad821f27d8c076083eb4ad6e2983c1415191ec2802d48605ed7ea613dac0",
-      "extractedTextSha256": "60880114e6d216ee12c3c6c06f6f4ff767b7de6211b3917da39170d03a50a99e"
+      "contentSha256": "ea0a4a733373ba451c3519aacf7682bb1859075d9b5981d824cf6a07de1e9b51",
+      "extractedTextSha256": "d837fb67b900b1bd5040343a78889e2b7f0f5cf7153e2335100b6d7bc241c30c"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-quick-reference",
@@ -9500,8 +9500,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "8e1ade09b9aef0715617a4778aa8117cb9a04b51c5039f9d86e6e0971b09d106",
-      "extractedTextSha256": "86bca59367925cc85aceb698c7ac0076b9ebfea51b66ede2ff6eb5277bc60f58"
+      "contentSha256": "64a92d47ca6e1493091dd67acbe7a8361c9266ed099577e73b153f5f0b50fa97",
+      "extractedTextSha256": "6f78a807a6abc0c81fd3e0d29a6e91debe69f795b355402f586d05cb6519dc3d"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-operator-faq",
@@ -9535,8 +9535,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "5881e1908d6e620b4b9914c5e1be43b531caff5a28176f44ba063ef337c1e8c6",
-      "extractedTextSha256": "15e118ff90805d2356ffc7ffd2f1a3ad08912c846d00dc8b9b1503a29dd5e20f"
+      "contentSha256": "949d050abac8ccecbdd18e39153e6afd9844b28481eb293b9904cca4a015389e",
+      "extractedTextSha256": "1b4a91f472e7f3e98223d3aea2254ab6495272570ad5baf1baeca53a5ee0dcd3"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-connector-capabilities",
@@ -9570,8 +9570,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "0cc6dac1c586f4ba32eeda142894e08985005607c77c805b360f836be4a0ad95",
-      "extractedTextSha256": "5c84791d36012ff0c9d82556b575e888b4e8eb4bd98ed677c03f51bf11ced485"
+      "contentSha256": "564817e9ee0f757a74aa2718cb69b43879a56aae0d8cc1c75ead51aacd4e736c",
+      "extractedTextSha256": "eabac890fed9934847093f87365a41c2749c72349f026a373fcf45ffbc558bd9"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-agent-state-snapshot",
@@ -9605,8 +9605,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "a6c2cb119b90a6a08f97cdc2c9e5d174f901924b0f0190d19cc02550eea4e68d",
-      "extractedTextSha256": "e8021f913ca172cfb408e2e7879238e8d7dbb21d83b9d92710eaafd6013d9ef7"
+      "contentSha256": "2b4cd472ebbc4629bc21109ee72bbfd99e95f45e8778ee49e69b07cfc8a74d56",
+      "extractedTextSha256": "3442735107abf586c4e7e53675a526bc7bbd2f018c0cac6117da98911f03d942"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-recovery-events",
@@ -9640,8 +9640,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "9066866736fcad5d8a68f8a76ea0ed035e15903dc56f9c721170b3dae0a3a5d9",
-      "extractedTextSha256": "c3e258c6702a342f7fe6888f5e8fa1c60ad214ab3ef5408c81d5a57a87dde8f6"
+      "contentSha256": "049add113cf2d861f2b368fa7273d84a30592ab44820c5a606f63f6af18afddf",
+      "extractedTextSha256": "98b0c62a26c1d7661a85e3e04067a777fdc32940a8a711887c81d7cf985fd20e"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-successful-runs",
@@ -9675,8 +9675,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "394d0520b033c8214559079ec4b9a7bed5d34e5d91d05c2b36c88a93379d8cd6",
-      "extractedTextSha256": "0ed51137402a4e112c372d0e51311c2b0540ca64119c4924bbbf2672df53ab78"
+      "contentSha256": "6e9be19eefe7fec450736b45037a8ee82bf57a04379854aec4168124b5d864fc",
+      "extractedTextSha256": "f6eed172fac033c6fa5222a8d3e3a71414d75a70f6a6d9872be721f069d402ec"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-worker-execution",
@@ -9710,8 +9710,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "da7a67b7e98a7dccbaaa1cb0ef83a6377f99f404ec9e536deee7087f2bdfd1c6",
-      "extractedTextSha256": "21417bd59a691e33edd7bf6c1b45a6a59e387cab2b87fee11a47b1ca0e7eb895"
+      "contentSha256": "07731a79d8ba65b659bf002e0c54c79a11b2eeb38f9886583c3320ad0a1979c0",
+      "extractedTextSha256": "102d9e5171524a4554fac7fda1e397753a6e13acb637a22a9dbbaf8a5bcbbf77"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-persistence-snapshot",
@@ -9745,8 +9745,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "b3e02902bcb56a380df04de03ab68dd35b42e70fb32cf4cdab846fea47ddbf48",
-      "extractedTextSha256": "6f2c2e614927e5be792b806b8cbfd36abefa96f5456fc9c19171c0f43b18105c"
+      "contentSha256": "baf77a5b1dce3389d78145cffdf939120640da65734069068888ff7becbd65fe",
+      "extractedTextSha256": "ed96be59097ed356e679c74ca71f12febee92ce845b9c0d4443ae1f4ac31b8fa"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-runbook-command-reference",
@@ -9780,8 +9780,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "9ded4302d85a8695caa04ad8bb15a38144d1f1724647163b4f49ecbdf5bf2f39",
-      "extractedTextSha256": "5a7ed5705fb867cd3bde61b86173dd64c83126613779d786d9be7e80df50bc59"
+      "contentSha256": "9fc03ebf103d513f11c9a33fc9e188b7ddb6b69486e5b07f6136eb3be1d86420",
+      "extractedTextSha256": "837249f3edef1a76f085649d070e9a7f9ca182360109a6b2cca29bd8a58087a1"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-error-code-catalog",
@@ -9815,8 +9815,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "046cbe2b300790f25c7b4f1cc13f5fd58e512f55aed2aaa3d0bb9a24843036e1",
-      "extractedTextSha256": "eb90fad11079a4e8b26def98a2bd48db545e92107960d7acb180b50219d0d56a"
+      "contentSha256": "c9d6cef2afc396b3749f7465a8c68ead794ed0e674dff49a988036e578356f84",
+      "extractedTextSha256": "16c09b329afa4e3630e28ddc35e284bb0dbbe532891bd68a9a7ff4e9c24183d3"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-api-contract-snapshot",
@@ -9850,8 +9850,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "7ca0bd1706de7b0fc54c98acbe1c88851c1f24c576a77d51f86d701b88722c09",
-      "extractedTextSha256": "6d630dc13c76e202958b9d84186edac4e2f3ac9f480d7a106587620a48f5b56b"
+      "contentSha256": "433ec2279349baef676d400d5da3bd16ca29e0b995293053cf701b7878ce0ad5",
+      "extractedTextSha256": "b8576c0a0b4ac774f44363654dd1ccfdc7b01545d3641b90f387a67282d37d17"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-task-config-versions",
@@ -9885,8 +9885,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "46fd5437b9357e9c236839ff074f7d426dcb13247f6bb7cbce6970bc8e96c168",
-      "extractedTextSha256": "0ff9d3842f40e7eefbf685b2cd8879d9a8c491cd5ccf50137adcdfc210783b9e"
+      "contentSha256": "6b4d26a75ba315bee791822b5856ff20b1d03291703c7814f57e9a878ffb3313",
+      "extractedTextSha256": "922dd280bdb9515ddb1c4abb288ecbdcb32526c1d3cc8591750332ece6022c82"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-task-case-library",
@@ -9920,8 +9920,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "45b7e4732ebe2288b0e7ce0dd98cce9c02cd766dac6e29ae6dadd2d805d09d2e",
-      "extractedTextSha256": "9c5bce325baed9ff28ff909435073dda0917a83e64f26cdc31dc1860f12f0d1f"
+      "contentSha256": "85aa8b817da63936476a15d0ebc01174659cae3252b050fceba0c4ba8808a161",
+      "extractedTextSha256": "996534eb0d98681eea58c4ba5a60d28581dc978a8ff2b2cf3cd1a723405eb89f"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-audit-events",
@@ -9955,8 +9955,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "07c191fc8d9842bc3b41fb418232d572d4b2c67748eafa8ed6b788c7d69f619d",
-      "extractedTextSha256": "0598b59d43b87240e90894ce677a76096ff8a7b4fc69878b94705bc66934f6ed"
+      "contentSha256": "64cb45621b8e99f710c776deb271ca8eeff058185537592a023a760631683aa6",
+      "extractedTextSha256": "f360e215c1ec9be7fb569f1db163ec7de6234e2c012319b9590e7a9a6f7bca39"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-recovery-decision-trace",
@@ -9990,8 +9990,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "47f0a7c8085aca04aee11fed4a19de9f66922a6739df41f39387638a0d717a96",
-      "extractedTextSha256": "aa2dac2193aa844b7363c39cde83108fea78b3f82457522c35df75b63e5999ca"
+      "contentSha256": "c2e24bebc5623825eb7b49c032cefd3682529656f22b2db6a5ada8ed463ac75d",
+      "extractedTextSha256": "be1155a609349279c3a52e236bb9571e5db3a54586957219aca82db63646c43a"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-connector-inventory",
@@ -10025,8 +10025,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "de802fffa2acce4a32e83e72e3adf7f36f3de8fd39f80d661ed95964f00c0a12",
-      "extractedTextSha256": "283aec6e364429e8d8cafbd351188942fb1b9e51e0a495511db47713cc004e47"
+      "contentSha256": "6a616b9cbab8239c07b6166f28ccb2712784e5cb657067c46ef5c799bf892dc5",
+      "extractedTextSha256": "42c8c8bc04c885cfc674a381f00e75f44691181a97ea94e9716ea5f12bbf9d19"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-field-profile-statistics",
@@ -10060,8 +10060,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "53c81306899b389d47c31946adea8a8e44e9af9099fa71ca0116945f7033eb3c",
-      "extractedTextSha256": "7293a945313384f688ad0447fec7ee57ada9942607834950bd7f97c7f418f4d9"
+      "contentSha256": "627ccb086d5236e346acdbb20616c7dcc645a4e44dc897eb0b690e98b7c44f7f",
+      "extractedTextSha256": "fede25d1bf68de029185ac070ae4821c0c65251c7018081ee8e03e87b66066ad"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-alert-history",
@@ -10095,8 +10095,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "d27dcfef296e8a33fcaccf93d93cc38884fa5f679a8d257b09448cb3d6273b4a",
-      "extractedTextSha256": "6da816c347903f26045617e4094ec0426f0dd0227b4254acd5be74a9ad5b8d43"
+      "contentSha256": "60373faf0d275539385e30da01fe2ef2f27b00fd75d36c62d6fc456a2055b19e",
+      "extractedTextSha256": "ae62eb5369d9560d4f6451967baeb45777fe6bb6769368a3c558d04e19ae44a8"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-kafka-consumer-lag",
@@ -10130,8 +10130,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "703a7f0d5cf939dc1a9f5a66f05315abdb4ae05534e46108105822468b8a9adf",
-      "extractedTextSha256": "b375c0d3bb1554fd21d438052a6fb262322f263cdaa36195b7880004e6bf849f"
+      "contentSha256": "7bc55436bfc7faabdb97a3ae21d5e6ef53d4b23e23f998b55b8728ebe5ae47c3",
+      "extractedTextSha256": "5813b6953b85d32af1a8f3be46856c3e5f2812a39593e49b45fe34a749528a81"
     },
     {
       "documentId": "rag-eval-tenant-10-project-102-database-recovery-ledger",
@@ -10165,8 +10165,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "689eae05f3fd67d9ce7ce64a51ab70135c1251f2397dd91adf198721c2e2d825",
-      "extractedTextSha256": "01f63c4d7a3d59e87128844cd733de6d96f61197ed6c5d0445e9b4b44d98188f"
+      "contentSha256": "fe785d3b0ec7a0ada0996cc744e5fc5bee4dac29b9fa75c3df27f48e1f2ea65c",
+      "extractedTextSha256": "6b84f7eb80a4bc926043bb981bf25ec5d3bc02a72d70336a0eab375a5c37552b"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-user-guide",
@@ -10200,8 +10200,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d97ec0da8d5f6042623d379974d9166caecb731870f9c2f6600a6c99cc30ff98",
-      "extractedTextSha256": "f4d31cf8680957a67711edc559dea0dcff75e45d868dc2e0118729277a6a1f7f"
+      "contentSha256": "af8991c74cba59e3b85ae3618cdf25714c966914fa4f4abfebe22b15a037aca2",
+      "extractedTextSha256": "4c1dcc5c4e3fc74c143fc20064013d667d8a45d0cbbf48ae5118606ab5593ca5"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-administrator-guide",
@@ -10235,8 +10235,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "62dfc254d5523717511961d09d42483e63d183e8b818761fee8ecd66a7befc89",
-      "extractedTextSha256": "855528429a2810dccf7123d66ea2508aebc8d5d075737198aa8df35c5bed9c3e"
+      "contentSha256": "b3eefdc9895bac672924bdf39d820b6e2d4f6df0fdf2529efa6fca365a6a67a1",
+      "extractedTextSha256": "f0a82d5355337c1b55824b22156e3f611d1faa57db8bcc5c3fbee6c1a8f74f3f"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-deployment-guide",
@@ -10270,8 +10270,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "dc186e4736e5852f2ec917bea4fbbf7fe502bd8a7c7608bfb262836f5ddbf251",
-      "extractedTextSha256": "f0768abf5242202b8fd22699e31f23bf4a982eab4c8569d2bef5863ede5cbd91"
+      "contentSha256": "0840fcb698ca9c858acf2ee6827e51843913da0efe9abd1359e647799ca7a839",
+      "extractedTextSha256": "1ff8fb474765d1816eb74866266241ca21161e1bc3d469a138af4d1ce72944a1"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-operations-guide",
@@ -10305,8 +10305,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "318dd89c223797ab45790fdd188398b3117981cb6a0e4dff3a7ca332051b400d",
-      "extractedTextSha256": "328d71da686a780d722e7d9fda6113a102377d1f7194b22e0079603710d06e52"
+      "contentSha256": "dbbe7d9ac665d9ab47a9eee8331984f6827f5fc458e1aea56b4eaf4d148d9507",
+      "extractedTextSha256": "c9e8229dd41306e4b052f8f749083ae1b7f45bda1e59c4877bd5411e322c9781"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-record-operations-incident",
@@ -10340,8 +10340,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "cd29433f0951e0e61deccd788181ca74ad7b74cacebb915b84f0c5f70c79f499",
-      "extractedTextSha256": "bf1dae9bb15823e9295b091d102abcbabf1335509f3172b29b45d911b5a801e0"
+      "contentSha256": "b33732de0e6883edc81a3eabd8936498c8c116a1f2e7b036fcc1a15f763636ec",
+      "extractedTextSha256": "40404c7cf1688b963f69de8d4ea71338e0b35ecb7865ef236cbed72e44c5d489"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-report-platform-test",
@@ -10375,8 +10375,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "23f906a10d1902ac04fe86a6f5c1355214167bdfd9769fa67a70516f843d5fc5",
-      "extractedTextSha256": "ffc754ab46a135a6fb8ca07f942a4fa02773fee5a6f19abe6543ca95de28120f"
+      "contentSha256": "bf7fe4c83b9727add6a805cda6b409002d062c549d8a04b83818e16303529c34",
+      "extractedTextSha256": "4542083f318f96f051e5f86fc4bee95f83a6d5f14f6e94842790e2e0474b2f54"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-product-feature-specification",
@@ -10410,8 +10410,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "0744cc8839891bdf3d26821be12b8d61237b109f77a428d8b695bc8db4c115eb",
-      "extractedTextSha256": "a344ee7a7b9d3270d49e025791ee4cec5acf633aa10858d6d4536ba6599f18e0"
+      "contentSha256": "685f727cba4fe7b458d7ae2d518b126e3d717988bc41fe6ef10970652d68d915",
+      "extractedTextSha256": "392e8a9a4c5701b9aac004794420cb5a04f39b563f213fced229a503a7833045"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-reference-api-websocket",
@@ -10445,8 +10445,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "6c638f44dcdaaa991dfb017f5196d24ea6e6f0761bba4fa3bce4b5323d8bd8d1",
-      "extractedTextSha256": "6e5c2224c9eb423290cb1bbd6035e9bd20042a47a8debcaa5f8e2d355d042088"
+      "contentSha256": "846e6e0f86eac8cbade214854423117d200138ae1b5ad0c7c0acacfe58368a6c",
+      "extractedTextSha256": "0f231adb4644b3552e60e5839b34b1256e6f5e34c046b846d7f0f58cca95ff6e"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-schema-recovery",
@@ -10480,8 +10480,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "7e50d0c1bf1a55d926d2f49923aa615e78c07b26bc7fec514ea66623540208f3",
-      "extractedTextSha256": "4801912f70d8e87c4436d04874358a7ee07c3d61f85ebd00c198b5304e9715bf"
+      "contentSha256": "ca316fe653cb7d0bee08231c577139563622b14f859f2570ccd47b8b871ae82e",
+      "extractedTextSha256": "4b3e181ccb616b328eedbda20d6382ce8a27084ed05ec01d8a1e3fd5708b6a86"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-security-approval",
@@ -10515,8 +10515,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "ec04427a04e2a428b90a5e50c74d4513d17599cd56780d95d45a1b8e47236780",
-      "extractedTextSha256": "cdfcb4e73cb8112dfd433bb01990c5bdb6b113a1c134148ce260efb617cf1fba"
+      "contentSha256": "b7a90289cf9934e6ab8b2768f3db1ba213e9ec5f1fc6c34e449eede05dbdc053",
+      "extractedTextSha256": "2a49f09efc918792410f9b8e2f58746c6ddf5646b0eee537509596b4f55dd304"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-reference-authentication-api",
@@ -10551,8 +10551,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "dcb84810121636604fca56c9c6f14ba426e06534c81fb132722e165fef2e7a19",
-      "extractedTextSha256": "ed1e548b1b0b656e301f0d2f0456e13e603fb57d2f9ea48c155aa2eda5d20a13"
+      "contentSha256": "2ad8836467f2c23c98864b244a5e6f44942f89e42d0d8a9723e92860a6d6f3fd",
+      "extractedTextSha256": "f233fcf308346de985435e17eff09a0dc9ec46c048b790fcab3e1cb81f3c94c0"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-reference-agent-api",
@@ -10587,8 +10587,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "7e3768ad5f1ca5c2ebd247b79aa836ebe6a06ad209c6b4a37dea6f5ac62a7406",
-      "extractedTextSha256": "73bf6177581644bd357e762281af4875065ccc1dafcc3eeb44ef5b2794fe1217"
+      "contentSha256": "0960d9147e492bd034b712a21740fb455c506bac577489cfc186bff2f23a7504",
+      "extractedTextSha256": "555619ffcbc71c36233254b90e36f31bbe35337b733d9d9f491ae8285bc72421"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-reference-task-api",
@@ -10623,8 +10623,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "8149731771a8bc8295a4e024339fe274f63864b72fd04b068a9e153f7102fd96",
-      "extractedTextSha256": "be86b00614b6bc5df8e7036c4e548358e0427043ba9aa552d19dc5003d7549f6"
+      "contentSha256": "b4623d78d1ef39dde94ddc16482167d6b2f0b7dd49550c2f19c8d7667a0d09ed",
+      "extractedTextSha256": "b36e915ae923adefd7581bfbed38002232abc2355d66ba2646a2f4c4908b9058"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-reference-data-sync-api",
@@ -10659,8 +10659,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "48745c6b683c37c05790577cc50a4d7976441864267fc8f8ccd6de295be3a58a",
-      "extractedTextSha256": "0bac49e5aa55d0ac1587dfae68fa2440f61b312e20dc37ba74a30667a326f584"
+      "contentSha256": "7e8ce3b3460332e626ef3cd46b9539ed2b57c078262d25c82ba1bd9ca1149db7",
+      "extractedTextSha256": "8e0caf5122a5a71e413419c1eb704626f3eef42b791fbb1258b3b3c73150a63e"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-reference-recovery-api",
@@ -10695,8 +10695,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "6edc0f8d30009e9d9313582a1b9485a0a83e04d6a02953022738e3ce591fdcbc",
-      "extractedTextSha256": "c2ab240c7876561b22179512dd8fcf176ffe4549f9633c1dbe6a78b493956511"
+      "contentSha256": "ee2a24dd3e2875eef64ee6b212f33ace378eb7f9ea8b27e51ee0560930c10fcd",
+      "extractedTextSha256": "c333e629e598cfabec52862ff63387a49ac0dd2482a173fd6470eac00757f926"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-reference-websocket-events",
@@ -10731,8 +10731,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "2cf1f3592c23353c5f2e0bcd7cb86ccfcfb08710f58412692eda469c95295e31",
-      "extractedTextSha256": "53644755fe37f5c03fcb6a5edbcf0c8df0c07e5207fdbe60c1c4645fb0f0a01d"
+      "contentSha256": "9fc7bd2bce0b678a7072ac29d25046e6e2321adbcf108f18ada63440020c7a0d",
+      "extractedTextSha256": "9ca0417f73122120e03abb6dcf243520ae4b95ed5910ed977f944031ecbce786"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-observability",
@@ -10768,8 +10768,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "20a2465796d48fceee8fec1dcead88ad5c6cb51af795912eb46dea8c255cbb3e",
-      "extractedTextSha256": "a569168187c2a5ca4d2dc26fabbd375d6806cfdd1f36d33cb992e42f517315a0"
+      "contentSha256": "88d16740b8712b98a082f8e1052cbf94792a81470097dcd245b00a37793074d1",
+      "extractedTextSha256": "d1c9e1dd0f54515c38a301ea463b13c23ee2215089b6864a0b327df2782afc34"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-kafka-operations",
@@ -10804,8 +10804,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "375d5a7b046d7581c2be190c6f491ae02507ceff24878688b664bf967d936005",
-      "extractedTextSha256": "647b9fb9d6cba68917895be9da1ed388ff044727891d465f29afb90a22cd65ab"
+      "contentSha256": "c0c3cf9347e2d0da867c88ad0adc37797a98fdec1b2f5d8b46f35694b5185e84",
+      "extractedTextSha256": "0ae210d39e2882983b9a4bdbde39b919acf2d65347ce69c6741de2cfa71f4de1"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-postgresql-pgvector",
@@ -10840,8 +10840,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "99bbd3e05bec937b68aefc8a3e33445ac367e75b8ae51cdb668d78485623b290",
-      "extractedTextSha256": "5fb523c1b56fdbb2e6d00607182f71c58d4aa643b9b0cb43b5f5d3fd53d2e46f"
+      "contentSha256": "d190e997cf82392d3da34f916aee59a67e1f5a056b5ad3dac5b15b5383512bb4",
+      "extractedTextSha256": "d1824e52d87e08117f7c8b90ddb947ba7f75dd2ee5fc57e766a2592e48d4b036"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-model-provider",
@@ -10876,8 +10876,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "6c708c9014fb3449e6b261743514e471f7d7d05cf866ef9947f184d9f31e137b",
-      "extractedTextSha256": "b54753e65572f8dcb90c3a27594b000e343fd2a7e5fbdf30d6dada1c3ce0b81a"
+      "contentSha256": "2c7f7f9de4a06a04a6463d3aafa273fb22c530d6c8fa755a7869fafdf6aeec4e",
+      "extractedTextSha256": "16d9357ac2de492fafabd7f58235f17e46671d33573a9924e9b0653f701ab4df"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-backup-disaster-recovery",
@@ -10912,8 +10912,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "66638249aba8e833f956c65110664f04c5cb5f4378ce16082cad8d3292f7d05a",
-      "extractedTextSha256": "6403199ef6fce8c118fdbebd33ce1e4533f4c3382cc7478fb2fa9bce2707beb6"
+      "contentSha256": "793c90e6bf986f9d94c8ab0304a2f7160e611bfbb3407878392133f75e768ea0",
+      "extractedTextSha256": "cedea66004157f4caf87c5d82d9ec6504ff33ad3f7b25681af7cf503adee00d3"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-manual-upgrade-rollback",
@@ -10948,8 +10948,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "55f43302812bd938e77d6e0f121ee98de39bbaba754452574b741138f31420fc",
-      "extractedTextSha256": "5273fdad071d77401d2957c6ea8ef30db6b58a1702cb69446edfc4675b1f2aa1"
+      "contentSha256": "37f539b8be906ad9a96c13fcabc3ea5f769bd488a222433b309808b9ca9a0575",
+      "extractedTextSha256": "66d2083897b3b20cb480b5adb4692d06f558c78bcc2b4bac56d0a4ae788585a9"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-postmortem-schema-drift",
@@ -10983,8 +10983,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "b5580110fa0240342b38a2f123fe19b03ad39873a4ad04dcbf41203cf8b18c9e",
-      "extractedTextSha256": "8d8330bad64cd607f2c0ba8037f9427ec167e99d68697f40768b8ff07caca4e6"
+      "contentSha256": "bfb4f73765bddca01e3147ec3737f2b640bca78bdb3fd5f70a2b867f93bddd81",
+      "extractedTextSha256": "52503da86c4394e5ee076a267ab731b7299014cfbb3c8b640fbc683318605471"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-postmortem-foreign-key",
@@ -11018,8 +11018,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "24e8db2b2918011061a325a2c07768c3d98b36248a4abb30020c66901a822d85",
-      "extractedTextSha256": "5201905f9e69d9e6a643e06f79c22ed5ae3593a61ae73b3d8b09a2d81a55d02f"
+      "contentSha256": "1474a3a8c2104aac4f78c28216f0341c1ae5a430c8276e6adeddbb5797be10bf",
+      "extractedTextSha256": "3c96ffaf8f7539d0110980ca70609fe8f9eb351bde0433e7009886426e5c9399"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-postmortem-rate-limit",
@@ -11054,8 +11054,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "d10ded90327aac167f21cfa77b91e9c221fdee60f9858a428f290bf12c79ac39",
-      "extractedTextSha256": "c6602ea71566fcecd902c30d4872e7f5d8db9a02f1acdbe6dd15c696a2ab8b0f"
+      "contentSha256": "c7b20153a13239b1595fe4491f056778344975b952dea1d685477a7677d85690",
+      "extractedTextSha256": "22b9737d071478f9835d7b8785328d84ee564e74776c7252808e3738882e031a"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-postmortem-checkpoint",
@@ -11090,8 +11090,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "218c964a2d6fca083a8014880b251c2cfde747182324ed4992996d6dc68303bb",
-      "extractedTextSha256": "2b36cd83a6f8b5307bb1011c80bf5cf6f89a29fa03c70c595b58954d667d49ed"
+      "contentSha256": "ecbb61e5a1d2d0a90a8fedc192245f81f4e8b254dbe0efe4b77d169adac6438c",
+      "extractedTextSha256": "bf54e1ea39b5b152de8777494806281254d297c69512a174aba2f8758cef7ca3"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-postmortem-kafka-backlog",
@@ -11126,8 +11126,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "0852a6829ff6c1052aec1de415d5d729042cab01fafd89b981093ed9080c3de6",
-      "extractedTextSha256": "79dea9da5cb5fa8f8bf6ca650041d633507356f5c66edc191d492f0a14874452"
+      "contentSha256": "e9ad85ef39d3d1e9480acaa716b7b691a3a7498f638cad20778e8dd767a7d39d",
+      "extractedTextSha256": "e8eab4f263c6302d5a95b02aabca8a7fcece6d8b3549555e8d995060c07caca0"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-report-e2e-test",
@@ -11162,8 +11162,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "50dbf146be601ed4df3f564c7bd821879c574976192a1e7df5aaa35860b75e21",
-      "extractedTextSha256": "e6e2ffb6d5fa6fa9037b5f7839ee793af8f8c853cfff24a97f6c266f2bf12746"
+      "contentSha256": "85c2679ff8531773c2c54f8973598ff8052f28e8fbcf39b2ef2a4ccf8e4279e5",
+      "extractedTextSha256": "17075a0ee7a4981380428dded873297a544ae77d563ad30e208cb662a379e7cc"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-report-performance-test",
@@ -11198,8 +11198,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "7779aadead0620e594f63ec3cbe8053c78f04bd4b794f5f2c6aa49a87f385cd8",
-      "extractedTextSha256": "4d40d5f357178f30e00eb63ca5647ab4abe2bf63f55ce9ce9f497c1673073e5f"
+      "contentSha256": "375175b6d68940ba11ab089081854600a52090f01b0b49b73c138488cb6492b9",
+      "extractedTextSha256": "1041e9c66501d03a2a36bf6382e9aa71cd32ed85d8d26773e55e920a08b02e00"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-report-rag-agent-evaluation",
@@ -11234,8 +11234,8 @@
       "enabled": true,
       "contentFormat": "docx",
       "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "contentSha256": "c450288730746f4a3ebd68a400cfb6b5bd30a6b4e3a48da62ced124725ed00a8",
-      "extractedTextSha256": "2f59d31299212344a22903e639c1489294b57d44d306cb41b1afdd002eacbf34"
+      "contentSha256": "4a3ff8fc33f1927fccc1714c161e995d864452da0852f36cb832cc36a81f1228",
+      "extractedTextSha256": "6ffb18af159a6982ce937a7ff0b8c9739f2c6463acc6501c8ee152d676586028"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-success-task-parameters",
@@ -11269,8 +11269,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "db75f174474566de2b0d32b5dede0de9d46c415c637b34714998c4047e128025",
-      "extractedTextSha256": "0379cc0044c9722c68d025c3b27348529773c51afc6afe8181011a23744ccef9"
+      "contentSha256": "3518997f6796f235fd238e370228b670fb474b357c458ca2e522b432aa6696cc",
+      "extractedTextSha256": "7a8bc6fb8bb8c63f729009e3b9707a34c14ff75d2cb4f98d9114f50c773bffa3"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-field-mapping-cases",
@@ -11304,8 +11304,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "b7723b9d7fc45d98acad95c75bcb106485ce49f6606ea958c6744948152bcf33",
-      "extractedTextSha256": "3449dfb761e11e3ba12be0aa219fbf6792ad716981122ceb8fc0e24ac639ddbb"
+      "contentSha256": "622f4421d4956fa86acbe941406d45e12bc370e54f793d51576a47e65de9c1a8",
+      "extractedTextSha256": "f12b93c1985053a6162b649ba98a2d5e6e864bccedf5cd6cb0494db447a8cf8c"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-schedule-retry-cases",
@@ -11339,8 +11339,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "5042f00a0a3b8b3b577570b21ea9d0244c6d5cdd5efab6b9300733bcee5db6af",
-      "extractedTextSha256": "5d4594b645a3d11b826fa04980b103dff96042914a3309c38cd2ea57b5b4ec07"
+      "contentSha256": "2e8ab816dd6e88371e704bd704a10a143d42de79674db05f0b344943691138b9",
+      "extractedTextSha256": "f1b78b3f271a530073c5f19bf260766cbbedb764021834df7c3fe701876906ab"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-test-result-matrix",
@@ -11374,8 +11374,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "fdb0bf4b1b6dd9e3421fac4dfb346e6b2648b89e4ce2569f0c5ea4da8ce87002",
-      "extractedTextSha256": "032f60180e8756a580b566d5576b7951b7cf310788bbc8fb4072189da8b68fde"
+      "contentSha256": "6a805c362032b097932b424f10defe99a73e6df9246462cc7feb2ecce4c71545",
+      "extractedTextSha256": "d7f0fb189edba0a4670cdf8691edee6d33dc41b284ce6e322eb988053d5b7b0f"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-incident-repair-ledger",
@@ -11409,8 +11409,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "723adae8e9ae834d5e95e012a074764014578dbe6b0255af1b14bfa5a910ba90",
-      "extractedTextSha256": "dcb23d40a35b28d2687eb892e53a5de2281e01cadbfa1836ff3c2bbecc35cf55"
+      "contentSha256": "52872c90a0c0d8ba123bbda1176c6857cb31e107a235aded236d7ba8ef402e38",
+      "extractedTextSha256": "8f6af5a215c6dd4db3c71313f88574a5d728af93e051846ac25d67350c2ce752"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-full-load-task-cases",
@@ -11444,8 +11444,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "a2f5a59c796e5aec81777fb207ed083a952dc966b74186c11373132ffabc3cd4",
-      "extractedTextSha256": "50591c5cd148ccfeebd76b2745cec6aca41b2ddbc4d02a49ad8642aedcb54347"
+      "contentSha256": "60db1e91160ac170b1409563334886d28501a8a05b64fd8d5b3343d4f80505ad",
+      "extractedTextSha256": "eca461ad80588525b02063c72776ca62f2e9295a93459946800f4a2175e0d615"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-incremental-task-cases",
@@ -11479,8 +11479,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "bfb64b733e31bbbba84ee75322373c903a95903ac1b1f3eaa9bd76fafe67ba9e",
-      "extractedTextSha256": "1eb94454f05b9b3b2d3f9fea93e2aa0628009c210dffc9cffe71db299fbfe86b"
+      "contentSha256": "d4bf16d19a267f49235b2d39f738ebc5cec79b85024444bdefe2bb3c1d893e09",
+      "extractedTextSha256": "477c3ce1aa3436a5a6a671701aa8459b13ca5fbb15d4c8004b5fce38b12cf87d"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-cdc-task-cases",
@@ -11514,8 +11514,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "cfb4665a1b9ca9ca773a6f0ad19a1533dd72d019105ac71457b1c578fbd639f7",
-      "extractedTextSha256": "6a4c71e98eb34d6e6f09b82977b44c6bd36243fec7599679ce12e9b1e3fbab18"
+      "contentSha256": "794bcd010e777dbb064d3bd41b8f52bfc3a001f5eea38c0125235ed4f954d6ab",
+      "extractedTextSha256": "01954153209d442aabb5796c8df41e714d9b52179891d0d19b83ac6bce442830"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-file-task-cases",
@@ -11550,8 +11550,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "dc5e00899c1e5ddc26bdedf0e52427d858de80a0fedf6f09016ab7ccbb01fdfe",
-      "extractedTextSha256": "8383d9ab36ff3dc8c283e01afcb586960f216ad502926fe2de6ae77d49494f43"
+      "contentSha256": "143cae8a77768607c8564a46de64c4934d60b3e5012cc1405ffa182d444aad0d",
+      "extractedTextSha256": "e6f1826075f0cbbae62ef03a2bb34569df85d0a22edac4b4e22c832384b7d7fa"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-api-task-cases",
@@ -11586,8 +11586,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "d1a18267723cae961265e9d4df2163fc129531c510ab826206057114c1ef9c75",
-      "extractedTextSha256": "cc30b43c1be4f7b9af4a37931f8f7ea0b983926a3e882be7ff63bf4b837e3ca6"
+      "contentSha256": "615482e8310c847287b2e32e3bea9334643a4513bf31d2f13468754040c58198",
+      "extractedTextSha256": "e70b89ac45d4657623649e063184485beb3666a23db4f49e5f4575a2b5212637"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-kafka-task-cases",
@@ -11621,8 +11621,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "615621b8d80fbb73a677af45bd5e824a5c88c1379d5a83af4de23f6375fbbadb",
-      "extractedTextSha256": "03c5edab7d88001b63c233dbedc2a74fdce02c94377d06d78190196288401144"
+      "contentSha256": "5b3d60865e7b8f7f52b0bd98fcbf5f5925ff74a03cef3e7e6fb7408e16e235d8",
+      "extractedTextSha256": "9577e144be04b5b8bfa976bbc5730e47868c92f11e184e8a523477f983418e7e"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-object-storage-task-cases",
@@ -11656,8 +11656,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "8eb986591773f2a3018f7ab867968dbc2e6522c18e8431c5275b5810e424c8c5",
-      "extractedTextSha256": "51af911bdbed6e2d54f49b1b42352b5236fa7b0e14d1ba7a44606916ac412240"
+      "contentSha256": "636e4c565c2d69d42e779e7b906981d724fcee236e0280a789b2daec18f2bfdc",
+      "extractedTextSha256": "c1ddf32dbff53e418cc639a0f7cdcf4a3ee5f19beca473071dfa5f372c4a1daf"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-schema-evolution-task-cases",
@@ -11691,8 +11691,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "741d129be5bfbc864eadbd3e5d9388e01b8e37a457cd7e899978199704071f35",
-      "extractedTextSha256": "162955e2f629da5d09d380cbdbd3e7ea437000dbe94da794028a5466e1d58b3d"
+      "contentSha256": "c48ea3f1427f041de10d58b2c027e984e211850a792b86981fa575cf072916cd",
+      "extractedTextSha256": "eec74a05cce31e0aa322021fd73adacd0da50828d430ac429d641d55f15d725d"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-quality-task-cases",
@@ -11726,8 +11726,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "902cba9c0531c80fbfde494de3d8a5fe57d6b63ef172d78381a8dcf25eb04217",
-      "extractedTextSha256": "b01fdc3a78049d917feb31189ae7760325cd0c2c6581722dae5e6f1959d3af3a"
+      "contentSha256": "9d25f5c27e3169d66f0dade08cc0f477c2c71ebdb283b945d569d29c3f76e3ac",
+      "extractedTextSha256": "9ec8b926aee254860d0e0b4ecb2e3894fdde9f247001a6c5448454ec29ed0ae5"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-workbook-recovery-replay-task-cases",
@@ -11762,8 +11762,8 @@
       "enabled": true,
       "contentFormat": "xlsx",
       "mediaType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "contentSha256": "88fe977d0d8caad4173825578826131710b0229ac6a120046f9a1456ab8b7d2a",
-      "extractedTextSha256": "85f3aaee39ea3303ea24af9d0a2a2f4c8da6277743fd38b8857e99491ca4e1f2"
+      "contentSha256": "c0354dc4fe71453be0904a1f8cb530d72fab1bd349675fb4dcb63f236cd6fa40",
+      "extractedTextSha256": "4aca376fdb92166d0552852b533dc4159d615c65c69a586984d54f5b8673f577"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-quick-reference",
@@ -11796,8 +11796,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "84c960694c80a382b804ced047bdb81d739c226312bbd691422b2e14f1708dd2",
-      "extractedTextSha256": "953b8b1ee62676668b289eb0524405f2d471ebdcc1ec4ce7c84df7404fb9f15b"
+      "contentSha256": "ab6baea12731ac52ec1a4bd14f09e6d3275cc411a0a6743b567bc75e58c4c357",
+      "extractedTextSha256": "e7cd1219fc9a0abcd5da98cb9f9c4326d17a640ec45a28f28e2b0f9be9284c6d"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-operator-faq",
@@ -11831,8 +11831,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "4a19f05d5ae5e70a3e4c00b02bb404112ee2f103a1461cf2217b9d121d7ee10f",
-      "extractedTextSha256": "8b5ab7e0ab8aceefe02e9ecef39ea9b83c6f266a448eb23d98f39112d74980a2"
+      "contentSha256": "2b005263e9ac0ea2996289ba45540a316404a8ae15bfb56782051ccfb5f2ab32",
+      "extractedTextSha256": "87d7f65f6ec8b42afd98bbe98ce78f6a18f9c668538b728fca6af8efbd2a8a60"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-connector-capabilities",
@@ -11866,8 +11866,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "eb229d2bdfa352f84aa19e6881a7ee184b68097677c2fbd784802e8f9a291f99",
-      "extractedTextSha256": "62a3d4be6f67e29f41d03e5e4eb1dffbc452a37b138b3c9ae216043c08ba780f"
+      "contentSha256": "a40da13c5bbf0bf29cd41d5ca11982cb8fc40e7a9aeeff8f6a4c75d1108d666b",
+      "extractedTextSha256": "9ab79bf9965cb9a68c1e41eb47d50f29561c9ef0113685d1c9a91eb5650eb8ff"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-agent-state-snapshot",
@@ -11901,8 +11901,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "1e3761fba2121c6ec3f8deebf2d1e5d47fde56955fe7e845084a253f1242e66b",
-      "extractedTextSha256": "366a3f51b7cee2376fd2b795f031faf11d752345bf109d3f736f13a3622ba29c"
+      "contentSha256": "1c6a3fc845d41a23175fae48d7c1f7bc3655acc2860f75e7175f4b473976797d",
+      "extractedTextSha256": "5162fbdf9f9ed0560a62713168d33c7a8489b86cbbf1c3857bb32637904826ba"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-recovery-events",
@@ -11936,8 +11936,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "76e71eb2c0e11223d5f26eb1b2290e2f292c2a86d07f4820dc30b07b32037fde",
-      "extractedTextSha256": "7f11bac3d86047b8a405c05d92d62fb5ea949c6cd1fceac95d584e39b46a16fe"
+      "contentSha256": "8a570f41e862f03fb898ec25d42f41e7d3ba14b09518a76f8bc705fadbfbfbb7",
+      "extractedTextSha256": "f201e67a9764745d7bb1d5df092fc6eb9098edd86284a45349b2fb3d049cf073"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-successful-runs",
@@ -11971,8 +11971,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "6291062d0398f87e83c4ebb990f4821dc8a6de8122dfe450981dba2d203348ca",
-      "extractedTextSha256": "f44d7246a11984633f9e1ddac68f51c544495b8f34a5916d43cd64a6a4476e5b"
+      "contentSha256": "e9af9c761ee7fb17ff8671d5bb080ec6d49881522fc799925b9224665fa3199c",
+      "extractedTextSha256": "db09c3d2db0e5050dadb822c69d234d782b223bdb1e32f1b5168f58fa095a471"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-worker-execution",
@@ -12006,8 +12006,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "8aa9e11aa57b9b289466ea4965c2a93a2fd80df07731e60515c99fe989351cf5",
-      "extractedTextSha256": "509b6c8749d7ab1f22690a542d910c0d4df5a40484a9203c2e78ecf72f8f9667"
+      "contentSha256": "0f7d8fd6a7b14bf00bed00c201f537abf3d1b35335db6cbbe61812aa2465915b",
+      "extractedTextSha256": "a03a3e63749a237c1cc528e7c58f4209eaca9a190a9699265324c5c6d38f45db"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-persistence-snapshot",
@@ -12041,8 +12041,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "8e06753d86084294b6a0bc2c9d92c76ac551ca9971adaa361b057606bedeca26",
-      "extractedTextSha256": "1d06f9ffce534ca21a1df43a09f63e54a74418362717d68ec610e2eb4e46452e"
+      "contentSha256": "b8dc709a8ba6782f6ea49b00f3b14782087dddca2cc86e6668e931105548f790",
+      "extractedTextSha256": "9c969c8800b896576fc5034a0d40989f06cfadc93b8c4b938ba1dc9f9f662242"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-runbook-command-reference",
@@ -12076,8 +12076,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "e9a4689618a3d7e60022d7134f3eaad23f49022438acf87fef694cb45f60603e",
-      "extractedTextSha256": "24ad5afddd9b9f7ec5e068fd3f0bbeeb60c98b9d0863254bd223ff0e4967ac71"
+      "contentSha256": "c062ae3147e19a45f33405b52b7b065800b4aef87e869dbb06c5bacaa6c01d86",
+      "extractedTextSha256": "5987e93a9644fbd429f403ed0e6bc1f742131bfd623f4d52b6c5e215f9ed3eb5"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-error-code-catalog",
@@ -12111,8 +12111,8 @@
       "enabled": true,
       "contentFormat": "txt",
       "mediaType": "text/plain",
-      "contentSha256": "e221fc0aed7aedcf010e23d461d505d4998bdef8d62c60ece4d00b9905e08c13",
-      "extractedTextSha256": "e06acc82ecfc5f30843a9e5abaaebdbd99c69961787078cbba5fe4a336eb010e"
+      "contentSha256": "522a1c50d89421db6f29c641a59f1b6e322fd07fe360da6dcf3e44e11beaad98",
+      "extractedTextSha256": "2d06904d853fbf8a68ffdc1e2d6020d854f09612fe12dbf427c6cd99060a4d55"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-api-contract-snapshot",
@@ -12146,8 +12146,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "6d39947a1d08ba88e32c08212ce4824e255c4467b0b12b2bdb9a888cde4dd334",
-      "extractedTextSha256": "ea34d4344e8dc9bedbf1da28d8fb5bff259d1be0d73240e0c51a32c6e236f186"
+      "contentSha256": "98d3210446d72804d2a0d69777db35620d5be8f631de4d848afcea297a319072",
+      "extractedTextSha256": "9f54c03ad1fc69eb11785b1594832eaf59e000dc61b7c5e8fc2c1e5ea522d05b"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-task-config-versions",
@@ -12181,8 +12181,8 @@
       "enabled": true,
       "contentFormat": "json",
       "mediaType": "application/json",
-      "contentSha256": "7534aca064e09919aad92c8294e5b8f3fe74dec57529138415aa9bab0aa8a0c2",
-      "extractedTextSha256": "da618d2af1fc8382f428e398b70d7be218cb91dccacfff78c792c031151ee0f9"
+      "contentSha256": "d8ac054d7cc902f331ae757efde859f192997cbebfde4bd341c7714bc4b9d9b3",
+      "extractedTextSha256": "c8d4093ded9ed0b0c1bbd1d154b050f3b88102dc20dc69ffce89113b2337319d"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-task-case-library",
@@ -12216,8 +12216,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "c4da56b07d0fad813fcfa515653762366350ac981bb95cf3ca0a6f9ca9dda962",
-      "extractedTextSha256": "9ce81e98223a862a1060b4ee7c9eb59338870f5e5460f15284008173d0e5e694"
+      "contentSha256": "b3bef567d40d75ba55e581bea4b212060d387afcd897f5532693fcbbbada8b58",
+      "extractedTextSha256": "1927a259c900b1504070dd19e3a07cbc90f858da2ae216be8b22c356ebb1c8e6"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-audit-events",
@@ -12251,8 +12251,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "cce2b5797440a7ee980e1aaf867b9a77e719865399286de0f8e92fbdd58fdd0d",
-      "extractedTextSha256": "ce7ff3bc94545077f68f89ccb0db554f6609fab4b96e88a931dc1cb66555fc31"
+      "contentSha256": "a761f933ee634ce088986350afffbeec09eaa98eff0d8b23262837770e526260",
+      "extractedTextSha256": "29c4e8d9d13c743de13b348e18d0b9e018b8e22a25854662c815395abff49774"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-recovery-decision-trace",
@@ -12286,8 +12286,8 @@
       "enabled": true,
       "contentFormat": "jsonl",
       "mediaType": "application/x-ndjson",
-      "contentSha256": "c4271201dea5a3c48d72427cc23a4e54d5b6b30162fcff363af20fb41f288f22",
-      "extractedTextSha256": "3f3e6c09f131eac5d9446a749db299e903f4c18a32014b4fcffa4e2230dcff45"
+      "contentSha256": "6f4dcb2ba72ee58693acbaf7c656cda1a285194f77e8103aa36d5190019f628b",
+      "extractedTextSha256": "c67f691ce18203c4b404b9b3b08c3d4d3c5cf21ea2cf317d0ace94afe66dedd2"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-connector-inventory",
@@ -12321,8 +12321,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "38d98bd82467a2578b3c9b5cd679c73cc2bf1277b0b5b5aac802bd702e415565",
-      "extractedTextSha256": "a111d768305ed1a3c6dbd2113091f76defc42d8e9db29430ab0c898178fb0f14"
+      "contentSha256": "b085c9b6cf8e2a9835703ca13a943a1f54a4f0f03f63034a75d3a8de02d68d51",
+      "extractedTextSha256": "65ac4d5ae9a78a4fcda1f6415cf59d3d4d97892a3a8da6d938816b49c08cae0a"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-field-profile-statistics",
@@ -12356,8 +12356,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "f553869d4705ac8b8d9958fde9f53c899fbc0751d121e7dc93e9a040e5e34e19",
-      "extractedTextSha256": "738d1ef416851b1b4319e1a9e00c741e786a35dc2af77302ff351fa01853a516"
+      "contentSha256": "3b2cbb4ac87bb775d5ae23dc084462830821f1dcb6f48a7c397879f7688541b1",
+      "extractedTextSha256": "934711a28512092670cb03d589e1ac46f911002eaedd69c4252ec2cdce4c3d76"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-alert-history",
@@ -12391,8 +12391,8 @@
       "enabled": true,
       "contentFormat": "csv",
       "mediaType": "text/csv",
-      "contentSha256": "4b2c982e0fd6042e79a97b3f56a36b6f0089803bb9343770d791d10486fa8b8f",
-      "extractedTextSha256": "6f3ce1c81a3bd8326926ee0cb94e8bbe489a2f8800ac6382edf282ba1ee74e3f"
+      "contentSha256": "806b45d2f82373959bd6afe5a92cd3423559d065a26f87273350608c1e3f975c",
+      "extractedTextSha256": "08920538681b2ea2b1d153658bece847210f1b5a4afe29c995faadfb8c9dd3b4"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-kafka-consumer-lag",
@@ -12426,8 +12426,8 @@
       "enabled": true,
       "contentFormat": "log",
       "mediaType": "text/plain",
-      "contentSha256": "3f653597967b301af05f92b0b1f5813027b1b5a77df8095f82586be842156c95",
-      "extractedTextSha256": "2b8992047664c159231562d17aa74b74110f12f509f10698d2db14580b6b4cd4"
+      "contentSha256": "a3fb29cb46ba94518b080a53feb917d5100dcb3bd6088a26f88881bdc6c52aea",
+      "extractedTextSha256": "242208f52c0bc6991cf98a06debd77b7fd733d8a9f6d791f9158f1424866a270"
     },
     {
       "documentId": "rag-eval-tenant-20-project-201-database-recovery-ledger",
@@ -12461,8 +12461,8 @@
       "enabled": true,
       "contentFormat": "sql",
       "mediaType": "application/sql",
-      "contentSha256": "24638c1261b187e014421c6235c36b339bc97f4271eb310945ba80543e07b863",
-      "extractedTextSha256": "e3304d17ab061b0fd74966c3c60ef80ca431c68e9e59d7edd4e0ee2ae4ccef09"
+      "contentSha256": "f2356927a486d045846434f670450006dab83fed5bd2dcae048c711d42bcafd2",
+      "extractedTextSha256": "bc8c20e057c470030fffabc13d59db65f886a80f621fc5a152bda80705fcdf01"
     }
   ]
 }

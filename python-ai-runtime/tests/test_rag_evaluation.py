@@ -70,7 +70,9 @@ class RagEvaluationTest(unittest.TestCase):
         self.assertTrue(
             any(
                 document.metadata.get("contentFormat") == "xlsx"
-                and "工作表：数据" in document.content
+                and "工作表：成功任务" in document.content
+                and "工作表：参数基线" in document.content
+                and "工作表：成功验证" in document.content
                 and document.metadata.get("sheetCount") == 6
                 for document in dataset.documents
             )

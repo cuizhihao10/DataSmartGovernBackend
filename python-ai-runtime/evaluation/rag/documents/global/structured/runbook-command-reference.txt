@@ -4,272 +4,1402 @@
 独立锚点：global:runbook-command-reference
 范围：全局产品基线
 
-一、目的与适用角色
-汇总健康检查、日志、Kafka、PostgreSQL、容器和 RAG 的只读排查命令。
-适用角色：普通用户、项目负责人、数据工程师、运维人员、审计人员和平台管理员。
+CMD-0001 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
 
-二、标准排查顺序
-1. Gateway：检查 请求率、4xx/5xx、鉴权延迟；关联 traceId 与 routeId；处置原则为 先隔离入口异常再检查下游。
-2. Task Management：检查 调度延迟、运行状态、版本冲突；关联 taskId 与 configVersion；处置原则为 核对调度锁和任务版本。
-3. Agent Runtime：检查 规划延迟、ToolPlan、审计失败；关联 planId 与 durableFactId；处置原则为 区分模型、门禁和持久化故障。
-4. Python AI Runtime：检查 模型延迟、图节点、checkpoint；关联 requestId 与 turnId；处置原则为 检查 Provider 与 LangGraph 状态。
-5. Kafka Broker：检查 under-replicated、磁盘、吞吐；关联 topic 与 brokerId；处置原则为 先确认集群健康。
-6. Kafka Consumer：检查 lag、rebalance、处理时延；关联 group 与 partition；处置原则为 隔离坏消息后再扩容。
-7. Outbox：检查 NEW/DELIVERED/FAILED 数量；关联 eventId 与 aggregateId；处置原则为 重投未交付事件。
-8. DLT：检查 新增速率与错误分布；关联 originalTopic 与 reasonCode；处置原则为 永久错误人工处置。
-9. Datasource：检查 连接、元数据、版本能力；关联 datasourceId 与 connectorId；处置原则为 刷新元数据或恢复端点。
-10. Data Sync Worker：检查 rows/s、dirty、checkpoint；关联 executionId 与 objectId；处置原则为 按对象定位。
-11. PostgreSQL：检查 连接、锁、慢查询、WAL；关联 database 与 queryId；处置原则为 避免长事务和锁等待。
-12. pgvector：检查 维度、模型、索引命中；关联 embeddingModel 与 dimension；处置原则为 检查条件索引和范围谓词。
-13. Redis：检查 命中率、内存、过期、连接；关联 key namespace；处置原则为 只清理可再生缓存。
-14. MinIO：检查 对象错误、容量、版本；关联 bucket 与 objectRef；处置原则为 保留审计和引用对象。
-15. Model Provider：检查 429、5xx、p95、缺项；关联 provider 与 model；处置原则为 有界退避或显式降级。
-16. Embedding：检查 批次、维度、延迟；关联 model 与 vectorVersion；处置原则为 禁止维度漂移。
-17. Reranker：检查 候选数、缺项、分数；关联 model 与 candidateCount；处置原则为 缺项 fail-closed。
-18. WebSocket：检查 连接数、重连、事件积压；关联 sessionId 与 lastEventId；处置原则为 快照补偿。
-19. Prometheus：检查 抓取失败与规则错误；关联 job 与 instance；处置原则为 恢复监控可信度。
-20. Alertmanager：检查 通知失败与静默；关联 alertname 与 receiver；处置原则为 检查路由和抑制。
-21. 磁盘：检查 使用率、inode、增长率；关联 volume 与 mount；处置原则为 清理可再生文件或扩容。
-22. 证书：检查 有效期与握手错误；关联 issuer 与 endpoint；处置原则为 按变更流程轮换。
-23. 备份：检查 最近成功、大小、恢复测试；关联 backupId 与 restorePoint；处置原则为 失败立即升级。
-24. 审计：检查 缺失事件、哈希链、保留；关联 auditId 与 traceId；处置原则为 禁止无审计副作用。
+CMD-0002 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
 
-三、错误码与恢复决策
-CONNECTION_TIMEOUT | 根因=网络或端点超时 | 证据=连接耗时、DNS、目标健康 | 动作=有界增加超时或等待端点恢复；持续失败时退出
-AUTHENTICATION_FAILED | 根因=凭据失效或引用错误 | 证据=认证响应与凭据引用版本 | 动作=禁止自动修改凭据，返回轮换指引
-PERMISSION_DENIED | 根因=资源动作未授权 | 证据=actor、resource、action、审批事实 | 动作=立即退出 Loop，说明所需权限
-RATE_LIMIT_EXCEEDED | 根因=来源或目标端限流 | 证据=429、限流头、连接器容量 | 动作=降低并发/批量并有界退避
-SCHEMA_DRIFT_DETECTED | 根因=来源结构发生变化 | 证据=schema 指纹与元数据差异 | 动作=刷新元数据；唯一兼容映射才自动修复
-FIELD_MAPPING_MISSING | 根因=目标字段缺少映射 | 证据=源目标字段、历史成功映射 | 动作=唯一映射可修复，歧义映射退出
-NOT_NULL_VIOLATION | 根因=目标非空字段收到空值 | 证据=错误字段、字段画像、已批准默认值 | 动作=使用已批准静态默认值；不得放宽约束
-DATA_TYPE_MISMATCH | 根因=源目标类型不兼容 | 证据=类型、精度、长度、样本统计 | 动作=无损转换可修复，有损转换退出
-NUMERIC_OVERFLOW | 根因=数值超过目标精度 | 证据=最值、precision、scale | 动作=禁止截断，返回扩容或映射建议
-STRING_TRUNCATION_RISK | 根因=字符串超过目标长度 | 证据=最大长度与超限行数 | 动作=禁止静默截断，退出并给出影响
-FOREIGN_KEY_MISSING | 根因=父记录尚未存在 | 证据=约束名、父子对象、执行 DAG | 动作=调整依赖顺序并 replay 父子对象
-UNIQUE_CONSTRAINT_VIOLATION | 根因=业务键或幂等键重复 | 证据=约束名、键摘要、历史回执 | 动作=确认幂等重放；非幂等冲突退出
-CHECKPOINT_NOT_FOUND | 根因=没有可恢复位点 | 证据=对象台账与 checkpoint 表 | 动作=只在授权允许时从安全起点重跑
-CHECKPOINT_STALE | 根因=位点落后或与提交不一致 | 证据=worker 回执、目标提交、位点时间 | 动作=选择最近已确认位点并验证去重
-KAFKA_BACKLOG_HIGH | 根因=消费者处理速度低于生产速度 | 证据=group、partition、lag、处理时延 | 动作=隔离坏消息并在容量允许时扩容
-OUTBOX_DELIVERY_TIMEOUT | 根因=事务事实未及时投递 | 证据=outbox 状态、attempt、broker 响应 | 动作=重投未交付 outbox，不重复业务事务
-CONNECTOR_VERSION_INCOMPATIBLE | 根因=连接器版本不支持配置 | 证据=版本、能力快照、配置字段 | 动作=回滚兼容配置或人工升级连接器
-TARGET_CAPACITY_EXCEEDED | 根因=目标 CPU/连接/磁盘达到阈值 | 证据=容量指标、等待事件、配额 | 动作=降低负载并等待恢复，不扩大压力
-DIRTY_RECORD_THRESHOLD_EXCEEDED | 根因=脏数据超过任务阈值 | 证据=规则结果、坏行样本引用、阈值 | 动作=隔离坏行；超过停止阈值时退出
-DDL_REQUIRED | 根因=需要修改目标结构 | 证据=元数据差异与目标约束 | 动作=高风险动作，返回 DDL、影响、回滚与验证指引
+CMD-0003 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
 
-四、治理边界
-低风险动作可在首次授权盒内自动执行；凭据、权限、DDL、删除、覆盖、扩大范围和不可逆转换必须退出 Loop。
-退出时必须返回根因、证据来源、时间、可信度、所需权限、操作步骤、影响、回滚和验证方法。
+CMD-0004 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
 
-五、证据要求
-1. 结构化日志：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-2. 指标：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-3. 配置差异：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-4. 连接器能力：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-5. Runbook：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-6. 历史事故：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-7. 任务案例：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-8. 对象台账：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-9. 审批事实：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
-10. 最终验证：记录 sourceUri、observedAt、confidence、confidenceBasis 和 sourceStatus。
+CMD-0005 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
 
-六、关联事故与任务案例（200 条）
-CASE-TXT-CMD-711-0001 | taskId=TASK-global-0001 | executionId=EXEC-global-0001 | traceId=trace-global-0001 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v100 在对象 object-00 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0001@2026-08-10T00:00:00.000Z/0.9 | 修复=MANUAL_HANDOFF：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0002 | taskId=TASK-global-0002 | executionId=EXEC-global-0002 | traceId=trace-global-0002 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v101 在对象 object-01 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0002@2026-08-10T00:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0003 | taskId=TASK-global-0003 | executionId=EXEC-global-0003 | traceId=trace-global-0003 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v102 在对象 object-02 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0003@2026-08-10T00:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0004 | taskId=TASK-global-0004 | executionId=EXEC-global-0004 | traceId=trace-global-0004 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v103 在对象 object-03 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0004@2026-08-10T00:27:00.000Z/0.93 | 修复=REFRESH_METADATA：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0005 | taskId=TASK-global-0005 | executionId=EXEC-global-0005 | traceId=trace-global-0005 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v104 在对象 object-04 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0005@2026-08-10T00:36:00.000Z/0.94 | 修复=RESTORE_CONFIRMED_CHECKPOINT：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0006 | taskId=TASK-global-0006 | executionId=EXEC-global-0006 | traceId=trace-global-0006 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v105 在对象 object-05 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0006@2026-08-10T00:45:00.000Z/0.95 | 修复=REORDER_DEPENDENCY_AND_REPLAY：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0007 | taskId=TASK-global-0007 | executionId=EXEC-global-0007 | traceId=trace-global-0007 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v106 在对象 object-06 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0007@2026-08-10T00:54:00.000Z/0.96 | 修复=REDUCE_BATCH_AND_CHANNEL：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0008 | taskId=TASK-global-0008 | executionId=EXEC-global-0008 | traceId=trace-global-0008 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v107 在对象 object-07 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0008@2026-08-10T01:03:00.000Z/0.97 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0009 | taskId=TASK-global-0009 | executionId=EXEC-global-0009 | traceId=trace-global-0009 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v108 在对象 object-08 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0009@2026-08-10T01:12:00.000Z/0.98 | 修复=REPLAY_FAILED_OBJECTS：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0010 | taskId=TASK-global-0010 | executionId=EXEC-global-0010 | traceId=trace-global-0010 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v109 在对象 object-09 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0010@2026-08-10T01:21:00.000Z/0.99 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0011 | taskId=TASK-global-0011 | executionId=EXEC-global-0011 | traceId=trace-global-0011 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v110 在对象 object-10 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0011@2026-08-10T01:30:00.000Z/0.9 | 修复=PATCH_UNIQUE_FIELD_MAPPING：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0012 | taskId=TASK-global-0012 | executionId=EXEC-global-0012 | traceId=trace-global-0012 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v111 在对象 object-11 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0012@2026-08-10T01:39:00.000Z/0.91 | 修复=SET_APPROVED_STATIC_DEFAULT：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0013 | taskId=TASK-global-0013 | executionId=EXEC-global-0013 | traceId=trace-global-0013 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v112 在对象 object-12 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0013@2026-08-10T01:48:00.000Z/0.92 | 修复=REFRESH_METADATA：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0014 | taskId=TASK-global-0014 | executionId=EXEC-global-0014 | traceId=trace-global-0014 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v113 在对象 object-13 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0014@2026-08-10T01:57:00.000Z/0.93 | 修复=RESTORE_CONFIRMED_CHECKPOINT：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0015 | taskId=TASK-global-0015 | executionId=EXEC-global-0015 | traceId=trace-global-0015 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v114 在对象 object-14 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0015@2026-08-10T02:06:00.000Z/0.94 | 修复=REORDER_DEPENDENCY_AND_REPLAY：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0016 | taskId=TASK-global-0016 | executionId=EXEC-global-0016 | traceId=trace-global-0016 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v115 在对象 object-15 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0016@2026-08-10T02:15:00.000Z/0.95 | 修复=REDUCE_BATCH_AND_CHANNEL：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0017 | taskId=TASK-global-0017 | executionId=EXEC-global-0017 | traceId=trace-global-0017 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v116 在对象 object-16 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0017@2026-08-10T02:24:00.000Z/0.96 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0018 | taskId=TASK-global-0018 | executionId=EXEC-global-0018 | traceId=trace-global-0018 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v117 在对象 object-17 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0018@2026-08-10T02:33:00.000Z/0.97 | 修复=REPLAY_FAILED_OBJECTS：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0019 | taskId=TASK-global-0019 | executionId=EXEC-global-0019 | traceId=trace-global-0019 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v118 在对象 object-18 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0019@2026-08-10T02:42:00.000Z/0.98 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0020 | taskId=TASK-global-0020 | executionId=EXEC-global-0020 | traceId=trace-global-0020 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v119 在对象 object-19 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0020@2026-08-10T02:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0021 | taskId=TASK-global-0021 | executionId=EXEC-global-0021 | traceId=trace-global-0021 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v120 在对象 object-20 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0021@2026-08-10T03:00:00.000Z/0.9 | 修复=SET_APPROVED_STATIC_DEFAULT：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0022 | taskId=TASK-global-0022 | executionId=EXEC-global-0022 | traceId=trace-global-0022 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v121 在对象 object-21 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0022@2026-08-10T03:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0023 | taskId=TASK-global-0023 | executionId=EXEC-global-0023 | traceId=trace-global-0023 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v122 在对象 object-22 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0023@2026-08-10T03:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0024 | taskId=TASK-global-0024 | executionId=EXEC-global-0024 | traceId=trace-global-0024 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v123 在对象 object-23 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0024@2026-08-10T03:27:00.000Z/0.93 | 修复=MANUAL_HANDOFF：降低并发/批量并有界退避 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0025 | taskId=TASK-global-0025 | executionId=EXEC-global-0025 | traceId=trace-global-0025 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v124 在对象 object-24 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0025@2026-08-10T03:36:00.000Z/0.94 | 修复=REDUCE_BATCH_AND_CHANNEL：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0026 | taskId=TASK-global-0026 | executionId=EXEC-global-0026 | traceId=trace-global-0026 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v125 在对象 object-25 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0026@2026-08-10T03:45:00.000Z/0.95 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0027 | taskId=TASK-global-0027 | executionId=EXEC-global-0027 | traceId=trace-global-0027 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v126 在对象 object-26 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0027@2026-08-10T03:54:00.000Z/0.96 | 修复=REPLAY_FAILED_OBJECTS：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0028 | taskId=TASK-global-0028 | executionId=EXEC-global-0028 | traceId=trace-global-0028 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v127 在对象 object-27 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0028@2026-08-10T04:03:00.000Z/0.97 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0029 | taskId=TASK-global-0029 | executionId=EXEC-global-0029 | traceId=trace-global-0029 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v128 在对象 object-28 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0029@2026-08-10T04:12:00.000Z/0.98 | 修复=PATCH_UNIQUE_FIELD_MAPPING：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0030 | taskId=TASK-global-0030 | executionId=EXEC-global-0030 | traceId=trace-global-0030 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v129 在对象 object-29 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0030@2026-08-10T04:21:00.000Z/0.99 | 修复=SET_APPROVED_STATIC_DEFAULT：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0031 | taskId=TASK-global-0031 | executionId=EXEC-global-0031 | traceId=trace-global-0031 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v130 在对象 object-30 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0031@2026-08-10T04:30:00.000Z/0.9 | 修复=REFRESH_METADATA：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0032 | taskId=TASK-global-0032 | executionId=EXEC-global-0032 | traceId=trace-global-0032 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v131 在对象 object-31 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0032@2026-08-10T04:39:00.000Z/0.91 | 修复=RESTORE_CONFIRMED_CHECKPOINT：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0033 | taskId=TASK-global-0033 | executionId=EXEC-global-0033 | traceId=trace-global-0033 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v132 在对象 object-00 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0033@2026-08-10T04:48:00.000Z/0.92 | 修复=REORDER_DEPENDENCY_AND_REPLAY：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0034 | taskId=TASK-global-0034 | executionId=EXEC-global-0034 | traceId=trace-global-0034 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v133 在对象 object-01 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0034@2026-08-10T04:57:00.000Z/0.93 | 修复=REDUCE_BATCH_AND_CHANNEL：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0035 | taskId=TASK-global-0035 | executionId=EXEC-global-0035 | traceId=trace-global-0035 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v134 在对象 object-02 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0035@2026-08-10T05:06:00.000Z/0.94 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0036 | taskId=TASK-global-0036 | executionId=EXEC-global-0036 | traceId=trace-global-0036 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v135 在对象 object-03 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0036@2026-08-10T05:15:00.000Z/0.95 | 修复=REPLAY_FAILED_OBJECTS：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0037 | taskId=TASK-global-0037 | executionId=EXEC-global-0037 | traceId=trace-global-0037 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v136 在对象 object-04 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0037@2026-08-10T05:24:00.000Z/0.96 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0038 | taskId=TASK-global-0038 | executionId=EXEC-global-0038 | traceId=trace-global-0038 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v137 在对象 object-05 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0038@2026-08-10T05:33:00.000Z/0.97 | 修复=PATCH_UNIQUE_FIELD_MAPPING：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0039 | taskId=TASK-global-0039 | executionId=EXEC-global-0039 | traceId=trace-global-0039 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v138 在对象 object-06 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0039@2026-08-10T05:42:00.000Z/0.98 | 修复=SET_APPROVED_STATIC_DEFAULT：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0040 | taskId=TASK-global-0040 | executionId=EXEC-global-0040 | traceId=trace-global-0040 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v139 在对象 object-07 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0040@2026-08-10T05:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0041 | taskId=TASK-global-0041 | executionId=EXEC-global-0041 | traceId=trace-global-0041 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v140 在对象 object-08 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0041@2026-08-10T06:00:00.000Z/0.9 | 修复=RESTORE_CONFIRMED_CHECKPOINT：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0042 | taskId=TASK-global-0042 | executionId=EXEC-global-0042 | traceId=trace-global-0042 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v141 在对象 object-09 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0042@2026-08-10T06:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0043 | taskId=TASK-global-0043 | executionId=EXEC-global-0043 | traceId=trace-global-0043 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v142 在对象 object-10 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0043@2026-08-10T06:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0044 | taskId=TASK-global-0044 | executionId=EXEC-global-0044 | traceId=trace-global-0044 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v143 在对象 object-11 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0044@2026-08-10T06:27:00.000Z/0.93 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0045 | taskId=TASK-global-0045 | executionId=EXEC-global-0045 | traceId=trace-global-0045 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v144 在对象 object-12 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0045@2026-08-10T06:36:00.000Z/0.94 | 修复=REPLAY_FAILED_OBJECTS：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0046 | taskId=TASK-global-0046 | executionId=EXEC-global-0046 | traceId=trace-global-0046 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v145 在对象 object-13 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0046@2026-08-10T06:45:00.000Z/0.95 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0047 | taskId=TASK-global-0047 | executionId=EXEC-global-0047 | traceId=trace-global-0047 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v146 在对象 object-14 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0047@2026-08-10T06:54:00.000Z/0.96 | 修复=MANUAL_HANDOFF：使用已批准静态默认值；不得放宽约束 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0048 | taskId=TASK-global-0048 | executionId=EXEC-global-0048 | traceId=trace-global-0048 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v147 在对象 object-15 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0048@2026-08-10T07:03:00.000Z/0.97 | 修复=SET_APPROVED_STATIC_DEFAULT：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0049 | taskId=TASK-global-0049 | executionId=EXEC-global-0049 | traceId=trace-global-0049 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v148 在对象 object-16 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0049@2026-08-10T07:12:00.000Z/0.98 | 修复=REFRESH_METADATA：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0050 | taskId=TASK-global-0050 | executionId=EXEC-global-0050 | traceId=trace-global-0050 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v149 在对象 object-17 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0050@2026-08-10T07:21:00.000Z/0.99 | 修复=RESTORE_CONFIRMED_CHECKPOINT：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0051 | taskId=TASK-global-0051 | executionId=EXEC-global-0051 | traceId=trace-global-0051 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v150 在对象 object-18 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0051@2026-08-10T07:30:00.000Z/0.9 | 修复=REORDER_DEPENDENCY_AND_REPLAY：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0052 | taskId=TASK-global-0052 | executionId=EXEC-global-0052 | traceId=trace-global-0052 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v151 在对象 object-19 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0052@2026-08-10T07:39:00.000Z/0.91 | 修复=REDUCE_BATCH_AND_CHANNEL：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0053 | taskId=TASK-global-0053 | executionId=EXEC-global-0053 | traceId=trace-global-0053 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v152 在对象 object-20 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0053@2026-08-10T07:48:00.000Z/0.92 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0054 | taskId=TASK-global-0054 | executionId=EXEC-global-0054 | traceId=trace-global-0054 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v153 在对象 object-21 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0054@2026-08-10T07:57:00.000Z/0.93 | 修复=REPLAY_FAILED_OBJECTS：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0055 | taskId=TASK-global-0055 | executionId=EXEC-global-0055 | traceId=trace-global-0055 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v154 在对象 object-22 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0055@2026-08-10T08:06:00.000Z/0.94 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0056 | taskId=TASK-global-0056 | executionId=EXEC-global-0056 | traceId=trace-global-0056 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v155 在对象 object-23 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0056@2026-08-10T08:15:00.000Z/0.95 | 修复=PATCH_UNIQUE_FIELD_MAPPING：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0057 | taskId=TASK-global-0057 | executionId=EXEC-global-0057 | traceId=trace-global-0057 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v156 在对象 object-24 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0057@2026-08-10T08:24:00.000Z/0.96 | 修复=SET_APPROVED_STATIC_DEFAULT：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0058 | taskId=TASK-global-0058 | executionId=EXEC-global-0058 | traceId=trace-global-0058 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v157 在对象 object-25 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0058@2026-08-10T08:33:00.000Z/0.97 | 修复=REFRESH_METADATA：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0059 | taskId=TASK-global-0059 | executionId=EXEC-global-0059 | traceId=trace-global-0059 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v158 在对象 object-26 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0059@2026-08-10T08:42:00.000Z/0.98 | 修复=RESTORE_CONFIRMED_CHECKPOINT：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0060 | taskId=TASK-global-0060 | executionId=EXEC-global-0060 | traceId=trace-global-0060 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v159 在对象 object-27 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0060@2026-08-10T08:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0061 | taskId=TASK-global-0061 | executionId=EXEC-global-0061 | traceId=trace-global-0061 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v160 在对象 object-28 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0061@2026-08-10T09:00:00.000Z/0.9 | 修复=REDUCE_BATCH_AND_CHANNEL：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0062 | taskId=TASK-global-0062 | executionId=EXEC-global-0062 | traceId=trace-global-0062 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v161 在对象 object-29 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0062@2026-08-10T09:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0063 | taskId=TASK-global-0063 | executionId=EXEC-global-0063 | traceId=trace-global-0063 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v162 在对象 object-30 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0063@2026-08-10T09:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0064 | taskId=TASK-global-0064 | executionId=EXEC-global-0064 | traceId=trace-global-0064 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v163 在对象 object-31 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0064@2026-08-10T09:27:00.000Z/0.93 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0065 | taskId=TASK-global-0065 | executionId=EXEC-global-0065 | traceId=trace-global-0065 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v164 在对象 object-00 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0065@2026-08-10T09:36:00.000Z/0.94 | 修复=PATCH_UNIQUE_FIELD_MAPPING：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0066 | taskId=TASK-global-0066 | executionId=EXEC-global-0066 | traceId=trace-global-0066 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v165 在对象 object-01 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0066@2026-08-10T09:45:00.000Z/0.95 | 修复=SET_APPROVED_STATIC_DEFAULT：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0067 | taskId=TASK-global-0067 | executionId=EXEC-global-0067 | traceId=trace-global-0067 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v166 在对象 object-02 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0067@2026-08-10T09:54:00.000Z/0.96 | 修复=REFRESH_METADATA：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0068 | taskId=TASK-global-0068 | executionId=EXEC-global-0068 | traceId=trace-global-0068 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v167 在对象 object-03 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0068@2026-08-10T10:03:00.000Z/0.97 | 修复=RESTORE_CONFIRMED_CHECKPOINT：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0069 | taskId=TASK-global-0069 | executionId=EXEC-global-0069 | traceId=trace-global-0069 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v168 在对象 object-04 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0069@2026-08-10T10:12:00.000Z/0.98 | 修复=REORDER_DEPENDENCY_AND_REPLAY：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0070 | taskId=TASK-global-0070 | executionId=EXEC-global-0070 | traceId=trace-global-0070 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v169 在对象 object-05 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0070@2026-08-10T10:21:00.000Z/0.99 | 修复=MANUAL_HANDOFF：禁止静默截断，退出并给出影响 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0071 | taskId=TASK-global-0071 | executionId=EXEC-global-0071 | traceId=trace-global-0071 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v170 在对象 object-06 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0071@2026-08-10T10:30:00.000Z/0.9 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0072 | taskId=TASK-global-0072 | executionId=EXEC-global-0072 | traceId=trace-global-0072 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v171 在对象 object-07 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0072@2026-08-10T10:39:00.000Z/0.91 | 修复=REPLAY_FAILED_OBJECTS：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0073 | taskId=TASK-global-0073 | executionId=EXEC-global-0073 | traceId=trace-global-0073 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v172 在对象 object-08 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0073@2026-08-10T10:48:00.000Z/0.92 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0074 | taskId=TASK-global-0074 | executionId=EXEC-global-0074 | traceId=trace-global-0074 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v173 在对象 object-09 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0074@2026-08-10T10:57:00.000Z/0.93 | 修复=PATCH_UNIQUE_FIELD_MAPPING：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0075 | taskId=TASK-global-0075 | executionId=EXEC-global-0075 | traceId=trace-global-0075 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v174 在对象 object-10 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0075@2026-08-10T11:06:00.000Z/0.94 | 修复=SET_APPROVED_STATIC_DEFAULT：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0076 | taskId=TASK-global-0076 | executionId=EXEC-global-0076 | traceId=trace-global-0076 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v175 在对象 object-11 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0076@2026-08-10T11:15:00.000Z/0.95 | 修复=REFRESH_METADATA：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0077 | taskId=TASK-global-0077 | executionId=EXEC-global-0077 | traceId=trace-global-0077 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v176 在对象 object-12 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0077@2026-08-10T11:24:00.000Z/0.96 | 修复=RESTORE_CONFIRMED_CHECKPOINT：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0078 | taskId=TASK-global-0078 | executionId=EXEC-global-0078 | traceId=trace-global-0078 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v177 在对象 object-13 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0078@2026-08-10T11:33:00.000Z/0.97 | 修复=REORDER_DEPENDENCY_AND_REPLAY：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0079 | taskId=TASK-global-0079 | executionId=EXEC-global-0079 | traceId=trace-global-0079 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v178 在对象 object-14 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0079@2026-08-10T11:42:00.000Z/0.98 | 修复=REDUCE_BATCH_AND_CHANNEL：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0080 | taskId=TASK-global-0080 | executionId=EXEC-global-0080 | traceId=trace-global-0080 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v179 在对象 object-15 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0080@2026-08-10T11:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0081 | taskId=TASK-global-0081 | executionId=EXEC-global-0081 | traceId=trace-global-0081 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v180 在对象 object-16 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0081@2026-08-10T12:00:00.000Z/0.9 | 修复=REPLAY_FAILED_OBJECTS：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0082 | taskId=TASK-global-0082 | executionId=EXEC-global-0082 | traceId=trace-global-0082 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v181 在对象 object-17 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0082@2026-08-10T12:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0083 | taskId=TASK-global-0083 | executionId=EXEC-global-0083 | traceId=trace-global-0083 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v182 在对象 object-18 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0083@2026-08-10T12:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0084 | taskId=TASK-global-0084 | executionId=EXEC-global-0084 | traceId=trace-global-0084 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v183 在对象 object-19 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0084@2026-08-10T12:27:00.000Z/0.93 | 修复=SET_APPROVED_STATIC_DEFAULT：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0085 | taskId=TASK-global-0085 | executionId=EXEC-global-0085 | traceId=trace-global-0085 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v184 在对象 object-20 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0085@2026-08-10T12:36:00.000Z/0.94 | 修复=REFRESH_METADATA：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0086 | taskId=TASK-global-0086 | executionId=EXEC-global-0086 | traceId=trace-global-0086 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v185 在对象 object-21 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0086@2026-08-10T12:45:00.000Z/0.95 | 修复=MANUAL_HANDOFF：唯一映射可修复，歧义映射退出 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0087 | taskId=TASK-global-0087 | executionId=EXEC-global-0087 | traceId=trace-global-0087 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v186 在对象 object-22 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0087@2026-08-10T12:54:00.000Z/0.96 | 修复=REORDER_DEPENDENCY_AND_REPLAY：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0088 | taskId=TASK-global-0088 | executionId=EXEC-global-0088 | traceId=trace-global-0088 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v187 在对象 object-23 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0088@2026-08-10T13:03:00.000Z/0.97 | 修复=REDUCE_BATCH_AND_CHANNEL：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0089 | taskId=TASK-global-0089 | executionId=EXEC-global-0089 | traceId=trace-global-0089 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v188 在对象 object-24 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0089@2026-08-10T13:12:00.000Z/0.98 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0090 | taskId=TASK-global-0090 | executionId=EXEC-global-0090 | traceId=trace-global-0090 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v189 在对象 object-25 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0090@2026-08-10T13:21:00.000Z/0.99 | 修复=REPLAY_FAILED_OBJECTS：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0091 | taskId=TASK-global-0091 | executionId=EXEC-global-0091 | traceId=trace-global-0091 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v190 在对象 object-26 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0091@2026-08-10T13:30:00.000Z/0.9 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0092 | taskId=TASK-global-0092 | executionId=EXEC-global-0092 | traceId=trace-global-0092 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v191 在对象 object-27 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0092@2026-08-10T13:39:00.000Z/0.91 | 修复=PATCH_UNIQUE_FIELD_MAPPING：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0093 | taskId=TASK-global-0093 | executionId=EXEC-global-0093 | traceId=trace-global-0093 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v192 在对象 object-28 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0093@2026-08-10T13:48:00.000Z/0.92 | 修复=MANUAL_HANDOFF：只在授权允许时从安全起点重跑 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0094 | taskId=TASK-global-0094 | executionId=EXEC-global-0094 | traceId=trace-global-0094 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v193 在对象 object-29 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0094@2026-08-10T13:57:00.000Z/0.93 | 修复=REFRESH_METADATA：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0095 | taskId=TASK-global-0095 | executionId=EXEC-global-0095 | traceId=trace-global-0095 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v194 在对象 object-30 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0095@2026-08-10T14:06:00.000Z/0.94 | 修复=RESTORE_CONFIRMED_CHECKPOINT：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0096 | taskId=TASK-global-0096 | executionId=EXEC-global-0096 | traceId=trace-global-0096 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v195 在对象 object-31 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0096@2026-08-10T14:15:00.000Z/0.95 | 修复=REORDER_DEPENDENCY_AND_REPLAY：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0097 | taskId=TASK-global-0097 | executionId=EXEC-global-0097 | traceId=trace-global-0097 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v196 在对象 object-00 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0097@2026-08-10T14:24:00.000Z/0.96 | 修复=REDUCE_BATCH_AND_CHANNEL：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0098 | taskId=TASK-global-0098 | executionId=EXEC-global-0098 | traceId=trace-global-0098 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v197 在对象 object-01 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0098@2026-08-10T14:33:00.000Z/0.97 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0099 | taskId=TASK-global-0099 | executionId=EXEC-global-0099 | traceId=trace-global-0099 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v198 在对象 object-02 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0099@2026-08-10T14:42:00.000Z/0.98 | 修复=REPLAY_FAILED_OBJECTS：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0100 | taskId=TASK-global-0100 | executionId=EXEC-global-0100 | traceId=trace-global-0100 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v199 在对象 object-03 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0100@2026-08-10T14:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0101 | taskId=TASK-global-0101 | executionId=EXEC-global-0101 | traceId=trace-global-0101 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v200 在对象 object-04 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0101@2026-08-10T15:00:00.000Z/0.9 | 修复=PATCH_UNIQUE_FIELD_MAPPING：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0102 | taskId=TASK-global-0102 | executionId=EXEC-global-0102 | traceId=trace-global-0102 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v201 在对象 object-05 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0102@2026-08-10T15:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0103 | taskId=TASK-global-0103 | executionId=EXEC-global-0103 | traceId=trace-global-0103 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v202 在对象 object-06 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0103@2026-08-10T15:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0104 | taskId=TASK-global-0104 | executionId=EXEC-global-0104 | traceId=trace-global-0104 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v203 在对象 object-07 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0104@2026-08-10T15:27:00.000Z/0.93 | 修复=RESTORE_CONFIRMED_CHECKPOINT：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0105 | taskId=TASK-global-0105 | executionId=EXEC-global-0105 | traceId=trace-global-0105 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v204 在对象 object-08 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0105@2026-08-10T15:36:00.000Z/0.94 | 修复=REORDER_DEPENDENCY_AND_REPLAY：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0106 | taskId=TASK-global-0106 | executionId=EXEC-global-0106 | traceId=trace-global-0106 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v205 在对象 object-09 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0106@2026-08-10T15:45:00.000Z/0.95 | 修复=REDUCE_BATCH_AND_CHANNEL：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0107 | taskId=TASK-global-0107 | executionId=EXEC-global-0107 | traceId=trace-global-0107 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v206 在对象 object-10 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0107@2026-08-10T15:54:00.000Z/0.96 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0108 | taskId=TASK-global-0108 | executionId=EXEC-global-0108 | traceId=trace-global-0108 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v207 在对象 object-11 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0108@2026-08-10T16:03:00.000Z/0.97 | 修复=REPLAY_FAILED_OBJECTS：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0109 | taskId=TASK-global-0109 | executionId=EXEC-global-0109 | traceId=trace-global-0109 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v208 在对象 object-12 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0109@2026-08-10T16:12:00.000Z/0.98 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0110 | taskId=TASK-global-0110 | executionId=EXEC-global-0110 | traceId=trace-global-0110 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v209 在对象 object-13 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0110@2026-08-10T16:21:00.000Z/0.99 | 修复=PATCH_UNIQUE_FIELD_MAPPING：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0111 | taskId=TASK-global-0111 | executionId=EXEC-global-0111 | traceId=trace-global-0111 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v210 在对象 object-14 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0111@2026-08-10T16:30:00.000Z/0.9 | 修复=SET_APPROVED_STATIC_DEFAULT：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0112 | taskId=TASK-global-0112 | executionId=EXEC-global-0112 | traceId=trace-global-0112 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v211 在对象 object-15 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0112@2026-08-10T16:39:00.000Z/0.91 | 修复=REFRESH_METADATA：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0113 | taskId=TASK-global-0113 | executionId=EXEC-global-0113 | traceId=trace-global-0113 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v212 在对象 object-16 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0113@2026-08-10T16:48:00.000Z/0.92 | 修复=RESTORE_CONFIRMED_CHECKPOINT：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0114 | taskId=TASK-global-0114 | executionId=EXEC-global-0114 | traceId=trace-global-0114 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v213 在对象 object-17 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0114@2026-08-10T16:57:00.000Z/0.93 | 修复=REORDER_DEPENDENCY_AND_REPLAY：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0115 | taskId=TASK-global-0115 | executionId=EXEC-global-0115 | traceId=trace-global-0115 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v214 在对象 object-18 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0115@2026-08-10T17:06:00.000Z/0.94 | 修复=REDUCE_BATCH_AND_CHANNEL：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0116 | taskId=TASK-global-0116 | executionId=EXEC-global-0116 | traceId=trace-global-0116 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v215 在对象 object-19 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0116@2026-08-10T17:15:00.000Z/0.95 | 修复=MANUAL_HANDOFF：重投未交付 outbox，不重复业务事务 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0117 | taskId=TASK-global-0117 | executionId=EXEC-global-0117 | traceId=trace-global-0117 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v216 在对象 object-20 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0117@2026-08-10T17:24:00.000Z/0.96 | 修复=REPLAY_FAILED_OBJECTS：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0118 | taskId=TASK-global-0118 | executionId=EXEC-global-0118 | traceId=trace-global-0118 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v217 在对象 object-21 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0118@2026-08-10T17:33:00.000Z/0.97 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0119 | taskId=TASK-global-0119 | executionId=EXEC-global-0119 | traceId=trace-global-0119 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v218 在对象 object-22 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0119@2026-08-10T17:42:00.000Z/0.98 | 修复=PATCH_UNIQUE_FIELD_MAPPING：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0120 | taskId=TASK-global-0120 | executionId=EXEC-global-0120 | traceId=trace-global-0120 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v219 在对象 object-23 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0120@2026-08-10T17:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0121 | taskId=TASK-global-0121 | executionId=EXEC-global-0121 | traceId=trace-global-0121 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v220 在对象 object-24 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0121@2026-08-10T18:00:00.000Z/0.9 | 修复=REFRESH_METADATA：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0122 | taskId=TASK-global-0122 | executionId=EXEC-global-0122 | traceId=trace-global-0122 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v221 在对象 object-25 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0122@2026-08-10T18:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0123 | taskId=TASK-global-0123 | executionId=EXEC-global-0123 | traceId=trace-global-0123 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v222 在对象 object-26 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0123@2026-08-10T18:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0124 | taskId=TASK-global-0124 | executionId=EXEC-global-0124 | traceId=trace-global-0124 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v223 在对象 object-27 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0124@2026-08-10T18:27:00.000Z/0.93 | 修复=REDUCE_BATCH_AND_CHANNEL：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0125 | taskId=TASK-global-0125 | executionId=EXEC-global-0125 | traceId=trace-global-0125 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v224 在对象 object-28 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0125@2026-08-10T18:36:00.000Z/0.94 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0126 | taskId=TASK-global-0126 | executionId=EXEC-global-0126 | traceId=trace-global-0126 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v225 在对象 object-29 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0126@2026-08-10T18:45:00.000Z/0.95 | 修复=REPLAY_FAILED_OBJECTS：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0127 | taskId=TASK-global-0127 | executionId=EXEC-global-0127 | traceId=trace-global-0127 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v226 在对象 object-30 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0127@2026-08-10T18:54:00.000Z/0.96 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0128 | taskId=TASK-global-0128 | executionId=EXEC-global-0128 | traceId=trace-global-0128 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v227 在对象 object-31 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0128@2026-08-10T19:03:00.000Z/0.97 | 修复=PATCH_UNIQUE_FIELD_MAPPING：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0129 | taskId=TASK-global-0129 | executionId=EXEC-global-0129 | traceId=trace-global-0129 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v228 在对象 object-00 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0129@2026-08-10T19:12:00.000Z/0.98 | 修复=SET_APPROVED_STATIC_DEFAULT：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0130 | taskId=TASK-global-0130 | executionId=EXEC-global-0130 | traceId=trace-global-0130 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v229 在对象 object-01 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0130@2026-08-10T19:21:00.000Z/0.99 | 修复=REFRESH_METADATA：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0131 | taskId=TASK-global-0131 | executionId=EXEC-global-0131 | traceId=trace-global-0131 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v230 在对象 object-02 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0131@2026-08-10T19:30:00.000Z/0.9 | 修复=RESTORE_CONFIRMED_CHECKPOINT：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0132 | taskId=TASK-global-0132 | executionId=EXEC-global-0132 | traceId=trace-global-0132 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v231 在对象 object-03 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0132@2026-08-10T19:39:00.000Z/0.91 | 修复=REORDER_DEPENDENCY_AND_REPLAY：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0133 | taskId=TASK-global-0133 | executionId=EXEC-global-0133 | traceId=trace-global-0133 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v232 在对象 object-04 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0133@2026-08-10T19:48:00.000Z/0.92 | 修复=REDUCE_BATCH_AND_CHANNEL：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0134 | taskId=TASK-global-0134 | executionId=EXEC-global-0134 | traceId=trace-global-0134 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v233 在对象 object-05 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0134@2026-08-10T19:57:00.000Z/0.93 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0135 | taskId=TASK-global-0135 | executionId=EXEC-global-0135 | traceId=trace-global-0135 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v234 在对象 object-06 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0135@2026-08-10T20:06:00.000Z/0.94 | 修复=REPLAY_FAILED_OBJECTS：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0136 | taskId=TASK-global-0136 | executionId=EXEC-global-0136 | traceId=trace-global-0136 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v235 在对象 object-07 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0136@2026-08-10T20:15:00.000Z/0.95 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0137 | taskId=TASK-global-0137 | executionId=EXEC-global-0137 | traceId=trace-global-0137 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v236 在对象 object-08 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0137@2026-08-10T20:24:00.000Z/0.96 | 修复=PATCH_UNIQUE_FIELD_MAPPING：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0138 | taskId=TASK-global-0138 | executionId=EXEC-global-0138 | traceId=trace-global-0138 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v237 在对象 object-09 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0138@2026-08-10T20:33:00.000Z/0.97 | 修复=SET_APPROVED_STATIC_DEFAULT：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0139 | taskId=TASK-global-0139 | executionId=EXEC-global-0139 | traceId=trace-global-0139 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v238 在对象 object-10 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0139@2026-08-10T20:42:00.000Z/0.98 | 修复=MANUAL_HANDOFF：隔离坏行；超过停止阈值时退出 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0140 | taskId=TASK-global-0140 | executionId=EXEC-global-0140 | traceId=trace-global-0140 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v239 在对象 object-11 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0140@2026-08-10T20:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0141 | taskId=TASK-global-0141 | executionId=EXEC-global-0141 | traceId=trace-global-0141 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v240 在对象 object-12 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0141@2026-08-10T21:00:00.000Z/0.9 | 修复=REORDER_DEPENDENCY_AND_REPLAY：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0142 | taskId=TASK-global-0142 | executionId=EXEC-global-0142 | traceId=trace-global-0142 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v241 在对象 object-13 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0142@2026-08-10T21:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0143 | taskId=TASK-global-0143 | executionId=EXEC-global-0143 | traceId=trace-global-0143 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v242 在对象 object-14 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0143@2026-08-10T21:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0144 | taskId=TASK-global-0144 | executionId=EXEC-global-0144 | traceId=trace-global-0144 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v243 在对象 object-15 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0144@2026-08-10T21:27:00.000Z/0.93 | 修复=REPLAY_FAILED_OBJECTS：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0145 | taskId=TASK-global-0145 | executionId=EXEC-global-0145 | traceId=trace-global-0145 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v244 在对象 object-16 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0145@2026-08-10T21:36:00.000Z/0.94 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0146 | taskId=TASK-global-0146 | executionId=EXEC-global-0146 | traceId=trace-global-0146 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v245 在对象 object-17 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0146@2026-08-10T21:45:00.000Z/0.95 | 修复=PATCH_UNIQUE_FIELD_MAPPING：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0147 | taskId=TASK-global-0147 | executionId=EXEC-global-0147 | traceId=trace-global-0147 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v246 在对象 object-18 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0147@2026-08-10T21:54:00.000Z/0.96 | 修复=SET_APPROVED_STATIC_DEFAULT：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0148 | taskId=TASK-global-0148 | executionId=EXEC-global-0148 | traceId=trace-global-0148 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v247 在对象 object-19 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0148@2026-08-10T22:03:00.000Z/0.97 | 修复=REFRESH_METADATA：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0149 | taskId=TASK-global-0149 | executionId=EXEC-global-0149 | traceId=trace-global-0149 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v248 在对象 object-20 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0149@2026-08-10T22:12:00.000Z/0.98 | 修复=RESTORE_CONFIRMED_CHECKPOINT：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0150 | taskId=TASK-global-0150 | executionId=EXEC-global-0150 | traceId=trace-global-0150 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v249 在对象 object-21 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0150@2026-08-10T22:21:00.000Z/0.99 | 修复=REORDER_DEPENDENCY_AND_REPLAY：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0151 | taskId=TASK-global-0151 | executionId=EXEC-global-0151 | traceId=trace-global-0151 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v250 在对象 object-22 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0151@2026-08-10T22:30:00.000Z/0.9 | 修复=REDUCE_BATCH_AND_CHANNEL：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0152 | taskId=TASK-global-0152 | executionId=EXEC-global-0152 | traceId=trace-global-0152 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v251 在对象 object-23 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0152@2026-08-10T22:39:00.000Z/0.91 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0153 | taskId=TASK-global-0153 | executionId=EXEC-global-0153 | traceId=trace-global-0153 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v252 在对象 object-24 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0153@2026-08-10T22:48:00.000Z/0.92 | 修复=REPLAY_FAILED_OBJECTS：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0154 | taskId=TASK-global-0154 | executionId=EXEC-global-0154 | traceId=trace-global-0154 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v253 在对象 object-25 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0154@2026-08-10T22:57:00.000Z/0.93 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0155 | taskId=TASK-global-0155 | executionId=EXEC-global-0155 | traceId=trace-global-0155 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v254 在对象 object-26 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0155@2026-08-10T23:06:00.000Z/0.94 | 修复=PATCH_UNIQUE_FIELD_MAPPING：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0156 | taskId=TASK-global-0156 | executionId=EXEC-global-0156 | traceId=trace-global-0156 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v255 在对象 object-27 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0156@2026-08-10T23:15:00.000Z/0.95 | 修复=SET_APPROVED_STATIC_DEFAULT：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0157 | taskId=TASK-global-0157 | executionId=EXEC-global-0157 | traceId=trace-global-0157 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v256 在对象 object-28 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0157@2026-08-10T23:24:00.000Z/0.96 | 修复=REFRESH_METADATA：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0158 | taskId=TASK-global-0158 | executionId=EXEC-global-0158 | traceId=trace-global-0158 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v257 在对象 object-29 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0158@2026-08-10T23:33:00.000Z/0.97 | 修复=RESTORE_CONFIRMED_CHECKPOINT：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0159 | taskId=TASK-global-0159 | executionId=EXEC-global-0159 | traceId=trace-global-0159 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v258 在对象 object-30 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0159@2026-08-10T23:42:00.000Z/0.98 | 修复=REORDER_DEPENDENCY_AND_REPLAY：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0160 | taskId=TASK-global-0160 | executionId=EXEC-global-0160 | traceId=trace-global-0160 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v259 在对象 object-31 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0160@2026-08-10T23:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0161 | taskId=TASK-global-0161 | executionId=EXEC-global-0161 | traceId=trace-global-0161 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v260 在对象 object-00 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0161@2026-08-11T00:00:00.000Z/0.9 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0162 | taskId=TASK-global-0162 | executionId=EXEC-global-0162 | traceId=trace-global-0162 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v261 在对象 object-01 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0162@2026-08-11T00:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0163 | taskId=TASK-global-0163 | executionId=EXEC-global-0163 | traceId=trace-global-0163 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v262 在对象 object-02 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0163@2026-08-11T00:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0164 | taskId=TASK-global-0164 | executionId=EXEC-global-0164 | traceId=trace-global-0164 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v263 在对象 object-03 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0164@2026-08-11T00:27:00.000Z/0.93 | 修复=PATCH_UNIQUE_FIELD_MAPPING：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0165 | taskId=TASK-global-0165 | executionId=EXEC-global-0165 | traceId=trace-global-0165 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v264 在对象 object-04 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0165@2026-08-11T00:36:00.000Z/0.94 | 修复=SET_APPROVED_STATIC_DEFAULT：刷新元数据；唯一兼容映射才自动修复 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0166 | taskId=TASK-global-0166 | executionId=EXEC-global-0166 | traceId=trace-global-0166 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v265 在对象 object-05 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0166@2026-08-11T00:45:00.000Z/0.95 | 修复=REFRESH_METADATA：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0167 | taskId=TASK-global-0167 | executionId=EXEC-global-0167 | traceId=trace-global-0167 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v266 在对象 object-06 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0167@2026-08-11T00:54:00.000Z/0.96 | 修复=RESTORE_CONFIRMED_CHECKPOINT：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0168 | taskId=TASK-global-0168 | executionId=EXEC-global-0168 | traceId=trace-global-0168 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v267 在对象 object-07 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0168@2026-08-11T01:03:00.000Z/0.97 | 修复=REORDER_DEPENDENCY_AND_REPLAY：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0169 | taskId=TASK-global-0169 | executionId=EXEC-global-0169 | traceId=trace-global-0169 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v268 在对象 object-08 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0169@2026-08-11T01:12:00.000Z/0.98 | 修复=REDUCE_BATCH_AND_CHANNEL：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0170 | taskId=TASK-global-0170 | executionId=EXEC-global-0170 | traceId=trace-global-0170 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v269 在对象 object-09 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0170@2026-08-11T01:21:00.000Z/0.99 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0171 | taskId=TASK-global-0171 | executionId=EXEC-global-0171 | traceId=trace-global-0171 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v270 在对象 object-10 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0171@2026-08-11T01:30:00.000Z/0.9 | 修复=REPLAY_FAILED_OBJECTS：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0172 | taskId=TASK-global-0172 | executionId=EXEC-global-0172 | traceId=trace-global-0172 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v271 在对象 object-11 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0172@2026-08-11T01:39:00.000Z/0.91 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0173 | taskId=TASK-global-0173 | executionId=EXEC-global-0173 | traceId=trace-global-0173 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v272 在对象 object-12 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0173@2026-08-11T01:48:00.000Z/0.92 | 修复=PATCH_UNIQUE_FIELD_MAPPING：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0174 | taskId=TASK-global-0174 | executionId=EXEC-global-0174 | traceId=trace-global-0174 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v273 在对象 object-13 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0174@2026-08-11T01:57:00.000Z/0.93 | 修复=SET_APPROVED_STATIC_DEFAULT：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0175 | taskId=TASK-global-0175 | executionId=EXEC-global-0175 | traceId=trace-global-0175 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v274 在对象 object-14 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0175@2026-08-11T02:06:00.000Z/0.94 | 修复=REFRESH_METADATA：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0176 | taskId=TASK-global-0176 | executionId=EXEC-global-0176 | traceId=trace-global-0176 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v275 在对象 object-15 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0176@2026-08-11T02:15:00.000Z/0.95 | 修复=RESTORE_CONFIRMED_CHECKPOINT：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0177 | taskId=TASK-global-0177 | executionId=EXEC-global-0177 | traceId=trace-global-0177 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v276 在对象 object-16 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0177@2026-08-11T02:24:00.000Z/0.96 | 修复=REORDER_DEPENDENCY_AND_REPLAY：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0178 | taskId=TASK-global-0178 | executionId=EXEC-global-0178 | traceId=trace-global-0178 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v277 在对象 object-17 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0178@2026-08-11T02:33:00.000Z/0.97 | 修复=REDUCE_BATCH_AND_CHANNEL：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0179 | taskId=TASK-global-0179 | executionId=EXEC-global-0179 | traceId=trace-global-0179 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v278 在对象 object-18 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0179@2026-08-11T02:42:00.000Z/0.98 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0180 | taskId=TASK-global-0180 | executionId=EXEC-global-0180 | traceId=trace-global-0180 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v279 在对象 object-19 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0180@2026-08-11T02:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0181 | taskId=TASK-global-0181 | executionId=EXEC-global-0181 | traceId=trace-global-0181 | errorCode=CONNECTION_TIMEOUT | 失败原因=网络或端点超时；当前配置 cfg-v280 在对象 object-20 上触发 CONNECTION_TIMEOUT，需要依据 连接耗时、DNS、目标健康 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0181@2026-08-11T03:00:00.000Z/0.9 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：有界增加超时或等待端点恢复；持续失败时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0182 | taskId=TASK-global-0182 | executionId=EXEC-global-0182 | traceId=trace-global-0182 | errorCode=AUTHENTICATION_FAILED | 失败原因=凭据失效或引用错误；当前配置 cfg-v281 在对象 object-21 上触发 AUTHENTICATION_FAILED，需要依据 认证响应与凭据引用版本 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0182@2026-08-11T03:09:00.000Z/0.91 | 修复=MANUAL_HANDOFF：禁止自动修改凭据，返回轮换指引 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0183 | taskId=TASK-global-0183 | executionId=EXEC-global-0183 | traceId=trace-global-0183 | errorCode=PERMISSION_DENIED | 失败原因=资源动作未授权；当前配置 cfg-v282 在对象 object-22 上触发 PERMISSION_DENIED，需要依据 actor、resource、action、审批事实 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0183@2026-08-11T03:18:00.000Z/0.92 | 修复=MANUAL_HANDOFF：立即退出 Loop，说明所需权限 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0184 | taskId=TASK-global-0184 | executionId=EXEC-global-0184 | traceId=trace-global-0184 | errorCode=RATE_LIMIT_EXCEEDED | 失败原因=来源或目标端限流；当前配置 cfg-v283 在对象 object-23 上触发 RATE_LIMIT_EXCEEDED，需要依据 429、限流头、连接器容量 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0184@2026-08-11T03:27:00.000Z/0.93 | 修复=REFRESH_METADATA：降低并发/批量并有界退避 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0185 | taskId=TASK-global-0185 | executionId=EXEC-global-0185 | traceId=trace-global-0185 | errorCode=SCHEMA_DRIFT_DETECTED | 失败原因=来源结构发生变化；当前配置 cfg-v284 在对象 object-24 上触发 SCHEMA_DRIFT_DETECTED，需要依据 schema 指纹与元数据差异 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0185@2026-08-11T03:36:00.000Z/0.94 | 修复=MANUAL_HANDOFF：刷新元数据；唯一兼容映射才自动修复 | 最终状态=ATTENTION_REQUIRED
-CASE-TXT-CMD-711-0186 | taskId=TASK-global-0186 | executionId=EXEC-global-0186 | traceId=trace-global-0186 | errorCode=FIELD_MAPPING_MISSING | 失败原因=目标字段缺少映射；当前配置 cfg-v285 在对象 object-25 上触发 FIELD_MAPPING_MISSING，需要依据 源目标字段、历史成功映射 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0186@2026-08-11T03:45:00.000Z/0.95 | 修复=REORDER_DEPENDENCY_AND_REPLAY：唯一映射可修复，歧义映射退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0187 | taskId=TASK-global-0187 | executionId=EXEC-global-0187 | traceId=trace-global-0187 | errorCode=NOT_NULL_VIOLATION | 失败原因=目标非空字段收到空值；当前配置 cfg-v286 在对象 object-26 上触发 NOT_NULL_VIOLATION，需要依据 错误字段、字段画像、已批准默认值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0187@2026-08-11T03:54:00.000Z/0.96 | 修复=REDUCE_BATCH_AND_CHANNEL：使用已批准静态默认值；不得放宽约束 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0188 | taskId=TASK-global-0188 | executionId=EXEC-global-0188 | traceId=trace-global-0188 | errorCode=DATA_TYPE_MISMATCH | 失败原因=源目标类型不兼容；当前配置 cfg-v287 在对象 object-27 上触发 DATA_TYPE_MISMATCH，需要依据 类型、精度、长度、样本统计 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0188@2026-08-11T04:03:00.000Z/0.97 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：无损转换可修复，有损转换退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0189 | taskId=TASK-global-0189 | executionId=EXEC-global-0189 | traceId=trace-global-0189 | errorCode=NUMERIC_OVERFLOW | 失败原因=数值超过目标精度；当前配置 cfg-v288 在对象 object-28 上触发 NUMERIC_OVERFLOW，需要依据 最值、precision、scale 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0189@2026-08-11T04:12:00.000Z/0.98 | 修复=REPLAY_FAILED_OBJECTS：禁止截断，返回扩容或映射建议 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0190 | taskId=TASK-global-0190 | executionId=EXEC-global-0190 | traceId=trace-global-0190 | errorCode=STRING_TRUNCATION_RISK | 失败原因=字符串超过目标长度；当前配置 cfg-v289 在对象 object-29 上触发 STRING_TRUNCATION_RISK，需要依据 最大长度与超限行数 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0190@2026-08-11T04:21:00.000Z/0.99 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：禁止静默截断，退出并给出影响 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0191 | taskId=TASK-global-0191 | executionId=EXEC-global-0191 | traceId=trace-global-0191 | errorCode=FOREIGN_KEY_MISSING | 失败原因=父记录尚未存在；当前配置 cfg-v290 在对象 object-30 上触发 FOREIGN_KEY_MISSING，需要依据 约束名、父子对象、执行 DAG 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0191@2026-08-11T04:30:00.000Z/0.9 | 修复=PATCH_UNIQUE_FIELD_MAPPING：调整依赖顺序并 replay 父子对象 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0192 | taskId=TASK-global-0192 | executionId=EXEC-global-0192 | traceId=trace-global-0192 | errorCode=UNIQUE_CONSTRAINT_VIOLATION | 失败原因=业务键或幂等键重复；当前配置 cfg-v291 在对象 object-31 上触发 UNIQUE_CONSTRAINT_VIOLATION，需要依据 约束名、键摘要、历史回执 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0192@2026-08-11T04:39:00.000Z/0.91 | 修复=SET_APPROVED_STATIC_DEFAULT：确认幂等重放；非幂等冲突退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0193 | taskId=TASK-global-0193 | executionId=EXEC-global-0193 | traceId=trace-global-0193 | errorCode=CHECKPOINT_NOT_FOUND | 失败原因=没有可恢复位点；当前配置 cfg-v292 在对象 object-00 上触发 CHECKPOINT_NOT_FOUND，需要依据 对象台账与 checkpoint 表 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0193@2026-08-11T04:48:00.000Z/0.92 | 修复=REFRESH_METADATA：只在授权允许时从安全起点重跑 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0194 | taskId=TASK-global-0194 | executionId=EXEC-global-0194 | traceId=trace-global-0194 | errorCode=CHECKPOINT_STALE | 失败原因=位点落后或与提交不一致；当前配置 cfg-v293 在对象 object-01 上触发 CHECKPOINT_STALE，需要依据 worker 回执、目标提交、位点时间 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0194@2026-08-11T04:57:00.000Z/0.93 | 修复=RESTORE_CONFIRMED_CHECKPOINT：选择最近已确认位点并验证去重 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0195 | taskId=TASK-global-0195 | executionId=EXEC-global-0195 | traceId=trace-global-0195 | errorCode=KAFKA_BACKLOG_HIGH | 失败原因=消费者处理速度低于生产速度；当前配置 cfg-v294 在对象 object-02 上触发 KAFKA_BACKLOG_HIGH，需要依据 group、partition、lag、处理时延 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0195@2026-08-11T05:06:00.000Z/0.94 | 修复=REORDER_DEPENDENCY_AND_REPLAY：隔离坏消息并在容量允许时扩容 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0196 | taskId=TASK-global-0196 | executionId=EXEC-global-0196 | traceId=trace-global-0196 | errorCode=OUTBOX_DELIVERY_TIMEOUT | 失败原因=事务事实未及时投递；当前配置 cfg-v295 在对象 object-03 上触发 OUTBOX_DELIVERY_TIMEOUT，需要依据 outbox 状态、attempt、broker 响应 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0196@2026-08-11T05:15:00.000Z/0.95 | 修复=REDUCE_BATCH_AND_CHANNEL：重投未交付 outbox，不重复业务事务 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0197 | taskId=TASK-global-0197 | executionId=EXEC-global-0197 | traceId=trace-global-0197 | errorCode=CONNECTOR_VERSION_INCOMPATIBLE | 失败原因=连接器版本不支持配置；当前配置 cfg-v296 在对象 object-04 上触发 CONNECTOR_VERSION_INCOMPATIBLE，需要依据 版本、能力快照、配置字段 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0197@2026-08-11T05:24:00.000Z/0.96 | 修复=INCREASE_TIMEOUT_WITHIN_BOUND：回滚兼容配置或人工升级连接器 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0198 | taskId=TASK-global-0198 | executionId=EXEC-global-0198 | traceId=trace-global-0198 | errorCode=TARGET_CAPACITY_EXCEEDED | 失败原因=目标 CPU/连接/磁盘达到阈值；当前配置 cfg-v297 在对象 object-05 上触发 TARGET_CAPACITY_EXCEEDED，需要依据 容量指标、等待事件、配额 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0198@2026-08-11T05:33:00.000Z/0.97 | 修复=REPLAY_FAILED_OBJECTS：降低负载并等待恢复，不扩大压力 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0199 | taskId=TASK-global-0199 | executionId=EXEC-global-0199 | traceId=trace-global-0199 | errorCode=DIRTY_RECORD_THRESHOLD_EXCEEDED | 失败原因=脏数据超过任务阈值；当前配置 cfg-v298 在对象 object-06 上触发 DIRTY_RECORD_THRESHOLD_EXCEEDED，需要依据 规则结果、坏行样本引用、阈值 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0199@2026-08-11T05:42:00.000Z/0.98 | 修复=ROLLBACK_LAST_SUCCESS_CONFIG：隔离坏行；超过停止阈值时退出 | 最终状态=RECOVERED
-CASE-TXT-CMD-711-0200 | taskId=TASK-global-0200 | executionId=EXEC-global-0200 | traceId=trace-global-0200 | errorCode=DDL_REQUIRED | 失败原因=需要修改目标结构；当前配置 cfg-v299 在对象 object-07 上触发 DDL_REQUIRED，需要依据 元数据差异与目标约束 判定根因。 | 证据=synthetic://datasmart-govern/correlated/global/execution/EXEC-global-0200@2026-08-11T05:51:00.000Z/0.99 | 修复=MANUAL_HANDOFF：高风险动作，返回 DDL、影响、回滚与验证指引 | 最终状态=ATTENTION_REQUIRED
+CMD-0006 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0007 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0008 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0009 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0010 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0011 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0012 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0013 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0014 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0015 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0016 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0017 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0018 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0019 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0020 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0021 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0022 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0023 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0024 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0025 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0026 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0027 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0028 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0029 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0030 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0031 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0032 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0033 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0034 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0035 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0036 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0037 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0038 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0039 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0040 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0041 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0042 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0043 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0044 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0045 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0046 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0047 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0048 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0049 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0050 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0051 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0052 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0053 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0054 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0055 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0056 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0057 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0058 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0059 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0060 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0061 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0062 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0063 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0064 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0065 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0066 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0067 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0068 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0069 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0070 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0071 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0072 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0073 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0074 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0075 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0076 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0077 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0078 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0079 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0080 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0081 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0082 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0083 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0084 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0085 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0086 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0087 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0088 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0089 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0090 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0091 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0092 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0093 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0094 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0095 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0096 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0097 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0098 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0099 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0100 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0101 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0102 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0103 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0104 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0105 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0106 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0107 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0108 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0109 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0110 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0111 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0112 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0113 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0114 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0115 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0116 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0117 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0118 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0119 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0120 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0121 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0122 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0123 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0124 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0125 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0126 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0127 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0128 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0129 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0130 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0131 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0132 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0133 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0134 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0135 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0136 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0137 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0138 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0139 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0140 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0141 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0142 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0143 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0144 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0145 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0146 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0147 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0148 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0149 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0150 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0151 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0152 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0153 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0154 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0155 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0156 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0157 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0158 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0159 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0160 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0161 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0162 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0163 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0164 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0165 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0166 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0167 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0168 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0169 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0170 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0171 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0172 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0173 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0174 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0175 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0176 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0177 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0178 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0179 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0180 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0181 | 名称=服务健康巡检 | 目标=Gateway 与全部后端服务
+用途：actuator health、实例数、重启次数
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway-与全部后端服务> --scope <tenant/project> --trace-id <trace-id>
+预期：所有关键服务 healthy，实例地址有效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0182 | 名称=Kafka 积压巡检 | 目标=主 topic、retry、DLT
+用途：group lag、消费速率、最老消息时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <主-topic、retry、DLT> --scope <tenant/project> --trace-id <trace-id>
+预期：lag 未超过任务延迟预算
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0183 | 名称=数据库容量巡检 | 目标=PostgreSQL
+用途：连接数、锁等待、磁盘、WAL、慢查询
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL> --scope <tenant/project> --trace-id <trace-id>
+预期：连接和磁盘低于告警阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0184 | 名称=pgvector 索引巡检 | 目标=ai_memory schema
+用途：索引大小、维度、失效 chunk、查询延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <ai_memory-schema> --scope <tenant/project> --trace-id <trace-id>
+预期：模型维度与索引合同一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0185 | 名称=Redis 状态巡检 | 目标=Redis
+用途：内存、淘汰、持久化、阻塞客户端
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Redis> --scope <tenant/project> --trace-id <trace-id>
+预期：无异常淘汰和持续阻塞
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0186 | 名称=对象存储巡检 | 目标=MinIO
+用途：容量、错误率、未完成上传、生命周期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <MinIO> --scope <tenant/project> --trace-id <trace-id>
+预期：容量充足且无长期未完成上传
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0187 | 名称=任务执行巡检 | 目标=data-sync
+用途：运行时长、读写量、脏数据、对象状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync> --scope <tenant/project> --trace-id <trace-id>
+预期：执行状态与对象台账一致
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0188 | 名称=调度触发巡检 | 目标=data-sync scheduler
+用途：应触发数、实际触发数、错过策略
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <data-sync-scheduler> --scope <tenant/project> --trace-id <trace-id>
+预期：没有无解释的漏触发
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0189 | 名称=Recovery 巡检 | 目标=Recovery case
+用途：cycle、动作、证据、最终状态
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Recovery-case> --scope <tenant/project> --trace-id <trace-id>
+预期：循环未超限且每轮有新事实
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0190 | 名称=Agent Runtime 巡检 | 目标=Java/Python Agent Runtime
+用途：session、run、checkpoint、Provider
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Java/Python-Agent-Runtime> --scope <tenant/project> --trace-id <trace-id>
+预期：状态可恢复且 Provider 诊断明确
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0191 | 名称=RAG 检索巡检 | 目标=RAG pipeline
+用途：范围泄漏、引用、拒答、延迟
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <RAG-pipeline> --scope <tenant/project> --trace-id <trace-id>
+预期：范围泄漏为零且延迟在预算内
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0192 | 名称=授权缓存巡检 | 目标=Gateway/permission-admin
+用途：缓存年龄、失效事件、判定错误
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/permission-admin> --scope <tenant/project> --trace-id <trace-id>
+预期：策略变更后缓存及时失效
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0193 | 名称=审计完整性巡检 | 目标=审计存储
+用途：请求、批准、执行、修复和导出链路
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <审计存储> --scope <tenant/project> --trace-id <trace-id>
+预期：关键动作都有主体、时间和结果
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0194 | 名称=备份结果巡检 | 目标=PostgreSQL/MinIO/配置
+用途：备份状态、大小、校验和、保留期
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <PostgreSQL/MinIO/配置> --scope <tenant/project> --trace-id <trace-id>
+预期：备份成功且校验和可验证
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0195 | 名称=证书与 Secret 到期巡检 | 目标=Gateway/Provider/连接器
+用途：到期时间和轮换计划
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Gateway/Provider/连接器> --scope <tenant/project> --trace-id <trace-id>
+预期：到期前完成轮换且不输出 Secret 值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0196 | 名称=容器资源巡检 | 目标=Compose/Kubernetes
+用途：CPU、内存、重启、文件句柄
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <Compose/Kubernetes> --scope <tenant/project> --trace-id <trace-id>
+预期：资源使用低于容量阈值
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0197 | 名称=日志采集巡检 | 目标=日志管线
+用途：采集延迟、丢弃量、敏感字段扫描
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <日志管线> --scope <tenant/project> --trace-id <trace-id>
+预期：日志完整且无凭据正文
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0198 | 名称=告警投递巡检 | 目标=告警通道
+用途：触发、聚合、静默、送达、确认
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <告警通道> --scope <tenant/project> --trace-id <trace-id>
+预期：关键告警可送达值班角色
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0199 | 名称=时间同步巡检 | 目标=全部节点
+用途：NTP 偏差、事件时间与数据库时间
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <全部节点> --scope <tenant/project> --trace-id <trace-id>
+预期：偏差不影响跨服务排序
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。
+
+CMD-0200 | 名称=发布后巡检 | 目标=变更服务
+用途：迁移、健康、错误率、关键 smoke
+权限：只读诊断优先；变更命令需要对应运维权限和变更窗口。
+命令：datasmart-ops inspect --target <变更服务> --scope <tenant/project> --trace-id <trace-id>
+预期：门禁通过后才继续放量
+回滚：该示例为只读命令；任何变更命令必须在正式 Runbook 中声明回滚。

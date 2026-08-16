@@ -203,20 +203,18 @@ class RagEvaluationAssetsTest(unittest.TestCase):
             self.assertIn(document["metadata"]["artifactCode"], content)
             content_format = document["contentFormat"]
             if content_format == "docx":
-                self.assertGreaterEqual(len(content), 90_000, document["documentId"])
-                self.assertGreaterEqual(content.count("失败原因："), 100, document["documentId"])
+                self.assertGreaterEqual(len(content), 30_000, document["documentId"])
             elif content_format == "xlsx":
-                self.assertGreaterEqual(len(content), 190_000, document["documentId"])
-                self.assertEqual(6, content.count("工作表："), document["documentId"])
-                self.assertGreaterEqual(content.count("CASE-"), 240, document["documentId"])
+                self.assertGreaterEqual(len(content), 80_000, document["documentId"])
+                self.assertGreaterEqual(content.count("工作表："), 5, document["documentId"])
             elif content_format == "txt":
-                self.assertGreaterEqual(content.count("CASE-"), 200, document["documentId"])
+                self.assertGreaterEqual(len(content.splitlines()), 200, document["documentId"])
             elif content_format == "json":
                 self.assertGreaterEqual(content.count('"recordId"'), 240, document["documentId"])
             elif content_format == "jsonl":
                 self.assertGreaterEqual(content.count('"recordId"'), 600, document["documentId"])
             elif content_format == "csv":
-                self.assertGreaterEqual(content.count("TASK-"), 600, document["documentId"])
+                self.assertGreaterEqual(len(content.splitlines()), 601, document["documentId"])
             elif content_format == "log":
                 self.assertGreaterEqual(content.count("traceId="), 1_200, document["documentId"])
             elif content_format == "sql":
@@ -236,10 +234,168 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         )
         for anchor in correlated_anchors:
             self.assertIn("TASK-global-0001", extracted_by_anchor[anchor])
-        self.assertEqual(
-            153,
-            extracted_by_anchor["global:reference-api-websocket"].count("接口示例号"),
+        self.assertGreaterEqual(
+            extracted_by_anchor["global:reference-api-websocket"].count("接口编号："),
+            400,
         )
+
+    def test_document_types_keep_their_own_content_responsibility(self) -> None:
+        """防止通用事故模板再次污染用户、管理员、接口、产品和部署类文档。"""
+
+        misplaced_case_markers = (
+            "任务失败、运维与事故案例",
+            "关联事故与任务案例",
+            "失败原因：",
+            "修复动作风险目录",
+        )
+        incident_slugs = {
+            "record-operations-incident",
+            "postmortem-schema-drift",
+            "postmortem-foreign-key",
+            "postmortem-rate-limit",
+            "postmortem-checkpoint",
+            "postmortem-kafka-backlog",
+        }
+        for document in self.documents:
+            if document["workspaceKey"] != "*" or document["contentFormat"] != "docx":
+                continue
+            slug = Path(document["path"]).stem
+            if slug in incident_slugs:
+                continue
+            content = self._global_document_content(slug)
+            for marker in misplaced_case_markers:
+                self.assertNotIn(marker, content, slug)
+
+        responsibility_markers = {
+            "manual-user-guide": ("用户操作编号：", "操作步骤：", "所需权限："),
+            "manual-administrator-guide": ("管理操作编号：", "适用管理员：", "审计结果："),
+            "manual-deployment-guide": ("部署步骤编号：", "配置项：", "验收命令："),
+            "product-feature-specification": ("特性编号：", "目标用户：", "功能边界："),
+            "manual-security-approval": ("策略编号：", "适用主体：", "审批要求："),
+        }
+        for slug, required_markers in responsibility_markers.items():
+            content = self._global_document_content(slug)
+            for marker in misplaced_case_markers:
+                self.assertNotIn(marker, content, slug)
+            for marker in required_markers:
+                self.assertIn(marker, content, slug)
+
+        self.assertGreaterEqual(
+            self._global_document_content("manual-user-guide").count("用户操作编号："),
+            80,
+        )
+        self.assertGreaterEqual(
+            self._global_document_content("manual-administrator-guide").count("管理操作编号："),
+            100,
+        )
+        self.assertGreaterEqual(
+            self._global_document_content("product-feature-specification").count("特性编号："),
+            100,
+        )
+
+    def test_api_documents_only_describe_real_contracts(self) -> None:
+        """接口文档必须记录真实接口、参数与示例，不能混入任务事故账本。"""
+
+        api_slugs = (
+            "reference-api-websocket",
+            "reference-authentication-api",
+            "reference-agent-api",
+            "reference-task-api",
+            "reference-data-sync-api",
+            "reference-recovery-api",
+            "reference-websocket-events",
+        )
+        required_markers = (
+            "接口编号：",
+            "来源控制器：",
+            "请求方法：",
+            "访问路径：",
+            "请求参数：",
+            "请求示例：",
+            "成功响应示例：",
+            "错误响应：",
+        )
+        for slug in api_slugs:
+            content = self._global_document_content(slug)
+            for marker in required_markers:
+                self.assertIn(marker, content, slug)
+            self.assertNotIn("任务失败、运维与事故案例", content, slug)
+            self.assertNotIn("失败原因：", content, slug)
+
+        comprehensive = self._global_document_content("reference-api-websocket")
+        self.assertEqual(475, comprehensive.count("接口编号："))
+        for marker in ("来源控制器：", "请求方法：", "访问路径：", "请求示例：", "成功响应示例："):
+            self.assertEqual(475, comprehensive.count(marker), marker)
+        self.assertIn("公开接口", comprehensive)
+        self.assertIn("内部控制面接口", comprehensive)
+        self.assertNotIn("：undefined", comprehensive)
+        self.assertNotIn("This route is anonymous", comprehensive)
+        self.assertNotIn("A future trusted gateway trace", comprehensive)
+
+    def test_operational_incident_and_test_documents_use_domain_specific_records(self) -> None:
+        """运维、事故和测试资料可以有记录，但记录结构必须符合各自业务含义。"""
+
+        operations = self._global_document_content("manual-operations-guide")
+        self.assertGreaterEqual(operations.count("运维作业编号："), 120)
+        self.assertIn("检查命令：", operations)
+        self.assertIn("回滚步骤：", operations)
+        self.assertNotIn("任务失败、运维与事故案例", operations)
+
+        incident = self._global_document_content("record-operations-incident")
+        self.assertGreaterEqual(incident.count("事故编号："), 200)
+        for marker in ("影响范围：", "根因：", "证据来源：", "处置时间线：", "恢复验证："):
+            self.assertIn(marker, incident)
+
+        report = self._global_document_content("report-platform-test")
+        self.assertGreaterEqual(report.count("测试用例编号："), 180)
+        for marker in ("测试目标：", "前置条件：", "测试步骤：", "预期结果：", "实际结果："):
+            self.assertIn(marker, report)
+        self.assertNotIn("修复动作风险目录", report)
+
+    def test_workbooks_and_structured_files_use_topic_specific_schemas(self) -> None:
+        """表格和结构化资料不能因为复用生成器而全部退化成失败诊断台账。"""
+
+        successful = self._global_document_content("workbook-success-task-parameters")
+        self.assertIn("工作表：成功任务", successful)
+        self.assertNotIn("工作表：失败诊断", successful)
+        self.assertNotIn("失败原因", successful)
+
+        test_matrix = self._global_document_content("workbook-test-result-matrix")
+        self.assertIn("工作表：测试用例", test_matrix)
+        self.assertIn("工作表：缺陷记录", test_matrix)
+        self.assertNotIn("工作表：失败诊断", test_matrix)
+
+        incident_ledger = self._global_document_content("workbook-incident-repair-ledger")
+        self.assertIn("工作表：事故记录", incident_ledger)
+        self.assertIn("工作表：根因与修复", incident_ledger)
+
+        connector = self._global_document_content("connector-capabilities")
+        self.assertIn('"connectorId"', connector)
+        self.assertIn('"maximumBatchSize"', connector)
+        self.assertNotIn('"errorCode"', connector)
+        self.assertNotIn('"incidentId"', connector)
+
+        successful_runs = self._global_document_content("successful-runs")
+        header = successful_runs.splitlines()[0]
+        self.assertIn("config_version", header)
+        self.assertNotIn("error_code", header)
+        self.assertNotIn("failure_reason", header)
+
+        task_cases = self._global_document_content("task-case-library")
+        self.assertIn('"failureReason"', task_cases)
+        self.assertIn('"rootCause"', task_cases)
+
+    def _global_document_content(self, slug: str) -> str:
+        """按全局范围与文件名读取一份资产的安全提取文本。"""
+
+        suffix_marker = f"/{slug}."
+        document = next(
+            item
+            for item in self.documents
+            if item["workspaceKey"] == "*" and suffix_marker in item["path"].replace("\\", "/")
+        )
+        source_path = ASSET_ROOT / document["path"]
+        return extract_rag_document_bytes(source_path.read_bytes(), source_path.suffix).content
 
     def test_golden_case_count_and_reference_contract(self) -> None:
         """证明至少 120 条用例、每个 URI 有来源、每份文档均有独立检索用例。"""

@@ -131,16 +131,17 @@ MASTER_ORCHESTRATOR
 - 候选窗口先重排、再证据门控和 MMR 选取 topK，内部候选快照仅供评测，不进入 API 摘要。
 - OpenAI-compatible 批量 Embedding Provider，摄取和内存评测均按有界批次生成 chunk 向量。
 - 硅基流动 `BAAI/bge-m3` / `BAAI/bge-reranker-v2-m3` 配置与独立重排适配器。
-- 188 份合成中文异构文档、308 条黄金用例、原文件/提取文本双哈希、低敏评测报告和质量门禁；
-  物理格式覆盖 Markdown、DOCX、XLSX、TXT、JSON、JSONL、CSV、LOG 和 SQL。
+- 356 份合成中文异构文档、752 条黄金用例、原文件/提取文本双哈希、低敏评测报告和质量门禁；
+  物理格式覆盖 Markdown、DOCX、XLSX、TXT、JSON、JSONL、CSV、LOG 和 SQL。Word、Excel 和结构化资料
+  按文档职责独立建模，接口资料从源码扫描 475 条真实合同，不再复用通用事故模板。
 
 尚未完成但已预留接口：
 
 - Neo4j GraphRAG，用于血缘、表关系、业务口径和资产图谱推理。
 - MinIO 文档解析、增量索引、删除重建和索引版本管理。
-- 已完成一次 308 条用例的真实 BGE 全量评测，以及 188 文档/313 chunk 的本机 pgvector 摄取和
-  DOCX/XLSX 原始 URI 查询 smoke；质量门禁仍未通过，完整
-  pgvector 基准、并发、限流和故障注入仍待执行。
+- 历史 188/308 基线已完成一次真实 BGE 全量评测，以及 188 文档/313 chunk 的本机 pgvector 摄取和
+  DOCX/XLSX 原始 URI 查询 smoke；这些结果不代表当前 356/752 语料。新指纹上的 BGE、pgvector 基准、
+  并发、限流和故障注入仍待执行。
 - RAG 的真实执行 handoff：当前 runner 已输出低敏能力合同并写入 durable checkpoint，但尚未自动创建 Java outbox、派发 worker 或把 RAG 结果作为低敏 specialist summary 回填给 DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT。
 
 ## 6. 面试讲解要点
@@ -180,9 +181,10 @@ Recovery 不是“发生失败就先检索”的固定流程。`RECOVERY_AGENT` 
 
 ## 2026-08-15 补充：中文黄金集、批量 Embedding 与独立 Reranker
 
-首轮新增 96 份纯合成中文 Markdown 和 168 条黄金用例；本轮继续扩展到 188 份异构原文件和 308 条
-黄金用例，新增 DOCX 用户/管理员/部署/运维/测试/产品/API/恢复/安全资料、XLSX 成功任务参数与字段映射，
-以及 TXT、JSON、JSONL、CSV、LOG、SQL 的运行和持久化记录。Manifest 保存每份原文件的 SHA-256、
+首轮新增 96 份纯合成中文 Markdown 和 168 条黄金用例；历史版本扩展到 188/308。2026-08-17 的职责
+重整后基线为 356 份异构原文件和 752 条黄金用例，包含 120 份 DOCX、60 份 XLSX 以及 TXT、JSON、
+JSONL、CSV、LOG、SQL。用户、管理员、部署、运维、安全、产品、测试、事故与接口资料分别使用专属
+内容模型；综合接口参考从实际 Java Controller 和 FastAPI 路由生成 475 条合同。Manifest 保存每份原文件的 SHA-256、
 提取文本 SHA-256、格式、MIME、来源 URI、证据状态和范围三元组；
 黄金集保存期望文档、三级相关性、期望引用、禁止文档、拒答原因和租户范围。
 
@@ -190,10 +192,11 @@ Recovery 不是“发生失败就先检索”的固定流程。`RECOVERY_AGENT` 
 通过率、过期证据抑制率、范围泄漏率、单用例通过率和 p50/p95。单用例通过率也进入质量门禁，防止宏平均
 达标掩盖一部分完整引用/拒答合同失败。禁止文档和范围泄漏会检查召回候选、Reranker 输入、
 最终证据三个阶段；内部候选 ID 不进入普通 API 摘要。报告不保存问题、正文、模型输出、Endpoint 或密钥。
-真实 BGE 全量运行没有执行错误且范围泄漏为零；Recall@K 为 `0.964976`，异构逐文件与自然问法召回率
+历史 188/308 基线的真实 BGE 全量运行没有执行错误且范围泄漏为零；Recall@K 为 `0.964976`，异构逐文件与自然问法召回率
 均为 `1.0`，但跨格式多证据召回率只有 `0.6458`，引用精确率、拒答 F1、禁止文档通过率和单用例通过率
 仍未达门禁，
-不能被表述为生产 RAG 验收。
+不能被表述为当前语料的生产 RAG 验收。最终 356/752 词法基线指纹为 `910973f...`，97,379 个 chunk，
+Recall@K `0.758427`、MRR `0.703652`、范围泄漏率 `0`，同样尚未通过全部严格质量门禁。
 
 异构提取器使用标准库受限读取 `.md/.txt/.log/.sql/.csv/.tsv/.json/.jsonl/.docx/.xlsx`。DOCX/XLSX
 只读取包内文本 XML，保留 Word 正文顺序、表格行、Excel 工作表名、单元格坐标和公式文本，不执行宏、
