@@ -7,6 +7,15 @@
  */
 
 import { apiContractsForTopic } from "./rag-api-contract-inventory.mjs";
+import {
+  buildDiagnosticLogExcerpt,
+  buildDiagnosticLogLocation,
+  buildDiagnosisPath,
+  composeLogCommandFor,
+  diagnosticProfileFor,
+  isManualRecoveryError,
+  operationsGuideFor,
+} from "./rag-diagnostic-corpus-library.mjs";
 
 const SYNTHETIC_NOTICE = "原创合成评测资料，不含真实客户、个人、凭据或生产数据";
 
@@ -389,13 +398,33 @@ function buildDeploymentManual(scope, topic) {
 function buildOperationsManual(scope, topic) {
   const jobs = Array.from({ length: 140 }, (_, index) => {
     const job = OPERATIONS_JOBS[index % OPERATIONS_JOBS.length];
+    const guide = operationsGuideFor(job[0]);
+    const ids = correlationIds(scope, index);
+    const occurredAt = syntheticTime(index, 9);
+    const diagnosticContext = {
+      ...ids,
+      occurredAt,
+      errorCode: "OPERATIONAL_BASELINE_DEVIATION",
+    };
+    const diagnosticProfile = {
+      primaryService: guide.primaryService,
+      logDetail: guide.logDetail,
+    };
     const window = ["工作日白天", "夜间批次", "周末窗口", "发布后 30 分钟"][index % 4];
     return entry(`${index + 1}. ${job[0]}（${window}）`, [
       ["运维作业编号", `OPS-${String(index + 1).padStart(4, "0")}`],
       ["执行频率", job[1]],
       ["责任角色", index % 7 === 0 ? "平台管理员" : "运维人员"],
       ["检查对象", job[2]],
+      ["用户会看到什么", guide.userSymptom],
+      ["运维视角", `本次作业先判断“${guide.logDetail}”是否真实偏离基线，再确认异常开始时间与最近变更是否一致。`],
       ["检查命令", `${job[3]}；使用只读诊断接口或平台批准的运维命令。`],
+      ["日志查看位置", `平台入口：可观测性 > 日志检索，按时间、服务和 traceId=${ids.traceId} 过滤；服务侧执行 ${guide.logCommand}；若关联同步任务，再查询 GET /api/sync/sync-tasks/${ids.taskId}/executions/${ids.executionId}/logs。`],
+      ["关键日志摘录", buildDiagnosticLogExcerpt(diagnosticProfile, diagnosticContext), "code"],
+      ["运维定位路径", `1. 记录用户报错时间、页面功能和 traceId。2. 查看 ${guide.primaryService} 健康与指标，确认异常是否覆盖多个用户。3. 按 traceId 检索结构化日志，找到最早偏离基线的记录。4. 对比当前配置、上次成功配置和最近发布。5. 检查依赖 ${job[2]}。6. 只有日志、指标和变更事实一致时才下结论。`],
+      ["通俗判断", guide.plainJudgment],
+      ["开发排查建议", guide.developerAdvice],
+      ["常见处理步骤", guide.handling],
       ["正常判据", job[4]],
       ["异常升级", "先保留来源、时间、traceId 和指标快照；达到升级阈值时创建事故记录。"],
       ["回滚步骤", "若异常由刚完成的配置或发布引起，恢复上一有效版本并重新执行健康检查。"],
@@ -608,19 +637,37 @@ function buildIncidentDocument(scope, topic) {
   const incidents = Array.from({ length: 250 }, (_, index) => {
     const ids = correlationIds(scope, index);
     const error = relevantErrors[index % relevantErrors.length];
-    const manual = ["AUTHENTICATION_FAILED", "PERMISSION_DENIED", "DDL_REQUIRED"].includes(error[0]);
+    const profile = diagnosticProfileFor(error[0]);
+    const manual = isManualRecoveryError(error[0]);
+    const occurredAt = syntheticTime(index, 9);
+    const context = { ...ids, occurredAt, errorCode: error[0] };
     return entry(`${index + 1}. ${ids.incidentId} / ${error[0]}`, [
       ["事故编号", ids.incidentId],
       ["任务与执行", `taskId=${ids.taskId}；executionId=${ids.executionId}；objectId=${ids.objectId}`],
       ["追踪与恢复", `traceId=${ids.traceId}；recoveryCaseId=${ids.recoveryCaseId}`],
-      ["发生时间", syntheticTime(index, 9)],
-      ["影响范围", `仅影响 ${scope.label} 的 ${ids.objectId}；已成功对象和其他项目不受影响。`],
-      ["现象", `${error[0]} 导致当前工作单元停止，服务端保留状态与低敏错误摘要。`],
+      ["发生时间", occurredAt],
+      ["影响范围", `影响 ${scope.label} 中“${profile.feature}”对应的 ${ids.objectId}；${profile.trigger} 时会出现问题。已成功对象和其他项目不受影响。`],
+      ["用户视角", profile.userSymptom],
+      ["用户提示", profile.userMessage],
+      ["现象", `${profile.trigger} 时，系统出现 ${error[0]}；${profile.userSymptom}。服务端保留任务状态和低敏错误摘要。`],
+      ["运维视角", `先确认责任服务 ${profile.primaryService}，再关联 ${profile.relatedServices}；排查重点是 ${profile.diagnosisFocus}。`],
+      ["开发视角", profile.developerDiagnosis],
+      ["关联微服务", `首要：${profile.primaryService}；关联：${profile.relatedServices}`],
+      ["日志查看位置", buildDiagnosticLogLocation(profile, context)],
+      ["关键日志摘录", buildDiagnosticLogExcerpt(profile, context), "code"],
+      ["详细定位过程", buildDiagnosisPath(profile, context)],
+      ["定位结论", `最早权威错误为 errorCode=${error[0]}，关键日志、当前状态、${error[2]} 与最近成功配置结论一致，因此排除单纯页面展示问题和后续级联报错。`],
       ["证据来源", `synthetic://datasmart-govern/incidents/${scope.key}/${ids.incidentId}；confidence=${(0.90 + (index % 10) / 100).toFixed(2)}；sourceStatus=COMPLETE`],
-      ["根因", `${error[1]}；通过 ${error[2]} 与最近成功配置交叉确认。`],
+      ["通俗根因", profile.plainRootCause],
+      ["技术根因", profile.technicalRootCause],
+      ["根因类型", classifyRootCause(error[0])],
       ["处置时间线", `T+0 告警；T+3 分钟定位；T+8 分钟完成${manual ? "人工接管" : "受治理处置"}；T+15 分钟验证。`],
       ["处置动作", manual ? "退出自治，返回权限、操作步骤、影响、回滚和验证方法。" : error[3]],
+      ["修复步骤", profile.repairSteps],
+      ["配置或代码修改", profile.changeDescription],
+      ["权限与自治边界", manual ? "涉及凭据、权限或 DDL，必须退出 Loop，由不同的有权限主体审批和执行。" : "仅允许在首次授权盒内执行低风险、有界且可回滚的动作；证据不足时停止。"],
       ["回滚", `恢复 ${ids.lastSuccessfulConfigVersion}，保留已成功对象，不扩大数据范围。`],
+      ["验证方法", profile.verification],
       ["恢复验证", manual ? "有权限主体处理后重新预检和监控。" : "PRECHECK_AGENT 与 MONITOR_AGENT 均通过，对象台账收敛。"],
       ["最终结论", manual ? "ATTENTION_REQUIRED" : "RECOVERED"],
     ]);
@@ -693,6 +740,26 @@ function incidentErrorSubset(slug) {
   };
   const pattern = patterns[slug];
   return pattern ? ERROR_CATALOG.filter((item) => pattern.test(item[0])) : ERROR_CATALOG;
+}
+
+/**
+ * 把稳定错误码归入普通读者能理解的根因类别。
+ *
+ * 分类不会参与自动执行授权，只用于事故检索、统计和人工阅读；真正的风险、权限和动作资格仍由 Java
+ * 控制面与 data-sync 当前事实判定。
+ */
+function classifyRootCause(errorCode) {
+  if (/CONNECTION_TIMEOUT/.test(errorCode)) return "网络连通性或依赖可用性";
+  if (/AUTHENTICATION/.test(errorCode)) return "凭据或认证配置";
+  if (/PERMISSION/.test(errorCode)) return "权限、范围或审批";
+  if (/RATE_LIMIT|TARGET_CAPACITY/.test(errorCode)) return "限流或容量";
+  if (/KAFKA|OUTBOX/.test(errorCode)) return "异步消息或可靠投递";
+  if (/CHECKPOINT|UNIQUE_CONSTRAINT/.test(errorCode)) return "幂等、位点或提交一致性";
+  if (/SCHEMA|FIELD_MAPPING|DDL/.test(errorCode)) return "元数据、字段映射或表结构";
+  if (/NOT_NULL|DATA_TYPE|NUMERIC|STRING|FOREIGN_KEY/.test(errorCode)) return "SQL、数据类型或数据库约束";
+  if (/DIRTY_RECORD/.test(errorCode)) return "数据质量或清洗规则";
+  if (/CONNECTOR_VERSION/.test(errorCode)) return "连接器版本或能力合同";
+  return "未分类的受治理执行错误";
 }
 
 /** 构造统一 DOCX 模型；“统一”只指渲染协议，不代表内容模板相同。 */
@@ -884,17 +951,50 @@ function buildIncidentWorkbook(scope, topic) {
   const incidents = Array.from({ length: 320 }, (_, index) => {
     const ids = correlationIds(scope, index);
     const error = ERROR_CATALOG[index % ERROR_CATALOG.length];
-    return [ids.incidentId, ids.taskId, ids.executionId, ids.objectId, ids.traceId, error[0], syntheticTime(index, 7), ["P1", "P2", "P3"][index % 3], `${error[1]}；${error[2]}`, index % 6 === 0 ? "ATTENTION_REQUIRED" : "RECOVERED"];
+    const profile = diagnosticProfileFor(error[0]);
+    const occurredAt = syntheticTime(index, 7);
+    const context = { ...ids, occurredAt, errorCode: error[0] };
+    return [
+      ids.incidentId,
+      ids.taskId,
+      ids.executionId,
+      ids.objectId,
+      ids.traceId,
+      error[0],
+      occurredAt,
+      ["P1", "P2", "P3"][index % 3],
+      profile.feature,
+      profile.userSymptom,
+      profile.userMessage,
+      profile.primaryService,
+      buildDiagnosisPath(profile, context),
+      buildDiagnosticLogExcerpt(profile, context),
+      isManualRecoveryError(error[0]) ? "ATTENTION_REQUIRED" : "RECOVERED",
+    ];
   });
   const repairs = incidents.map((row, index) => {
-    const error = ERROR_CATALOG[index % ERROR_CATALOG.length];
-    const manual = row[9] === "ATTENTION_REQUIRED";
-    return [row[0], `RC-${scope.key}-${String(index + 1).padStart(4, "0")}`, error[1], manual ? "人工接管" : error[3], manual ? "HIGH" : "LOW", `恢复 cfg-v${99 + index}`, manual ? "有权限主体处理后重新预检" : "PRECHECK/MONITOR 通过", row[9]];
+    const errorCode = row[5];
+    const profile = diagnosticProfileFor(errorCode);
+    const manual = row.at(-1) === "ATTENTION_REQUIRED";
+    return [
+      row[0],
+      `RC-${scope.key}-${String(index + 1).padStart(4, "0")}`,
+      classifyRootCause(errorCode),
+      profile.plainRootCause,
+      profile.technicalRootCause,
+      profile.developerDiagnosis,
+      profile.repairSteps,
+      profile.changeDescription,
+      manual ? "HIGH" : "LOW",
+      `恢复 cfg-v${99 + index}`,
+      profile.verification,
+      row.at(-1),
+    ];
   });
   const evidence = incidents.map((row, index) => [row[0], row[4], `synthetic://datasmart-govern/incidents/${scope.key}/${row[0]}`, syntheticTime(index, 7), Number((0.90 + (index % 10) / 100).toFixed(2)), "LOG_CONFIG_RUNBOOK_CORROBORATION", "COMPLETE"]);
   return workbookModel(topic, [
-    sheet("事故记录", ["事故编号", "任务编号", "执行编号", "对象编号", "traceId", "错误码", "发生时间", "级别", "现象", "状态"], incidents, "#9C3D10"),
-    sheet("根因与修复", ["事故编号", "恢复案例", "根因", "处置动作", "风险", "回滚", "恢复验证", "最终状态"], repairs, "#7A3E00"),
+    sheet("事故记录", ["事故编号", "任务编号", "执行编号", "对象编号", "traceId", "错误码", "发生时间", "级别", "影响功能", "用户视角", "用户提示", "首要微服务", "运维定位过程", "关键日志摘录", "状态"], incidents, "#9C3D10"),
+    sheet("根因与修复", ["事故编号", "恢复案例", "根因类型", "通俗根因", "技术根因", "开发修复说明", "修复步骤", "配置或代码修改", "风险", "回滚", "恢复验证", "最终状态"], repairs, "#7A3E00"),
     sheet("证据索引", ["事故编号", "traceId", "来源URI", "观察时间", "可信度", "可信依据", "来源状态"], evidence, "#355E3B"),
     dictionarySheet(["事故记录", "根因与修复", "证据索引"], [incidents, repairs, evidence]),
     validationSheet(topic, scope, incidents.length, "事故、根因、处置、回滚、验证和证据必须一一关联"),
@@ -910,14 +1010,34 @@ function buildTaskCaseWorkbook(scope, topic, mode) {
     return [`CASE-${topic.code}-${String(index + 1).padStart(4, "0")}`, ids.taskId, ids.executionId, mode, SOURCES[index % SOURCES.length], TARGETS[index % TARGETS.length], ids.configVersion, 200 + (index % 8) * 100, 1 + (index % Math.max(1, scope.channelCount)), scope.timeoutSeconds + (index % 4) * 30, failed ? error[0] : "", failed ? "FAILED" : "SUCCEEDED"];
   });
   const failures = cases.filter((row) => row[11] === "FAILED").map((row, index) => {
-    const error = ERROR_CATALOG[index % ERROR_CATALOG.length];
+    const error = ERROR_CATALOG.find((item) => item[0] === row[10])
+      || ERROR_CATALOG[index % ERROR_CATALOG.length];
     const ids = correlationIds(scope, Number(row[0].slice(-4)) - 1);
-    return [row[0], row[1], row[2], ids.objectId, ids.traceId, ids.incidentId, error[0], `${error[1]}；核对 ${error[2]}`, `synthetic://datasmart-govern/correlated/${scope.key}/execution/${row[2]}`, syntheticTime(index, 8), Number((0.90 + (index % 10) / 100).toFixed(2)), error[3], ["AUTHENTICATION_FAILED", "PERMISSION_DENIED", "DDL_REQUIRED"].includes(error[0]) ? "ATTENTION_REQUIRED" : "RECOVERED"];
+    const profile = diagnosticProfileFor(error[0]);
+    const occurredAt = syntheticTime(index, 8);
+    const context = { ...ids, occurredAt, errorCode: error[0] };
+    return [
+      row[0], row[1], row[2], ids.objectId, ids.traceId, ids.incidentId, error[0],
+      profile.userSymptom,
+      profile.userMessage,
+      buildDiagnosticLogLocation(profile, context),
+      buildDiagnosticLogExcerpt(profile, context),
+      buildDiagnosisPath(profile, context),
+      profile.plainRootCause,
+      profile.technicalRootCause,
+      profile.developerDiagnosis,
+      profile.repairSteps,
+      profile.changeDescription,
+      `synthetic://datasmart-govern/correlated/${scope.key}/execution/${row[2]}`,
+      occurredAt,
+      Number((0.90 + (index % 10) / 100).toFixed(2)),
+      isManualRecoveryError(error[0]) ? "ATTENTION_REQUIRED" : "RECOVERED",
+    ];
   });
   const parameters = cases.map((row) => [row[0], row[6], row[7], row[8], row[9], `checkpoint-${row[1].slice(-4)}`, "首次授权盒内参数"]);
   return workbookModel(topic, [
     sheet("任务案例", ["案例编号", "任务编号", "执行编号", "模式", "来源", "目标", "配置版本", "batch", "channel", "timeout", "错误码", "结果"], cases, "#1F4E78"),
-    sheet("失败任务明细", ["案例编号", "任务编号", "执行编号", "对象编号", "traceId", "事故编号", "错误码", "失败原因", "证据来源", "发生时间", "可信度", "处置", "最终状态"], failures, "#9C3D10"),
+    sheet("失败任务明细", ["案例编号", "任务编号", "执行编号", "对象编号", "traceId", "事故编号", "错误码", "用户可见现象", "用户提示", "日志查看位置", "关键日志摘录", "详细定位过程", "通俗根因", "技术根因", "开发修复说明", "修复步骤", "配置或代码修改", "证据来源", "发生时间", "可信度", "最终状态"], failures, "#9C3D10"),
     sheet("任务参数", ["案例编号", "配置版本", "batch", "channel", "timeout", "checkpoint", "参数边界"], parameters, "#355E3B"),
     dictionarySheet(["任务案例", "失败任务明细", "任务参数"], [cases, failures, parameters]),
     validationSheet(topic, scope, cases.length, "每个失败任务都必须有原因、证据、处置和最终状态"),
@@ -967,7 +1087,7 @@ function validationSheet(topic, scope, primaryCount, rule) {
 export function semanticWorkbookColumnWidth(header) {
   if (/编号|版本|状态|模式|级别|风险|结果/.test(header)) return 20;
   if (/时间|checkpoint|来源|目标|URI|trace/.test(header)) return 26;
-  if (/原因|根因|处置|验证|规则|说明|目标|步骤|判据/.test(header)) return 36;
+  if (/原因|根因|处置|验证|规则|说明|目标|步骤|判据|视角|现象|提示|日志|定位|修复|代码/.test(header)) return 36;
   if (/batch|channel|timeout|数量|行|毫秒|秒|率|可信度/.test(header)) return 15;
   return 22;
 }
@@ -1052,14 +1172,30 @@ function buildCommandReference(scope, topic, anchor) {
 function buildErrorCodeReference(scope, topic, anchor) {
   const lines = structuredHeader(scope, topic, anchor);
   ERROR_CATALOG.forEach((error, index) => {
+    const profile = diagnosticProfileFor(error[0]);
+    const ids = correlationIds(scope, index);
+    const occurredAt = syntheticTime(index, 7);
+    const context = { ...ids, occurredAt, errorCode: error[0] };
     lines.push(
       `${index + 1}. ${error[0]}`,
       `含义：${error[1]}`,
-      `定位证据：${error[2]}`,
+      `影响功能：${profile.feature}`,
+      `触发操作：${profile.trigger}`,
+      `用户会看到：${profile.userSymptom}`,
+      `页面提示：${profile.userMessage}`,
+      `关联微服务：${profile.primaryService}；${profile.relatedServices}`,
+      `日志查看位置：${buildDiagnosticLogLocation(profile, context)}`,
+      `关键日志摘录：${buildDiagnosticLogExcerpt(profile, context)}`,
+      `详细定位过程：${buildDiagnosisPath(profile, context)}`,
+      `通俗根因：${profile.plainRootCause}`,
+      `技术根因：${profile.technicalRootCause}`,
+      `开发排查：${profile.developerDiagnosis}`,
       `允许处置：${error[3]}`,
+      `修复步骤：${profile.repairSteps}`,
+      `配置或代码修改：${profile.changeDescription}`,
+      `验证方法：${profile.verification}`,
       "重试资格：只有瞬态错误或完成根因修复后才允许重试。",
       "退出条件：凭据、权限、DDL、覆盖、扩大范围、有损转换或证据冲突。",
-      "用户提示：返回根因、证据、所需权限、步骤、影响、回滚和验证方法。",
       "日志字段：errorCode、traceId、taskId、executionId、objectId、occurredAt。",
       "证据字段：sourceUri、observedAt、confidence、confidenceBasis、sourceStatus。",
       "",
@@ -1183,15 +1319,29 @@ function buildTaskCaseLibrary(scope, topic, anchor) {
   return jsonl(Array.from({ length: 600 }, (_, index) => {
     const ids = correlationIds(scope, index);
     const error = ERROR_CATALOG[index % ERROR_CATALOG.length];
-    const manual = ["AUTHENTICATION_FAILED", "PERMISSION_DENIED", "DDL_REQUIRED"].includes(error[0]);
+    const profile = diagnosticProfileFor(error[0]);
+    const manual = isManualRecoveryError(error[0]);
+    const occurredAt = syntheticTime(index, 7);
+    const context = { ...ids, occurredAt, errorCode: error[0] };
     return structuredEvent(scope, topic, anchor, index, {
       ...ids,
       caseType: ["FULL", "INCREMENTAL", "CDC", "FILE", "API", "KAFKA"][index % 6],
       errorCode: error[0],
+      affectedFeature: profile.feature,
+      userVisibleSymptom: profile.userSymptom,
+      userMessage: profile.userMessage,
+      operationsDiagnosisPath: buildDiagnosisPath(profile, context),
+      developerDiagnosis: profile.developerDiagnosis,
+      logSource: buildDiagnosticLogLocation(profile, context),
+      logExcerpt: buildDiagnosticLogExcerpt(profile, context),
       failureReason: `${error[1]}；需要核对 ${error[2]}`,
-      rootCause: `${error[1]}，与 ${ids.lastSuccessfulConfigVersion} 的差异已确认。`,
+      plainRootCause: profile.plainRootCause,
+      rootCause: profile.technicalRootCause,
       evidenceSource: `synthetic://datasmart-govern/correlated/${scope.key}/execution/${ids.executionId}`,
+      repairSteps: profile.repairSteps,
+      changeDescription: profile.changeDescription,
       repairAction: manual ? "MANUAL_HANDOFF" : error[3],
+      verification: profile.verification,
       finalState: manual ? "ATTENTION_REQUIRED" : "RECOVERED",
     });
   }));
@@ -1216,15 +1366,19 @@ function buildRecoveryDecisionTrace(scope, topic, anchor) {
   return jsonl(Array.from({ length: 600 }, (_, index) => {
     const ids = correlationIds(scope, index);
     const error = ERROR_CATALOG[index % ERROR_CATALOG.length];
+    const profile = diagnosticProfileFor(error[0]);
     return structuredEvent(scope, topic, anchor, index, {
       ...ids,
       errorCode: error[0],
       diagnosis: error[1],
+      plainRootCause: profile.plainRootCause,
+      developerDiagnosis: profile.developerDiagnosis,
       evidenceRequired: error[2],
       retrievalDecision: index % 3 === 0 ? "SEARCH" : "SKIP",
       candidateAction: error[3],
-      risk: ["AUTHENTICATION_FAILED", "PERMISSION_DENIED", "DDL_REQUIRED"].includes(error[0]) ? "HIGH" : "LOW",
-      withinAuthorizationBox: !["AUTHENTICATION_FAILED", "PERMISSION_DENIED", "DDL_REQUIRED"].includes(error[0]),
+      repairSteps: profile.repairSteps,
+      risk: isManualRecoveryError(error[0]) ? "HIGH" : "LOW",
+      withinAuthorizationBox: !isManualRecoveryError(error[0]),
     });
   }));
 }
@@ -1275,9 +1429,11 @@ function buildWorkerLog(scope, topic, anchor) {
     const phaseIndex = index % phases.length;
     const ids = correlationIds(scope, caseIndex);
     const error = ERROR_CATALOG[caseIndex % ERROR_CATALOG.length];
-    const manual = ["AUTHENTICATION_FAILED", "PERMISSION_DENIED", "DDL_REQUIRED"].includes(error[0]);
+    const profile = diagnosticProfileFor(error[0]);
+    const manual = isManualRecoveryError(error[0]);
+    const logCommand = composeLogCommandFor(profile.primaryService);
     const state = phaseIndex === 0 ? "FAILED" : phaseIndex === 3 ? (manual ? "ATTENTION_REQUIRED" : "RECOVERED") : "RECOVERING";
-    return `${syntheticTime(index, 2)} level=${phaseIndex === 0 ? "ERROR" : phaseIndex === 1 ? "WARN" : "INFO"} phase=${phases[phaseIndex]} traceId=${ids.traceId} taskId=${ids.taskId} executionId=${ids.executionId} objectId=${ids.objectId} incidentId=${ids.incidentId} recoveryCaseId=${ids.recoveryCaseId} errorCode=${error[0]} state=${state} retryable=${!manual} configVersion=${ids.configVersion} lastSuccessfulConfigVersion=${ids.lastSuccessfulConfigVersion} sourceUri=synthetic://datasmart-govern/correlated/${scope.key}/execution/${ids.executionId} confidence=${(0.90 + (caseIndex % 10) / 100).toFixed(2)} artifactCode=${topic.code} retrievalAnchor=${anchor} message="${error[1]}；证据=${error[2]}；处置=${manual ? "人工接管" : error[3]}"`;
+    return `${syntheticTime(index, 2)} level=${phaseIndex === 0 ? "ERROR" : phaseIndex === 1 ? "WARN" : "INFO"} phase=${phases[phaseIndex]} service=${profile.primaryService} traceId=${ids.traceId} taskId=${ids.taskId} executionId=${ids.executionId} objectId=${ids.objectId} incidentId=${ids.incidentId} recoveryCaseId=${ids.recoveryCaseId} errorCode=${error[0]} state=${state} retryable=${!manual} configVersion=${ids.configVersion} lastSuccessfulConfigVersion=${ids.lastSuccessfulConfigVersion} sourceUri=synthetic://datasmart-govern/correlated/${scope.key}/execution/${ids.executionId} confidence=${(0.90 + (caseIndex % 10) / 100).toFixed(2)} artifactCode=${topic.code} retrievalAnchor=${anchor} userView="${profile.userSymptom}" logSource="execution logs API and ${logCommand}" diagnosisPath="traceId -> execution logs -> lifecycle graph -> ${profile.primaryService} logs -> ${profile.diagnosisFocus} -> last successful config" repairGuide="${profile.repairSteps}" message="${error[1]}；处置=${manual ? "人工接管" : error[3]}"`;
   });
   return `${SYNTHETIC_NOTICE}\n${rows.join("\n")}\n`;
 }

@@ -337,14 +337,48 @@ class RagEvaluationAssetsTest(unittest.TestCase):
 
         operations = self._global_document_content("manual-operations-guide")
         self.assertGreaterEqual(operations.count("运维作业编号："), 120)
-        self.assertIn("检查命令：", operations)
-        self.assertIn("回滚步骤：", operations)
+        for marker in (
+            "用户会看到什么：",
+            "运维定位路径：",
+            "日志查看位置：",
+            "关键日志摘录：",
+            "通俗判断：",
+            "开发排查建议：",
+            "常见处理步骤：",
+            "回滚步骤：",
+        ):
+            self.assertGreaterEqual(operations.count(marker), 120, marker)
+        self.assertIn("docker compose logs kafka", operations)
+        self.assertIn("docker compose logs postgresql", operations)
+        self.assertIn("docker stats --no-stream", operations)
+        self.assertNotIn("docker compose logs Kafka", operations)
+        self.assertNotIn("docker compose logs PostgreSQL", operations)
+        self.assertNotIn("docker compose logs Docker/Kubernetes", operations)
         self.assertNotIn("任务失败、运维与事故案例", operations)
 
         incident = self._global_document_content("record-operations-incident")
         self.assertGreaterEqual(incident.count("事故编号："), 200)
-        for marker in ("影响范围：", "根因：", "证据来源：", "处置时间线：", "恢复验证："):
-            self.assertIn(marker, incident)
+        for marker in (
+            "用户视角：",
+            "用户提示：",
+            "运维视角：",
+            "开发视角：",
+            "关联微服务：",
+            "日志查看位置：",
+            "关键日志摘录：",
+            "详细定位过程：",
+            "定位结论：",
+            "通俗根因：",
+            "技术根因：",
+            "修复步骤：",
+            "配置或代码修改：",
+            "验证方法：",
+        ):
+            self.assertGreaterEqual(incident.count(marker), 200, marker)
+        self.assertIn("先从页面复制 traceId", incident)
+        self.assertIn("data-sync", incident)
+        self.assertIn("errorCode=CONNECTION_TIMEOUT", incident)
+        self.assertIn("docker compose logs kafka", incident)
 
         report = self._global_document_content("report-platform-test")
         self.assertGreaterEqual(report.count("测试用例编号："), 180)
@@ -368,6 +402,12 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         incident_ledger = self._global_document_content("workbook-incident-repair-ledger")
         self.assertIn("工作表：事故记录", incident_ledger)
         self.assertIn("工作表：根因与修复", incident_ledger)
+        for marker in ("用户视角", "运维定位过程", "开发修复说明", "关键日志摘录"):
+            self.assertIn(marker, incident_ledger)
+
+        task_cases = self._global_document_content("workbook-full-load-task-cases")
+        for marker in ("用户可见现象", "日志查看位置", "详细定位过程", "配置或代码修改"):
+            self.assertIn(marker, task_cases)
 
         connector = self._global_document_content("connector-capabilities")
         self.assertIn('"connectorId"', connector)
@@ -384,6 +424,20 @@ class RagEvaluationAssetsTest(unittest.TestCase):
         task_cases = self._global_document_content("task-case-library")
         self.assertIn('"failureReason"', task_cases)
         self.assertIn('"rootCause"', task_cases)
+        for marker in (
+            '"userVisibleSymptom"',
+            '"operationsDiagnosisPath"',
+            '"developerDiagnosis"',
+            '"logExcerpt"',
+            '"repairSteps"',
+        ):
+            self.assertIn(marker, task_cases)
+
+        worker_log = self._global_document_content("worker-execution")
+        for marker in ("userView=", "logSource=", "diagnosisPath=", "repairGuide="):
+            self.assertIn(marker, worker_log)
+        self.assertIn("docker compose logs kafka", worker_log)
+        self.assertNotIn("docker compose logs Kafka", worker_log)
 
     def _global_document_content(self, slug: str) -> str:
         """按全局范围与文件名读取一份资产的安全提取文本。"""
