@@ -200,6 +200,48 @@ class AgentSessionHandoffDagExecutionBridgeServiceTest {
     }
 
     @Test
+    void repeatedBridgePreviewShouldDeduplicateRuntimeEventAcrossTraceRetries() {
+        AgentRunToolDagExecutionDryRunService dryRunService = mock(AgentRunToolDagExecutionDryRunService.class);
+        when(dryRunService.dryRunDagExecution(eq(SESSION_ID), any(), any(AgentRunToolDagExecutionDryRunRequest.class), any()))
+                .thenReturn(dryRunResponse(List.of(asyncItem("tool-node-1", "audit-1"))));
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(20, 100);
+        AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
+        sessionStore.save(session());
+        AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher = new AgentSessionHandoffDagExecutionBridgeEventPublisher(
+                projectionStore,
+                sessionStore
+        );
+        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService, bridgeEventPublisher);
+        AgentSessionHandoffDagExecutionBridgePreviewRequest request = new AgentSessionHandoffDagExecutionBridgePreviewRequest(
+                List.of("tool-control"),
+                List.of("tool-node-1"),
+                List.of("audit-1"),
+                10,
+                false,
+                true
+        );
+
+        service.previewBridge(SESSION_ID, RUN_ID, request, "trace-bridge-event-first");
+        service.previewBridge(SESSION_ID, RUN_ID, request, "trace-bridge-event-retry");
+
+        List<AgentRuntimeEventProjectionRecord> events = projectionStore.listByRunId(RUN_ID);
+        assertEquals(1, events.size());
+        String identityKey = events.getFirst().identityKey();
+        assertTrue(identityKey.startsWith("handoff-bridge-preview:sha256:"));
+        assertFalse(identityKey.contains(SESSION_ID));
+        assertFalse(identityKey.contains(RUN_ID));
+        assertFalse(identityKey.contains("tool-node-1"));
+        assertFalse(identityKey.contains("audit-1"));
+        assertFalse(identityKey.contains("trace-bridge-event-first"));
+        assertFalse(identityKey.contains("trace-bridge-event-retry"));
+
+        service.previewBridge(SESSION_ID, RUN_ID + "-other", request, "trace-bridge-event-other-run");
+
+        assertEquals(2, projectionStore.size());
+        assertEquals(1, projectionStore.listByRunId(RUN_ID + "-other").size());
+    }
+
+    @Test
     void bridgeEventPublisherFailureShouldNotBlockPreviewResponse() {
         AgentRunToolDagExecutionDryRunService dryRunService = mock(AgentRunToolDagExecutionDryRunService.class);
         AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher = mock(AgentSessionHandoffDagExecutionBridgeEventPublisher.class);

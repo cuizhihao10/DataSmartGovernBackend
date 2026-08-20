@@ -363,6 +363,9 @@ services:
       DATASMART_AGENT_RUNTIME_APPROVAL_CONFIRMATION_STORE: postgresql
       DATASMART_AGENT_RUNTIME_AUDIT_STORE: postgresql
       DATASMART_AGENT_RUNTIME_OUTBOX_STORE: postgresql
+      # command worker 的低敏回执必须进入 PostgreSQL，才能在 Java 重启、多实例切换和 Kafka 重放后
+      # 继续提供稳定事实。该索引不保存命令正文、日志、工具参数、Prompt、SQL 或凭据。
+      DATASMART_AGENT_RUNTIME_WORKER_RECEIPT_INDEX_STORE: postgresql
       DATASMART_AGENT_RUNTIME_JDBC_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=agent_runtime&ApplicationName=datasmart-agent-runtime
       DATASMART_AGENT_RUNTIME_JDBC_USERNAME: datasmart
       DATASMART_AGENT_RUNTIME_JDBC_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
@@ -383,6 +386,9 @@ services:
       DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_TASK_MANAGEMENT: http://task-management:8081
       DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_DATA_SYNC: http://data-sync:8086
       DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_PYTHON_AI_RUNTIME: http://python-ai-runtime:8090
+      # receipt 到达真实终态后，由 durable job、visibility lease、有限重试和死信状态机自动回写
+      # task-management。启动校验要求 PostgreSQL store、Flyway V8/V9 和目标表全部就绪，不能回退到内存。
+      DATASMART_AGENT_RUNTIME_ASYNC_TASK_FINAL_STATE_CALLBACK_WORKER_ENABLED: "true"
       # 该 listener 只消费 data-sync durable outbox 的低敏恢复触发。单模块开发仍默认关闭，
       # 完整 Compose 联调则显式开启，以验证 Kafka -> Java -> Python -> data-sync 的真实闭环。
       DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED: ${DATASMART_AGENT_AUTOPILOT_RECOVERY_KAFKA_ENABLED:-true}
@@ -475,7 +481,9 @@ services:
         # postgresql extra 安装 psycopg3，用于 AI Memory 迁入 PostgreSQL/pgvector 后的长期记忆、receipt、
         # lease、审计 outbox 和 LangGraph durable state 持久化。默认仍不强制开启各 store，避免本地学习环境
         # 因未完成 schema 应用或数据库凭据而无法启动。
-        PYTHON_RUNTIME_EXTRAS: api,rag,kafka,redis,postgresql,mcp
+        # graph extra 安装 Neo4j Driver；Provider 是否建立连接仍由下面的 GraphRAG 开关控制。
+        # 依赖预装与能力启用分离，避免切换 GraphRAG 时才发现镜像缺少 Driver。
+        PYTHON_RUNTIME_EXTRAS: api,rag,graph,kafka,redis,postgresql,mcp
         # pip 包默认使用国内镜像；企业部署可注入内网 PyPI/制品库地址。该参数不影响 DaoCloud 基础镜像前缀。
         PIP_INDEX_URL: ${DATASMART_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     environment:
@@ -568,12 +576,28 @@ services:
       DATASMART_RAG_EMBEDDING_TIMEOUT_SECONDS: ${DATASMART_RAG_EMBEDDING_TIMEOUT_SECONDS:-30}
       DATASMART_RAG_EMBEDDING_MAX_INPUT_CHARS: ${DATASMART_RAG_EMBEDDING_MAX_INPUT_CHARS:-8000}
       DATASMART_RAG_EMBEDDING_MAX_BATCH_SIZE: ${DATASMART_RAG_EMBEDDING_MAX_BATCH_SIZE:-16}
+      # Provider 开关、API Key 和正文外发批准是三个独立边界。默认空值表示即使误注入 Key，
+      # 也不会把任何正文发送到外部 Embedding 服务；本地只读合成评测可在未跟踪环境文件中明确批准 internal。
+      DATASMART_RAG_EMBEDDING_APPROVED_SENSITIVITY_LEVELS: ${DATASMART_RAG_EMBEDDING_APPROVED_SENSITIVITY_LEVELS:-}
       DATASMART_RAG_RERANK_PROVIDER: ${DATASMART_RAG_RERANK_PROVIDER:-disabled}
       DATASMART_RAG_RERANK_ENDPOINT: ${DATASMART_RAG_RERANK_ENDPOINT:-https://api.siliconflow.cn/v1/rerank}
       DATASMART_RAG_RERANK_API_KEY: ${DATASMART_RAG_RERANK_API_KEY:-}
       DATASMART_RAG_RERANK_MODEL: ${DATASMART_RAG_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       DATASMART_RAG_RERANK_TIMEOUT_SECONDS: ${DATASMART_RAG_RERANK_TIMEOUT_SECONDS:-30}
-      DATASMART_RAG_RERANK_MAX_DOCUMENTS: ${DATASMART_RAG_RERANK_MAX_DOCUMENTS:-64}
+      DATASMART_RAG_RERANK_MAX_DOCUMENTS: ${DATASMART_RAG_RERANK_MAX_DOCUMENTS:-16}
+      # Reranker 也必须单独获得正文外发批准，不能因为 Embedding 已获批就自动继承更宽范围。
+      DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS: ${DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS:-}
+      # 本地完整 Compose 联调默认启用 Neo4j GraphRAG；生产环境仍可显式设置 disabled。
+      # Agent 的 auto 路由会在 Provider 可用时自主选择 hybrid、graph 或 hybrid_graph。
+      DATASMART_GRAPH_RAG_PROVIDER: ${DATASMART_GRAPH_RAG_PROVIDER:-neo4j}
+      DATASMART_GRAPH_RAG_NEO4J_URI: ${DATASMART_GRAPH_RAG_NEO4J_URI:-bolt://neo4j:7687}
+      DATASMART_GRAPH_RAG_NEO4J_USERNAME: ${DATASMART_GRAPH_RAG_NEO4J_USERNAME:-neo4j}
+      DATASMART_GRAPH_RAG_NEO4J_PASSWORD: ${DATASMART_GRAPH_RAG_NEO4J_PASSWORD:-${DATASMART_NEO4J_PASSWORD:-password}}
+      DATASMART_GRAPH_RAG_NEO4J_DATABASE: ${DATASMART_GRAPH_RAG_NEO4J_DATABASE:-neo4j}
+      DATASMART_GRAPH_RAG_CONNECT_TIMEOUT_SECONDS: ${DATASMART_GRAPH_RAG_CONNECT_TIMEOUT_SECONDS:-5}
+      DATASMART_GRAPH_RAG_MAX_EDGES_PER_HOP: ${DATASMART_GRAPH_RAG_MAX_EDGES_PER_HOP:-128}
+      DATASMART_GRAPH_RAG_MAX_HOPS: ${DATASMART_GRAPH_RAG_MAX_HOPS:-3}
+      DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA: ${DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA:-true}
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       DATASMART_AI_RUNTIME_EVENT_PUBLISHER: kafka
       DATASMART_AI_RUNTIME_KAFKA_BOOTSTRAP_SERVERS: kafka:29092

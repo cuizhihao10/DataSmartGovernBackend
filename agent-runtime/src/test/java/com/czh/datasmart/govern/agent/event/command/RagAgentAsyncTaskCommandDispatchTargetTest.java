@@ -60,6 +60,7 @@ class RagAgentAsyncTaskCommandDispatchTargetTest {
         assertEquals("20", request.controlFacts().get("projectId"));
         assertEquals("30", request.controlFacts().get("workspaceKey"));
         assertEquals("cmd-rag-001", request.controlFacts().get("commandId"));
+        assertEquals("internal", request.controlFacts().get("sensitivityLevel"));
         assertEquals("rag-query:sha256:abcdef123456", request.controlFacts().get("queryRef"));
         assertEquals("rag-command-worker:run-rag-001:cmd-rag-001",
                 request.controlFacts().get("langGraphThreadId"));
@@ -230,6 +231,7 @@ class RagAgentAsyncTaskCommandDispatchTargetTest {
                     }
                   },
                   "retrievalPolicyVersion": "rag-policy.v1"
+                  ,"sensitivityLevel": "public"
                 }
                 """;
     }

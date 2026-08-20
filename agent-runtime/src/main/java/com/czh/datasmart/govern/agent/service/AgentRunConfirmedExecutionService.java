@@ -38,6 +38,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -720,8 +721,14 @@ public class AgentRunConfirmedExecutionService {
                     "确认幂等键已被不同的主体、范围或策略事实使用，不能回放或扩大原确认");
         }
         try {
+            /*
+             * 公开审计 DTO 会把自由文本备注隐藏，只留下 approvalCommentPresent=true/false。
+             * Jackson 反序列化时不会把这个派生属性写回 record 的内部备注字段，因此回放前补入一个
+             * 不可见的占位值。该字段是 WRITE_ONLY，重新返回 HTTP 时不会泄露占位符或原始备注。
+             */
+            Map<String, Object> responseShape = restoreWriteOnlyAuditMarkers(receipt.get("response"));
             AgentRunConfirmedExecutionResponse replay = objectMapper.convertValue(
-                    receipt.get("response"), AgentRunConfirmedExecutionResponse.class);
+                    responseShape, AgentRunConfirmedExecutionResponse.class);
             if (replay == null || !run.getSessionId().equals(replay.sessionId())
                     || !run.getRunId().equals(replay.runId())) {
                 throw new IllegalArgumentException("Confirmation receipt locator mismatch");
@@ -731,6 +738,39 @@ public class AgentRunConfirmedExecutionService {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
                     "确认 receipt 已损坏，系统不会据此重复执行工具");
         }
+    }
+
+    /**
+     * 将公开 JSON 回执中的派生审批备注标记转换成内部 DTO 可接受的写入占位符。
+     *
+     * <p>方法只复制 Map/List 容器，不修改持久化 receipt，也不恢复备注正文。这样 durable receipt 仍然只
+     * 保存低敏响应形状；占位符只存在于本次 JVM 回放对象中，用于让再次序列化后的公开布尔值保持稳定。</p>
+     */
+    private Map<String, Object> restoreWriteOnlyAuditMarkers(Object rawResponse) {
+        Object restored = restoreWriteOnlyAuditMarkersRecursively(rawResponse);
+        return restored instanceof Map<?, ?> map ? stringObjectMap(map) : Map.of();
+    }
+
+    /** 递归复制响应中的对象和数组，避免把持久 Map 或其嵌套集合直接改写。 */
+    private Object restoreWriteOnlyAuditMarkersRecursively(Object value) {
+        if (value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            rawMap.forEach((key, child) -> {
+                if (key != null) {
+                    copy.put(String.valueOf(key), restoreWriteOnlyAuditMarkersRecursively(child));
+                }
+            });
+            if (Boolean.TRUE.equals(copy.get("approvalCommentPresent"))) {
+                copy.put("approvalComment", "__PRESENT_BUT_REDACTED__");
+            }
+            return copy;
+        }
+        if (value instanceof Collection<?> collection) {
+            return collection.stream()
+                    .map(this::restoreWriteOnlyAuditMarkersRecursively)
+                    .toList();
+        }
+        return value;
     }
 
     /**

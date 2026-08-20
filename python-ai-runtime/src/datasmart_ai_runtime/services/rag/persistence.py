@@ -45,7 +45,7 @@ from datasmart_ai_runtime.services.rag.models import (
     RagQuery,
     rag_query_explicitly_requests_history,
 )
-from datasmart_ai_runtime.services.rag.text import chunk_document
+from datasmart_ai_runtime.services.rag.text import chunk_document, extract_rag_exact_identifiers
 
 
 RAG_POSTGRESQL_KNOWLEDGE_SCHEMA_VERSION = "datasmart.rag.postgresql-knowledge.v1"
@@ -100,6 +100,12 @@ CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_scoped_document
     );
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_search
     ON ai_memory.rag_knowledge_chunk USING GIN (content_search_vector);
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_artifact_code
+    ON ai_memory.rag_knowledge_chunk ((LOWER(metadata_json->>'artifactCode')));
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_retrieval_anchor
+    ON ai_memory.rag_knowledge_chunk ((LOWER(metadata_json->>'retrievalAnchor')));
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_logical_document_key
+    ON ai_memory.rag_knowledge_chunk ((LOWER(metadata_json->>'logicalDocumentKey')));
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_embedding_model
     ON ai_memory.rag_knowledge_chunk (embedding_model, embedding_dimension, enabled);
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_bge_m3_hnsw
@@ -257,6 +263,59 @@ class PostgresRagKnowledgeBase:
 
         return self.candidate_set_for_query(query).chunks
 
+    def replacement_chunks_for_query(
+        self,
+        query: RagQuery,
+        query_identifiers: tuple[str, ...],
+    ) -> tuple[RagChunk, ...]:
+        """把过期资料码解析为同范围的现行替代 chunk，但不返回过期正文。
+
+        内存知识库和 PostgreSQL 知识库必须对历史资料拥有相同的治理语义。普通问题不能把
+        ``SUPERSEDED`` 正文送进 Reranker；但用户在事故复盘时可能只记得旧资料码，此时系统仍应通过
+        元数据中的 ``supersededBy`` 关系找到现行 Runbook。这里分成两条 SQL：第一条只读取过期资料
+        的元数据关系，第二条只读取同范围、仍然有效的替代 chunk。这样历史正文不会进入返回值，也不会
+        因为“先查旧文档再在 Python 过滤”而意外成为模型上下文。
+        """
+
+        if not query_identifiers or rag_query_explicitly_requests_history(query):
+            return ()
+        normalized_identifiers = tuple(
+            dict.fromkeys(
+                str(identifier or "").strip().casefold()
+                for identifier in query_identifiers
+                if str(identifier or "").strip()
+            )
+        )
+        if not normalized_identifiers:
+            return ()
+        try:
+            with self._lock:
+                replacement_keys = self._query_superseded_replacement_keys(
+                    query,
+                    normalized_identifiers,
+                )
+                if not replacement_keys:
+                    return ()
+                rows = self._query_current_replacement_rows(query, replacement_keys)
+                selected: list[RagChunk] = []
+                seen_chunk_ids: set[str] = set()
+                for row in rows:
+                    chunk = self._row_to_chunk(row)
+                    if chunk.chunk_id in seen_chunk_ids:
+                        continue
+                    if not _replacement_matches_chunk(chunk, replacement_keys):
+                        continue
+                    seen_chunk_ids.add(chunk.chunk_id)
+                    selected.append(chunk)
+                self._clear_error()
+                return tuple(selected)
+        except Exception as exc:
+            # 替代关系查询失败时宁可少返回证据，也不能把旧正文或未验证的相似文档当成现行依据。
+            with self._lock:
+                self._rollback_safely()
+                self._record_error("RAG_POSTGRESQL_REPLACEMENT_QUERY_FAILED", exc)
+            return ()
+
     def candidate_set_for_query(self, query: RagQuery) -> RagKnowledgeCandidateSet:
         """返回候选 chunk，并携带数据库已经计算完成的向量相似度。
 
@@ -269,6 +328,19 @@ class PostgresRagKnowledgeBase:
         try:
             with self._lock:
                 retrieval_mode = str(query.retrieval_mode or "hybrid").strip().lower()
+                # `auto` 是 Agent 面向调用方的默认模式，但 PostgreSQL 只负责普通文档候选，
+                # 不能把尚未经过图分支解析的 auto 误当成 lexical-only。图模式由管线单独处理；
+                # 这里把 auto/联合文档分支统一落到 pgvector + 全文的 hybrid 查询。
+                if retrieval_mode in {"auto", "hybrid_graph"}:
+                    retrieval_mode = "hybrid"
+                query_identifiers = extract_rag_exact_identifiers(str(query.question or "")[:4000])
+                # exact 通道必须在全文/向量候选之前进入窗口，否则大语料中一个精确错误码可能被
+                # 最近更新的普通手册挤掉。外层 Retriever 仍会再次按元数据、标题和正文边界校验。
+                exact_rows = (
+                    self._query_exact_rows(query, query_identifiers, limit)
+                    if query_identifiers
+                    else ()
+                )
                 lexical_rows = () if retrieval_mode == "vector" else self._query_lexical_rows(query, limit)
                 vector_rows = ()
                 if retrieval_mode in {"hybrid", "vector"} and self._settings.vector_enabled:
@@ -276,11 +348,14 @@ class PostgresRagKnowledgeBase:
                         self._record_error("RAG_PGVECTOR_PROVIDER_UNAVAILABLE", RuntimeError)
                     else:
                         query_embedding = validate_embedding_vector(
-                            self._embedding_provider.embed_text(str(query.question or "")[:4000])
+                            self._embedding_provider.embed_text(
+                                str(query.question or "")[:4000],
+                                sensitivity_level=query.sensitivity_level,
+                            )
                         )
                         vector_rows = self._query_vector_rows(query, query_embedding, limit)
                 vector_scores = _vector_scores_for_rows(vector_rows)
-                rows = _merge_rows(lexical_rows, vector_rows, limit)
+                rows = _merge_rows(exact_rows, lexical_rows, vector_rows, limit=limit)
                 if not rows and retrieval_mode != "vector":
                     # 某些 PostgreSQL 文本配置不能正确切分本地语言，因此保留有界的同范围候选回退。
                     # 外层检索器仍会执行精确 token 评分，最终是否可引用仍由证据门禁决定。
@@ -568,6 +643,96 @@ class PostgresRagKnowledgeBase:
         )
         return tuple(cursor.fetchall())
 
+    def _query_exact_rows(
+        self,
+        query: RagQuery,
+        identifiers: tuple[str, ...],
+        limit: int,
+    ) -> tuple[Any, ...]:
+        """在数据库侧优先取得资料码、锚点和稳定文档标识符命中的 chunk。
+
+        PostgreSQL 的全文检索适合普通术语，但它不应成为 exact 查询唯一的入口：不同语言配置、标点
+        处理和长文档分块都可能让一个本应确定的资料码失去排名优势。这里使用参数化的元数据等值匹配，
+        并用标题/正文的 ``POSITION`` 作为兼容补充；所有范围谓词仍和 exact 条件位于同一条 SQL 中，
+        因此不会为了找错误码而放宽租户、项目或工作区边界。返回的 superseded chunk 仍由统一范围谓词
+        排除，历史资料只通过 ``replacement_chunks_for_query`` 做关系跳转。
+        """
+
+        exact_predicate, exact_params = _exact_identifier_predicate(
+            identifiers,
+            include_text=True,
+        )
+        predicates, scope_params = _scope_predicates(query)
+        cursor = self._execute(
+            f"/* RAG_EXACT_IDENTIFIER */ SELECT {self._SELECT_COLUMNS} "
+            f"FROM {self._table} "
+            "WHERE enabled = TRUE AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) "
+            f"AND {' AND '.join(predicates)} "
+            f"AND {exact_predicate} "
+            "ORDER BY updated_at DESC, chunk_index ASC, chunk_id ASC LIMIT %s",
+            # SQL 文本先出现范围谓词，再出现 exact 谓词，参数顺序必须与占位符出现顺序一致。
+            # 这条规则看似机械，却是 PostgreSQL 真实连接与内存 fake 最容易产生分歧的地方。
+            tuple([*scope_params, *exact_params, limit]),
+        )
+        return tuple(cursor.fetchall())
+
+    def _query_superseded_replacement_keys(
+        self,
+        query: RagQuery,
+        identifiers: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """只读取过期资料的替代关系字段，不读取其正文。"""
+
+        exact_predicate, exact_params = _exact_identifier_predicate(
+            identifiers,
+            include_text=False,
+        )
+        predicates, scope_params = _scope_predicates(query, exclude_superseded=False)
+        predicates.append(
+            "(UPPER(COALESCE(metadata_json->>'sourceStatus', '')) = 'SUPERSEDED' "
+            "OR LOWER(COALESCE(metadata_json->>'evidenceStatus', '')) = 'superseded')"
+        )
+        cursor = self._execute(
+            f"/* RAG_SUPERSEDED_MAPPING */ SELECT metadata_json FROM {self._table} "
+            "WHERE enabled = TRUE AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) "
+            f"AND {' AND '.join(predicates)} "
+            f"AND {exact_predicate}",
+            # 先绑定租户/项目/工作区，再绑定历史资料码；不能按 Python 组装谓词的顺序反向传参。
+            tuple([*scope_params, *exact_params]),
+        )
+        replacements: list[str] = []
+        seen: set[str] = set()
+        for row in cursor.fetchall():
+            metadata_value = _row_value(row, "metadata_json", 0)
+            metadata = _json_mapping(metadata_value)
+            replacement = str(metadata.get("supersededBy") or "").strip().casefold()
+            if replacement and replacement not in seen:
+                seen.add(replacement)
+                replacements.append(replacement)
+        return tuple(replacements)
+
+    def _query_current_replacement_rows(
+        self,
+        query: RagQuery,
+        replacement_keys: tuple[str, ...],
+    ) -> tuple[Any, ...]:
+        """按替代标识符查现行 chunk，随后仍做一次 Python 身份校验。"""
+
+        replacement_predicate, replacement_params = _replacement_identifier_predicate(replacement_keys)
+        predicates, scope_params = _scope_predicates(query)
+        cursor = self._execute(
+            f"/* RAG_CURRENT_REPLACEMENT */ SELECT {self._SELECT_COLUMNS} "
+            f"FROM {self._table} "
+            "WHERE enabled = TRUE AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) "
+            f"AND {' AND '.join(predicates)} "
+            f"AND {replacement_predicate} "
+            "ORDER BY updated_at DESC, chunk_index ASC, chunk_id ASC "
+            f"LIMIT {max(5, min(self._settings.candidate_limit, 200))}",
+            # 当前替代资料查询同样先写范围条件，再写替代标识符条件。
+            tuple([*scope_params, *replacement_params]),
+        )
+        return tuple(cursor.fetchall())
+
     def _query_lexical_rows(self, query: RagQuery, limit: int) -> tuple[Any, ...]:
         """在 Python 重排前使用 PostgreSQL 全文检索取得候选。
 
@@ -660,11 +825,11 @@ class PostgresRagKnowledgeBase:
             f"{chunk.title}\n{chunk.text}\n{' '.join(chunk.tags)}"[:4000]
             for chunk in chunks
         )
-        embed_texts = getattr(self._embedding_provider, "embed_texts", None)
-        raw_embeddings = (
-            tuple(embed_texts(texts))
-            if callable(embed_texts)
-            else tuple(self._embedding_provider.embed_text(text) for text in texts)
+        sensitivity_levels = tuple(chunk.sensitivity_level for chunk in chunks)
+        raw_embeddings = _embed_texts_with_sensitivity_levels(
+            self._embedding_provider,
+            texts,
+            sensitivity_levels,
         )
         if len(raw_embeddings) != len(chunks):
             raise RagPersistenceConfigurationError(
@@ -986,7 +1151,11 @@ def _normalized_settings(settings: RagKnowledgeBaseSettings) -> RagKnowledgeBase
     return normalized
 
 
-def _scope_predicates(query: RagQuery) -> tuple[list[str], list[Any]]:
+def _scope_predicates(
+    query: RagQuery,
+    *,
+    exclude_superseded: bool = True,
+) -> tuple[list[str], list[Any]]:
     predicates = [
             "tenant_id IN ('*', %s)",
             "project_id IN ('*', %s)",
@@ -1001,7 +1170,7 @@ def _scope_predicates(query: RagQuery) -> tuple[list[str], list[Any]]:
     if source_types:
         predicates.append("source_type IN (" + ", ".join("%s" for _ in source_types) + ")")
         params.extend(source_types)
-    if not rag_query_explicitly_requests_history(query):
+    if exclude_superseded and not rag_query_explicitly_requests_history(query):
         # 过期证据应在数据库候选阶段被排除，不能等到 reranker 或答案压缩后再丢弃；否则正文已经可能
         # 被发送给外部模型。JSONB 同时兼容旧 evidenceStatus 和新的 sourceStatus 字段。
         predicates.extend(
@@ -1013,19 +1182,124 @@ def _scope_predicates(query: RagQuery) -> tuple[list[str], list[Any]]:
     return predicates, params
 
 
-def _merge_rows(left: tuple[Any, ...], right: tuple[Any, ...], limit: int) -> tuple[Any, ...]:
-    """合并词法和向量候选窗口，并按 chunk ID 去重。"""
+def _exact_identifier_predicate(
+    identifiers: tuple[str, ...],
+    *,
+    include_text: bool,
+) -> tuple[str, list[Any]]:
+    """构造参数化 exact 标识符条件。
+
+    元数据字段使用等值比较，保证 ``OPS-RAG-503`` 不会因为前缀相似而命中另一份资料；标题和正文只
+    作为兼容补充，因为部分旧资料尚未把资料码迁移到 metadata_json。真正的边界判断仍由共享的
+    ``exact_identifier_match`` 在 Python 检索层完成，这里只负责让数据库候选窗口不会漏掉目标。
+    """
+
+    normalized_identifiers = tuple(
+        dict.fromkeys(
+            str(identifier or "").strip().casefold()
+            for identifier in identifiers
+            if str(identifier or "").strip()
+        )
+    )
+    if not normalized_identifiers:
+        return "FALSE", []
+    groups: list[str] = []
+    params: list[Any] = []
+    for identifier in normalized_identifiers:
+        strong_fields = (
+            "LOWER(document_id) = %s",
+            "LOWER(COALESCE(metadata_json->>'artifactCode', '')) = %s",
+            "LOWER(COALESCE(metadata_json->>'retrievalAnchor', '')) = %s",
+            "LOWER(COALESCE(metadata_json->>'logicalDocumentKey', '')) = %s",
+        )
+        group = list(strong_fields)
+        params.extend([identifier] * len(strong_fields))
+        if include_text:
+            group.extend(
+                (
+                    "POSITION(%s IN LOWER(COALESCE(title, ''))) > 0",
+                    "POSITION(%s IN LOWER(COALESCE(chunk_text, ''))) > 0",
+                )
+            )
+            params.extend([identifier, identifier])
+        groups.append("(" + " OR ".join(group) + ")")
+    return "(" + " OR ".join(groups) + ")", params
+
+
+def _replacement_identifier_predicate(
+    replacement_keys: tuple[str, ...],
+) -> tuple[str, list[Any]]:
+    """构造现行替代资料的有界元数据匹配条件。"""
+
+    groups: list[str] = []
+    params: list[Any] = []
+    for raw_key in replacement_keys:
+        normalized = str(raw_key or "").strip().casefold()
+        if not normalized:
+            continue
+        # ``supersededBy`` 既可能保存完整锚点，也可能只保存锚点最后一段；两种形式都纳入参数化条件。
+        variants = tuple(dict.fromkeys((normalized, normalized.rsplit(":", 1)[-1])))
+        for variant in variants:
+            group = (
+                "LOWER(document_id) = %s",
+                "LOWER(COALESCE(metadata_json->>'artifactCode', '')) = %s",
+                "LOWER(COALESCE(metadata_json->>'logicalDocumentKey', '')) = %s",
+                "POSITION(%s IN LOWER(COALESCE(metadata_json->>'retrievalAnchor', ''))) > 0",
+            )
+            groups.append("(" + " OR ".join(group) + ")")
+            params.extend([variant, variant, variant, variant])
+    return ("(" + " OR ".join(groups) + ")", params) if groups else ("FALSE", [])
+
+
+def _replacement_matches_chunk(chunk: RagChunk, replacement_keys: tuple[str, ...]) -> bool:
+    """对数据库宽匹配结果做稳定身份的二次收口。"""
+
+    metadata = chunk.metadata or {}
+    candidate_values = {
+        str(chunk.document_id or "").strip().casefold(),
+        str(metadata.get("logicalDocumentKey") or "").strip().casefold(),
+        str(metadata.get("artifactCode") or "").strip().casefold(),
+        str(metadata.get("retrievalAnchor") or "").strip().casefold(),
+    }
+    candidate_values.update(
+        value.rsplit(":", 1)[-1]
+        for value in tuple(candidate_values)
+        if value
+    )
+    for raw_key in replacement_keys:
+        key = str(raw_key or "").strip().casefold()
+        if not key:
+            continue
+        variants = tuple(dict.fromkeys((key, key.rsplit(":", 1)[-1])))
+        for variant in variants:
+            if any(
+                candidate == variant
+                or candidate.endswith("-" + variant)
+                or candidate.endswith(":" + variant)
+                for candidate in candidate_values
+                if candidate
+            ):
+                return True
+    return False
+
+
+def _merge_rows(
+    *ranked_rows: tuple[Any, ...],
+    limit: int,
+) -> tuple[Any, ...]:
+    """按优先级合并 exact、词法和向量候选窗口，并按 chunk ID 去重。"""
 
     merged: list[Any] = []
     seen: set[str] = set()
-    for row in (*left, *right):
-        chunk_id = str(_row_value(row, "chunk_id", 0))
-        if chunk_id in seen:
-            continue
-        seen.add(chunk_id)
-        merged.append(row)
-        if len(merged) >= limit:
-            break
+    for rows in ranked_rows:
+        for row in rows:
+            chunk_id = str(_row_value(row, "chunk_id", 0))
+            if chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            merged.append(row)
+            if len(merged) >= limit:
+                return tuple(merged)
     return tuple(merged)
 
 
@@ -1181,6 +1455,54 @@ def _optional_positive_int(value: str | None) -> int | None:
     return parsed
 
 
+def _embed_texts_with_sensitivity_levels(
+    provider: AgentMemoryEmbeddingProvider,
+    texts: tuple[str, ...],
+    sensitivity_levels: tuple[str, ...],
+) -> tuple[Any, ...]:
+    """把 chunk 正文和真实分级成对交给新 Provider，并兼容旧的内部测试替身。
+
+    OpenAI-compatible 外部实现必须收到每条 chunk 的分级，才能在构建 HTTP 请求前执行 fail-closed
+    治理。仓库内既有的确定性和测试替身可能仍只有旧签名；它们不访问第三方，因此仅在 Python 明确报告
+    不接受该关键字时回退，Provider 内部真正的 ``TypeError`` 仍然向上抛出，不能被兼容分支吞掉。
+    """
+
+    embed_texts = getattr(provider, "embed_texts", None)
+    if callable(embed_texts):
+        try:
+            return tuple(
+                embed_texts(
+                    texts,
+                    sensitivity_levels=sensitivity_levels,
+                )
+            )
+        except TypeError as exc:
+            if not _is_unsupported_sensitivity_keyword(exc, "sensitivity_levels"):
+                raise
+            return tuple(embed_texts(texts))
+    embeddings: list[Any] = []
+    for text, sensitivity_level in zip(texts, sensitivity_levels):
+        try:
+            embeddings.append(
+                provider.embed_text(
+                    text,
+                    sensitivity_level=sensitivity_level,
+                )
+            )
+        except TypeError as exc:
+            if not _is_unsupported_sensitivity_keyword(exc, "sensitivity_level"):
+                raise
+            embeddings.append(provider.embed_text(text))
+    return tuple(embeddings)
+
+
+def _is_unsupported_sensitivity_keyword(error: TypeError, keyword: str) -> bool:
+    """仅识别 Python 调用边界的旧签名错误，避免覆盖 Provider 内部合同故障。"""
+
+    message = str(error).lower()
+    return keyword in message and "unexpected keyword" in message
+
+
 def rag_embedding_provider_from_env(
     environ: Mapping[str, str] | None = None,
 ) -> AgentMemoryEmbeddingProvider | None:
@@ -1213,6 +1535,14 @@ def rag_embedding_provider_from_env(
         "MAX_BATCH_SIZE": (
             "DATASMART_RAG_EMBEDDING_MAX_BATCH_SIZE",
             "DATASMART_AI_RAG_EMBEDDING_MAX_BATCH_SIZE",
+        ),
+        "APPROVED_SENSITIVITY_LEVELS": (
+            "DATASMART_RAG_EMBEDDING_APPROVED_SENSITIVITY_LEVELS",
+            "DATASMART_AI_RAG_EMBEDDING_APPROVED_SENSITIVITY_LEVELS",
+        ),
+        "SYNTHETIC_ONLY_EVALUATION": (
+            "DATASMART_RAG_EMBEDDING_SYNTHETIC_ONLY_EVALUATION",
+            "DATASMART_AI_RAG_EMBEDDING_SYNTHETIC_ONLY_EVALUATION",
         ),
     }
     for suffix, keys in aliases.items():

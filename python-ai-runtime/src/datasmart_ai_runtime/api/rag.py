@@ -1,7 +1,7 @@
 """RAG HTTP 路由。
 
 本模块提供治理知识问答入口。它不是通用“把任何文档塞给模型”的接口，而是 DataSmart Agent Runtime 的
-受控 RAG 查询面：请求必须携带 tenant/project/actor/workspace，服务层先做范围过滤和证据引用，再调用
+受控 RAG 查询面：请求必须携带 tenant/application/project/actor，服务层先做范围过滤和证据引用，再调用
 模型生成。
 """
 
@@ -130,11 +130,13 @@ def register_rag_routes(
 def rag_query_from_payload(payload: Mapping[str, Any]) -> RagQuery:
     """把 HTTP payload 转换为 RAG 查询对象。
 
-    兼容 camelCase 与 snake_case，方便 Java/gateway/Python 测试复用。
+    兼容 camelCase 与 snake_case，方便 Java/gateway/Python 测试复用。workspaceKey 仅作为
+    旧客户端迁移窗口的输入，不再参与新业务图事实合同；新调用方必须使用 applicationId。
     """
 
     return RagQuery(
         tenant_id=_text(_first(payload, "tenantId", "tenant_id"), default="*"),
+        application_id=_text(_first(payload, "applicationId", "application_id"), default="*"),
         project_id=_text(_first(payload, "projectId", "project_id"), default="*"),
         actor_id=_text(_first(payload, "actorId", "actor_id"), default="anonymous"),
         question=_required_text(_first(payload, "question", "query", "objective")),
@@ -145,12 +147,34 @@ def rag_query_from_payload(payload: Mapping[str, Any]) -> RagQuery:
         generate_answer=_bool(_first(payload, "generateAnswer", "generate_answer"), default=True),
         trace_id=_optional_text(_first(payload, "traceId", "trace_id")),
         session_id=_optional_text(_first(payload, "sessionId", "session_id")),
-        retrieval_mode=_text(_first(payload, "retrievalMode", "retrieval_mode"), default="hybrid"),
+        sensitivity_level=_text(
+            _first(payload, "sensitivityLevel", "sensitivity_level"),
+            default="internal",
+        ),
+        # 用户没有指定模式时交给运行时 Agent 自主判断；显式 hybrid/graph/lexical 等值仍保留，
+        # 用于黄金评测、问题定位和需要严格复现的后台任务。
+        retrieval_mode=_text(_first(payload, "retrievalMode", "retrieval_mode"), default="auto"),
         source_types=tuple(
             str(value).strip().lower()
             for value in _source_type_values(_first(payload, "sourceTypes", "source_types"))
             if str(value).strip()
         ),
+        graph_max_hops=_positive_int(
+            _first(payload, "graphMaxHops", "graph_max_hops"),
+            default=3,
+        ),
+        graph_start_entity=_optional_text(
+            _first(payload, "graphStartEntity", "graph_start_entity")
+        ),
+        graph_relation=_optional_text(
+            _first(payload, "graphRelation", "graph_relation")
+        ),
+        graph_hops=(
+            _positive_int(_first(payload, "graphHops", "graph_hops"), default=1)
+            if _first(payload, "graphHops", "graph_hops") is not None
+            else None
+        ),
+        graph_as_of=_optional_text(_first(payload, "graphAsOf", "graph_as_of")),
     )
 
 

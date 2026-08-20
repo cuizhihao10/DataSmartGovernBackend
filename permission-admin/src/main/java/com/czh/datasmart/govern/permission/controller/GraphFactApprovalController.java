@@ -1,0 +1,56 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/08/21 10:00
+ * @Description DataSmart Govern Backend - GraphFactApprovalController.java
+ * @Version:1.0.0
+ */
+package com.czh.datasmart.govern.permission.controller;
+
+import com.czh.datasmart.govern.common.api.PlatformApiResponse;
+import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
+import com.czh.datasmart.govern.permission.controller.dto.AgentToolActionApprovalFactEvaluationView;
+import com.czh.datasmart.govern.permission.controller.dto.GraphFactApprovalEvaluateRequest;
+import com.czh.datasmart.govern.permission.controller.dto.GraphFactApprovalRegisterRequest;
+import com.czh.datasmart.govern.permission.controller.dto.GraphFactApprovalRegisterResponse;
+import com.czh.datasmart.govern.permission.service.GraphFactApprovalService;
+import com.czh.datasmart.govern.permission.service.support.AgentApprovalFactTrustedRegistrationGuard;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+
+/**
+ * 图事实审批控制器。
+ *
+ * <p>登记接口只允许受信内部服务调用；评估接口供图摄取 consumer 回查。两条路由都不接收
+ * 图实体正文，避免把知识内容误当成权限控制面 payload。</p>
+ */
+@RestController
+@RequestMapping({"/permissions/agent/graph-facts", "/api/permission/agent/graph-facts"})
+@RequiredArgsConstructor
+public class GraphFactApprovalController {
+
+    private final GraphFactApprovalService graphFactApprovalService;
+    private final AgentApprovalFactTrustedRegistrationGuard trustedRegistrationGuard;
+
+    /** 登记图事实候选或审批决定。 */
+    @PostMapping("/approvals")
+    public PlatformApiResponse<GraphFactApprovalRegisterResponse> register(
+            @Valid @RequestBody GraphFactApprovalRegisterRequest request,
+            @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService,
+            @RequestHeader(value = PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, required = false) String internalToken,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        trustedRegistrationGuard.requireTrusted(sourceService, internalToken);
+        trustedRegistrationGuard.requireDecisionAuthority(sourceService, request == null ? null : request.getStatus());
+        return PlatformApiResponse.success("图事实审批事实已登记",
+                graphFactApprovalService.register(request), traceId);
+    }
+
+    /** 图摄取 consumer 在真正写 Neo4j 前回查审批事实。 */
+    @PostMapping("/evaluate")
+    public PlatformApiResponse<AgentToolActionApprovalFactEvaluationView> evaluate(
+            @RequestBody GraphFactApprovalEvaluateRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success("图事实审批评估完成",
+                graphFactApprovalService.evaluate(request), traceId);
+    }
+}

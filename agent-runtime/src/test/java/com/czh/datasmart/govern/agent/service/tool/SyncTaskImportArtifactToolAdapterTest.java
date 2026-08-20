@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.tool;
 
+import com.sun.net.httpserver.HttpServer;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
@@ -19,19 +20,25 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-/** Verifies literal upload references and same-session durable output references. */
+/** 验证浏览器上传引用、同会话持久输出引用以及 Java 到 Python RAG 的可信 Header。 */
 class SyncTaskImportArtifactToolAdapterTest {
 
     @Test
@@ -103,6 +110,61 @@ class SyncTaskImportArtifactToolAdapterTest {
         assertTrue(outcome.success());
         assertEquals("sync-import-002", outcome.output().get("artifactRef"));
         server.verify();
+    }
+
+    /**
+     * 任务导入案例检索属于普通内部知识查询：必须携带 internal 分级，并显式调用内部服务令牌注入方法。
+     */
+    @Test
+    void shouldCallRagWithInternalSensitivityAndServiceIdentity() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        AtomicReference<com.sun.net.httpserver.Headers> observedHeaders = new AtomicReference<>();
+        server.createContext("/agent/rag/query", exchange -> {
+            observedHeaders.set(exchange.getRequestHeaders());
+            exchange.getRequestBody().readAllBytes();
+            byte[] response = """
+                    {"answer":"使用已验证的任务模板。","citations":[],"retrievalSummary":{}}
+                    """.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", MediaType.APPLICATION_JSON_VALUE);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            RestClient.Builder builder = RestClient.builder();
+            AgentToolExecutionOutputStore outputStore = new AgentToolExecutionOutputStore();
+            outputStore.save(
+                    new AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot(
+                            "session-001", "run-dry", "audit-dry-rag", SyncTaskImportArtifactToolAdapter.DRY_RUN),
+                    Map.of("ragQuery", "任务导入字段映射失败如何修复？")
+            );
+            AgentRuntimeProperties properties = new AgentRuntimeProperties();
+            properties.getToolServiceBaseUrls().put("data-sync", "http://data-sync.test");
+            properties.getToolServiceBaseUrls().put(
+                    "python-ai-runtime",
+                    "http://" + server.getAddress().getHostString() + ":" + server.getAddress().getPort());
+            AgentToolDownstreamHttpSupport httpSupport = spy(new AgentToolDownstreamHttpSupport(properties));
+            SyncTaskImportArtifactToolAdapter adapter = new SyncTaskImportArtifactToolAdapter(
+                    builder,
+                    httpSupport,
+                    new AgentToolOutputReferenceResolver(outputStore)
+            );
+
+            AgentToolExecutionOutcome outcome = adapter.execute(context(
+                    SyncTaskImportArtifactToolAdapter.RAG_LOOKUP,
+                    Map.of("dryRunRef", Map.of(
+                            "fromTool", SyncTaskImportArtifactToolAdapter.DRY_RUN,
+                            "fromAuditId", "audit-dry-rag"))));
+
+            assertTrue(outcome.success(), () -> outcome.errorCode() + ": " + outcome.message());
+            assertEquals("internal", observedHeaders.get().getFirst("X-DataSmart-Rag-Sensitivity-Level"));
+            assertEquals("agent-runtime", observedHeaders.get().getFirst("X-DataSmart-Source-Service"));
+            verify(httpSupport).applyPythonRuntimeInternalServiceToken(any());
+            verify(httpSupport).applyInternalRagSensitivity(any());
+        } finally {
+            server.stop(0);
+        }
     }
 
     private SyncTaskImportArtifactToolAdapter adapter(RestClient.Builder builder,

@@ -81,8 +81,8 @@ def rag_command_worker_request_from_payload(payload: Mapping[str, Any]) -> RagCo
     """把 Java dispatcher 风格 payload 转换为 RAG worker 请求。
 
     支持字段来源优先级：
-    1. 顶层字段：便于本地 smoke 或 HTTP 调试；
-    2. `controlFacts/control_facts`：Java outbox dispatcher 常用的低敏控制面事实；
+    1. `controlFacts/control_facts`：Java outbox dispatcher 下发的受信控制面事实；
+    2. 顶层字段：只用于兼容本地 smoke 或 HTTP 调试，不能覆盖控制面安全事实；
     3. `arguments`：短生命周期工具参数，允许包含 question，但不会进入响应。
 
     这里没有把整个 payload 原样透传到 runner，是为了强制完成“正文参数”和“控制面事实”的分离。
@@ -180,6 +180,14 @@ def rag_command_worker_request_from_payload(payload: Mapping[str, Any]) -> RagCo
             _first(payload, "generateAnswer", "generate_answer")
             or _first(arguments, "generateAnswer", "generate_answer"),
             default=True,
+        ),
+        # RAG 正文分级是外部 Embedding/Reranker 的发送门禁，不是普通工具参数。
+        # 只有 Java 控制面 facts 能声明它；没有该事实时按 restricted 处理，不能让顶层 payload
+        # 或 arguments 中的 public/internal 自报值降低保护级别。
+        sensitivity_level=_text(
+            _first(control_facts, "sensitivityLevel", "sensitivity_level")
+            or "restricted",
+            default="restricted",
         ),
         trace_id=_optional_text(
             _first(payload, "traceId", "trace_id") or _first(control_facts, "traceId", "trace_id")

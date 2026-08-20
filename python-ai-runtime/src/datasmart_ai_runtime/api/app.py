@@ -159,6 +159,7 @@ from datasmart_ai_runtime.services.rag import (
     RAG_TOOL_CODE,
     RagCommandWorkerRunner,
     build_default_governance_rag_pipeline,
+    graph_rag_provider_from_env,
     rag_embedding_provider_from_env,
     rag_answer_artifact_writer_from_env,
 )
@@ -247,11 +248,17 @@ def create_app() -> Any:
     # 这里复用同一 provider 配置，是为了避免本地/生产各自维护两套 embedding endpoint；后续如果治理知识库
     # 需要独立模型，可以新增 DATASMART_AI_RAG_EMBEDDING_* 覆盖，而不改变 RagPipeline 契约。
     rag_embedding_provider = rag_embedding_provider_from_env()
+    # GraphRAG 与普通 chunk RAG 是两条不同的证据路径：它需要实体标准 ID、别名和带来源关系边，
+    # 不能在管线内部临时创建没有授权上下文的图数据库连接。未配置时保持 None，`retrievalMode=graph`
+    # 会明确返回 fail-closed 结果；配置 Neo4j 后由 Provider 自己执行范围过滤和有限逐跳查询。
+    graph_rag_provider = graph_rag_provider_from_env()
+    app.state.graph_rag_provider = graph_rag_provider
     rag_pipeline = build_default_governance_rag_pipeline(
         model_routes=model_route_registry,
         model_gateway=model_gateway,
         model_providers=model_provider_registry,
         embedding_provider=rag_embedding_provider,
+        graph_rag_provider=graph_rag_provider,
     )
     # 真实专业 Agent 使用同一个注册表，但每个角色只有在它依赖的基础设施实际可用时才装配：
     # - KNOWLEDGE_AGENT 已有真实 RagPipeline，可始终注册；

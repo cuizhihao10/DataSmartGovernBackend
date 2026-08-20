@@ -17,13 +17,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 /**
  * Handoff DAG 到 Tool DAG 桥接预览的 runtime event 发布器。
@@ -103,17 +106,20 @@ public class AgentSessionHandoffDagExecutionBridgeEventPublisher {
                                                           AgentSessionHandoffDagExecutionBridgePreviewResponse response) {
         Instant now = Instant.now();
         Optional<AgentSessionRecord> session = sessionStore.findById(sessionId);
+        String tenantId = session.map(AgentSessionRecord::getTenantId).map(String::valueOf).orElse(null);
+        String projectId = session.map(AgentSessionRecord::getProjectId).map(String::valueOf).orElse(null);
+        String actorId = session.map(AgentSessionRecord::getActorId).orElse(null);
         return new AgentRuntimeEventProjectionRecord(
-                "handoff-bridge-preview:" + runId + ":" + UUID.randomUUID(),
+                identityKey(tenantId, projectId, actorId, sessionId, runId, request, response),
                 SCHEMA_VERSION,
                 SOURCE,
                 EVENT_TYPE,
                 STAGE,
                 messageOf(response),
                 severityOf(response),
-                session.map(AgentSessionRecord::getTenantId).map(String::valueOf).orElse(null),
-                session.map(AgentSessionRecord::getProjectId).map(String::valueOf).orElse(null),
-                session.map(AgentSessionRecord::getActorId).orElse(null),
+                tenantId,
+                projectId,
+                actorId,
                 traceId,
                 runId,
                 sessionId,
@@ -123,6 +129,69 @@ public class AgentSessionHandoffDagExecutionBridgeEventPublisher {
                 now,
                 attributesOf(request, response)
         );
+    }
+
+    /**
+     * 构造桥接预览的稳定、低敏幂等键。
+     *
+     * <p>摘要同时绑定租户、项目、操作者、会话和 Run，防止不同治理范围内的相同预览相互去重；并纳入会改变事件摘要的
+     * handoff/tool 选择、dry-run 指纹、批量限制和模板状态。traceId 故意不参与计算，因为网络重试通常会产生新的
+     * traceId，但它们仍应被识别为同一次预览。最终只保存 SHA-256 值，不把会话、Run、节点或审计 ID 明文扩散到
+     * runtime event identityKey。</p>
+     */
+    private String identityKey(String tenantId,
+                               String projectId,
+                               String actorId,
+                               String sessionId,
+                               String runId,
+                               AgentSessionHandoffDagExecutionBridgePreviewRequest request,
+                               AgentSessionHandoffDagExecutionBridgePreviewResponse response) {
+        AgentRunToolDagExecutionDryRunResponse dryRun = response.dryRun();
+        StringBuilder material = new StringBuilder();
+        appendIdentityValue(material, SCHEMA_VERSION);
+        appendIdentityValue(material, SOURCE);
+        appendIdentityValue(material, EVENT_TYPE);
+        appendIdentityValue(material, tenantId);
+        appendIdentityValue(material, projectId);
+        appendIdentityValue(material, actorId);
+        appendIdentityValue(material, sessionId);
+        appendIdentityValue(material, runId);
+        appendIdentityValue(material, response.bridgeAction());
+        appendIdentityValue(material, response.bridgeReady());
+        appendSortedIdentityList(material, response.handoffNodeIds());
+        appendSortedIdentityList(material, response.mappedToolNodeIds());
+        appendSortedIdentityList(material, response.mappedToolAuditIds());
+        appendIdentityValue(material, dryRun.selectionFingerprint());
+        appendIdentityValue(material, dryRun.requestedMaxNodes());
+        appendIdentityValue(material, request == null ? null : request.includeUnselectedPreviewItems());
+        appendIdentityValue(material, !response.selectedNodeOutboxRequestTemplate().isEmpty());
+        appendIdentityValue(material, templateListSize(response, "nodeIds"));
+        appendIdentityValue(material, templateListSize(response, "auditIds"));
+        return "handoff-bridge-preview:sha256:" + sha256(material.toString());
+    }
+
+    /** 使用长度前缀编码，避免不同字段组合在摘要输入中产生边界歧义。 */
+    private void appendIdentityValue(StringBuilder material, Object value) {
+        String text = value == null ? "" : String.valueOf(value);
+        material.append(text.length()).append(':').append(text).append(';');
+    }
+
+    /** 选择器按集合语义排序，避免调用方只调整展示顺序就绕过去重。 */
+    private void appendSortedIdentityList(StringBuilder material, List<String> values) {
+        List<String> safeValues = safeList(values);
+        appendIdentityValue(material, safeValues.size());
+        safeValues.stream().sorted().forEach(value -> appendIdentityValue(material, value));
+    }
+
+    /** 对内部规范串计算不可逆摘要，identityKey 不保存参与计算的明文。 */
+    private String sha256(String material) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(material.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前 JDK 不支持 SHA-256，无法生成 handoff bridge preview 幂等键", exception);
+        }
     }
 
     private String messageOf(AgentSessionHandoffDagExecutionBridgePreviewResponse response) {

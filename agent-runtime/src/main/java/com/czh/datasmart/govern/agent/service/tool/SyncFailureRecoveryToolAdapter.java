@@ -511,6 +511,7 @@ public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
                 .headers(headers -> {
                     httpSupport.applyUserDelegationHeaders(headers, context);
                     httpSupport.applyPythonRuntimeInternalServiceToken(headers);
+                    httpSupport.applyRestrictedRagSensitivity(headers);
                 })
                 .body(body)
                 .retrieve().body(new ParameterizedTypeReference<>() {

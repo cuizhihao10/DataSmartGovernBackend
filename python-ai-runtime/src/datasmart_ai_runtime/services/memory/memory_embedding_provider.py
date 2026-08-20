@@ -19,12 +19,14 @@ OpenAI-compatible 企业模型网关或独立 Embedding 服务；业务代码只
 from __future__ import annotations
 
 import hashlib
+from http import client as http_client
 import json
 import math
 import os
+import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 from urllib import error, parse, request
 
 
@@ -35,11 +37,21 @@ class AgentMemoryEmbeddingProvider(Protocol):
     超时和 HTTP 协议都属于 Provider 实现细节，不应渗透到 pgvector/Chroma 业务适配器。
     """
 
-    def embed_text(self, text: str) -> tuple[float, ...]:
-        """把低敏记忆文本转换为向量。"""
+    def embed_text(
+        self,
+        text: str,
+        *,
+        sensitivity_level: str = "internal",
+    ) -> tuple[float, ...]:
+        """把已分类文本转换为向量；外部实现会校验该级别是否获准外发。"""
 
-    def embed_texts(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
-        """批量把低敏文本转换为与输入顺序一致的向量。"""
+    def embed_texts(
+        self,
+        texts: tuple[str, ...],
+        *,
+        sensitivity_levels: tuple[str, ...] | None = None,
+    ) -> tuple[tuple[float, ...], ...]:
+        """批量转换已分类文本，并保持每条正文与其敏感级别严格对齐。"""
 
 
 class MemoryEmbeddingProviderType(str, Enum):
@@ -68,6 +80,8 @@ class MemoryEmbeddingProviderSettings:
     - `timeout_seconds`：单次 HTTP 调用超时；
     - `organization`：可选组织 Header，用于兼容企业网关；
     - `max_input_chars`：发送给 Embedding Provider 的最大字符数。
+    - `approved_sensitivity_levels`：明确允许发送给外部 Provider 的正文敏感级别；默认空集。
+    - `synthetic_only_evaluation`：仅 synthetic-only 评测边界可与批准列表共同放行 `restricted`。
     """
 
     provider_type: MemoryEmbeddingProviderType = MemoryEmbeddingProviderType.DISABLED
@@ -79,9 +93,14 @@ class MemoryEmbeddingProviderSettings:
     organization: str = ""
     max_input_chars: int = 4000
     max_batch_size: int = 16
+    max_attempts: int = 3
+    retry_base_delay_ms: int = 250
+    approved_sensitivity_levels: tuple[str, ...] = ()
+    synthetic_only_evaluation: bool = False
 
 
 UrlOpen = Callable[..., Any]
+Sleep = Callable[[float], None]
 
 
 class DeterministicHashEmbeddingProvider:
@@ -99,7 +118,12 @@ class DeterministicHashEmbeddingProvider:
     def __init__(self, *, dimensions: int = 16) -> None:
         self._dimensions = max(4, min(int(dimensions), 4096))
 
-    def embed_text(self, text: str) -> tuple[float, ...]:
+    def embed_text(
+        self,
+        text: str,
+        *,
+        sensitivity_level: str = "internal",
+    ) -> tuple[float, ...]:
         """基于 SHA-256 生成稳定、非空、有限浮点向量。"""
 
         digest = hashlib.sha256(text.encode("utf-8")).digest()
@@ -109,7 +133,12 @@ class DeterministicHashEmbeddingProvider:
             values.append(round((byte_value / 255.0) * 2 - 1, 8))
         return tuple(values)
 
-    def embed_texts(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+    def embed_texts(
+        self,
+        texts: tuple[str, ...],
+        *,
+        sensitivity_levels: tuple[str, ...] | None = None,
+    ) -> tuple[tuple[float, ...], ...]:
         """逐条生成测试向量，并保持批量输入顺序。"""
 
         return tuple(self.embed_text(text) for text in texts)
@@ -130,6 +159,7 @@ class OpenAICompatibleMemoryEmbeddingProvider:
         settings: MemoryEmbeddingProviderSettings,
         *,
         urlopen: UrlOpen = request.urlopen,
+        sleep: Sleep = time.sleep,
     ) -> None:
         if settings.provider_type != MemoryEmbeddingProviderType.OPENAI_COMPATIBLE:
             raise ValueError("OpenAI-compatible Embedding Provider 的 provider_type 配置不正确。")
@@ -140,17 +170,32 @@ class OpenAICompatibleMemoryEmbeddingProvider:
         _validate_embedding_endpoint(settings.endpoint)
         self._settings = settings
         self._urlopen = urlopen
+        self._sleep = sleep
+        self._approved_sensitivity_levels = normalize_external_text_sensitivity_levels(
+            settings.approved_sensitivity_levels,
+        )
+        self._synthetic_only_evaluation = bool(settings.synthetic_only_evaluation)
 
-    def embed_text(self, text: str) -> tuple[float, ...]:
+    def embed_text(
+        self,
+        text: str,
+        *,
+        sensitivity_level: str = "internal",
+    ) -> tuple[float, ...]:
         """调用 Embeddings API 并返回经过校验的向量。
 
         请求只发送截断后的低敏文本。HTTPError/URLError/JSON 解析异常都会转换成不包含 endpoint、
         API Key 和上游 body 的稳定错误，避免敏感信息进入 worker 日志或重试任务。
         """
 
-        return self.embed_texts((text,))[0]
+        return self.embed_texts((text,), sensitivity_levels=(sensitivity_level,))[0]
 
-    def embed_texts(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+    def embed_texts(
+        self,
+        texts: tuple[str, ...],
+        *,
+        sensitivity_levels: tuple[str, ...] | None = None,
+    ) -> tuple[tuple[float, ...], ...]:
         """使用 Provider 的数组输入批量生成向量。
 
         企业语料摄取通常包含数十到数千个 chunk。逐条 HTTP 请求会放大网络延迟和限流压力，因此这里按
@@ -161,6 +206,13 @@ class OpenAICompatibleMemoryEmbeddingProvider:
         normalized = tuple(self._safe_text(text) for text in texts)
         if not normalized:
             raise ValueError("Embedding 批量输入不能为空。")
+        levels = _embedding_sensitivity_levels(normalized, sensitivity_levels)
+        for sensitivity_level in levels:
+            require_external_text_sensitivity_approval(
+                sensitivity_level,
+                approved_sensitivity_levels=self._approved_sensitivity_levels,
+                synthetic_only_evaluation=self._synthetic_only_evaluation,
+            )
         batch_size = max(1, min(int(self._settings.max_batch_size), 128))
         vectors: list[tuple[float, ...]] = []
         for offset in range(0, len(normalized), batch_size):
@@ -204,15 +256,7 @@ class OpenAICompatibleMemoryEmbeddingProvider:
             headers=headers,
             method="POST",
         )
-        try:
-            with self._urlopen(http_request, timeout=max(1, self._settings.timeout_seconds)) as response:
-                response_payload = json.loads(response.read().decode("utf-8"))
-        except error.HTTPError as exc:
-            raise RuntimeError(f"Embedding Provider HTTP 调用失败，status={exc.code}。上游响应正文已隐藏。") from exc
-        except error.URLError as exc:
-            raise RuntimeError("Embedding Provider 网络连接失败。endpoint 与底层错误详情已隐藏。") from exc
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            raise RuntimeError("Embedding Provider 返回了无法解析的 JSON。上游响应正文已隐藏。") from exc
+        response_payload = self._read_response_with_bounded_retry(http_request)
 
         try:
             raw_items = response_payload["data"]
@@ -242,6 +286,61 @@ class OpenAICompatibleMemoryEmbeddingProvider:
             raise RuntimeError("Embedding Provider 批量响应的向量维度不一致。")
         return vectors
 
+    def _read_response_with_bounded_retry(
+        self,
+        http_request: request.Request,
+    ) -> dict[str, Any]:
+        """对 429/5xx/超时/断连执行有限退避，其他失败保持 fail-closed。
+
+        Embedding 摄取可能连续发送几十个批次，单次网关抖动不应使整份已经校验的文档失败；但鉴权、请求
+        参数和响应 Schema 错误没有重试价值。这里最多尝试五次（默认三次），等待时间指数增长且单次不
+        超过四秒。密钥、Endpoint、输入正文和上游 body 始终不进入异常。
+        """
+
+        maximum_attempts = max(1, min(int(self._settings.max_attempts), 5))
+        for attempt in range(1, maximum_attempts + 1):
+            try:
+                with self._urlopen(
+                    http_request,
+                    timeout=max(1, self._settings.timeout_seconds),
+                ) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise TypeError("Embedding Provider JSON 根节点必须是对象。")
+                return payload
+            except error.HTTPError as exc:
+                if _retryable_http_status(exc.code) and attempt < maximum_attempts:
+                    self._wait_before_retry(attempt)
+                    continue
+                raise RuntimeError(
+                    f"Embedding Provider HTTP 调用失败，status={exc.code}。上游响应正文已隐藏。"
+                ) from exc
+            except (
+                error.URLError,
+                TimeoutError,
+                ConnectionError,
+                OSError,
+                http_client.IncompleteRead,
+                http_client.RemoteDisconnected,
+            ) as exc:
+                if attempt < maximum_attempts:
+                    self._wait_before_retry(attempt)
+                    continue
+                raise RuntimeError(
+                    "Embedding Provider 网络连接失败。endpoint 与底层错误详情已隐藏。"
+                ) from exc
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Embedding Provider 返回了无法解析的 JSON。上游响应正文已隐藏。"
+                ) from exc
+        raise AssertionError("Embedding Provider 重试循环不应越过最大次数。")
+
+    def _wait_before_retry(self, completed_attempt: int) -> None:
+        """执行有上限的指数退避，避免连续批次立即再次撞上限流窗口。"""
+
+        base_seconds = max(1, int(self._settings.retry_base_delay_ms)) / 1000.0
+        self._sleep(min(4.0, base_seconds * (2 ** max(0, completed_attempt - 1))))
+
 
 def memory_embedding_provider_settings_from_env(
     environ: dict[str, str] | None = None,
@@ -258,6 +357,8 @@ def memory_embedding_provider_settings_from_env(
 - `DATASMART_AI_MEMORY_EMBEDDING_ORGANIZATION`；
 - `DATASMART_AI_MEMORY_EMBEDDING_MAX_INPUT_CHARS`。
 - `DATASMART_AI_MEMORY_EMBEDDING_MAX_BATCH_SIZE`。
+- `DATASMART_AI_MEMORY_EMBEDDING_APPROVED_SENSITIVITY_LEVELS`。
+- `DATASMART_AI_MEMORY_EMBEDDING_SYNTHETIC_ONLY_EVALUATION`。
     """
 
     source = environ if environ is not None else os.environ
@@ -272,6 +373,18 @@ def memory_embedding_provider_settings_from_env(
         organization=source.get("DATASMART_AI_MEMORY_EMBEDDING_ORGANIZATION") or "",
         max_input_chars=_positive_int(source.get("DATASMART_AI_MEMORY_EMBEDDING_MAX_INPUT_CHARS"), 4000),
         max_batch_size=_positive_int(source.get("DATASMART_AI_MEMORY_EMBEDDING_MAX_BATCH_SIZE"), 16),
+        max_attempts=_positive_int(source.get("DATASMART_AI_MEMORY_EMBEDDING_MAX_ATTEMPTS"), 3),
+        retry_base_delay_ms=_positive_int(
+            source.get("DATASMART_AI_MEMORY_EMBEDDING_RETRY_BASE_DELAY_MS"),
+            250,
+        ),
+        approved_sensitivity_levels=normalize_external_text_sensitivity_levels(
+            source.get("DATASMART_AI_MEMORY_EMBEDDING_APPROVED_SENSITIVITY_LEVELS"),
+        ),
+        synthetic_only_evaluation=_truthy(
+            source.get("DATASMART_AI_MEMORY_EMBEDDING_SYNTHETIC_ONLY_EVALUATION"),
+            default=False,
+        ),
     )
 
 
@@ -279,6 +392,7 @@ def build_memory_embedding_provider(
     settings: MemoryEmbeddingProviderSettings,
     *,
     urlopen: UrlOpen = request.urlopen,
+    sleep: Sleep = time.sleep,
 ) -> AgentMemoryEmbeddingProvider | None:
     """按配置创建 Embedding Provider。
 
@@ -290,7 +404,7 @@ def build_memory_embedding_provider(
         return None
     if settings.provider_type == MemoryEmbeddingProviderType.DETERMINISTIC:
         return DeterministicHashEmbeddingProvider(dimensions=settings.dimensions)
-    return OpenAICompatibleMemoryEmbeddingProvider(settings, urlopen=urlopen)
+    return OpenAICompatibleMemoryEmbeddingProvider(settings, urlopen=urlopen, sleep=sleep)
 
 
 def validate_embedding_vector(value: Any) -> tuple[float, ...]:
@@ -325,12 +439,96 @@ def memory_embedding_provider_diagnostics(settings: MemoryEmbeddingProviderSetti
         "timeoutSeconds": settings.timeout_seconds,
         "maxInputChars": settings.max_input_chars,
         "maxBatchSize": settings.max_batch_size,
+        "maxAttempts": settings.max_attempts,
+        "retryBaseDelayMs": settings.retry_base_delay_ms,
+        "approvedSensitivityLevels": normalize_external_text_sensitivity_levels(
+            settings.approved_sensitivity_levels,
+        ),
+        "syntheticOnlyEvaluation": bool(settings.synthetic_only_evaluation),
+        "externalBodyFailClosed": True,
         "productionReady": settings.provider_type == MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
         "notes": (
             "deterministic provider 只用于单元测试和 pgvector smoke，不能衡量语义召回质量。",
             "生产模型必须独立配置模型名、维度、最大输入、归一化策略、容量和召回评测。",
         ),
     }
+
+
+def normalize_external_text_sensitivity_levels(
+    values: str | Iterable[str] | None,
+) -> tuple[str, ...]:
+    """规范化外部模型正文的显式批准级别，不为部署猜测默认放行范围。
+
+    该函数同时服务 Embedding 与 Reranker。空配置保持空 tuple，表示远端正文一律不能外发；这比把
+    ``internal`` 或其他标签当作隐式批准更符合生产 fail-closed 边界。调用方可使用逗号分隔环境变量
+    或配置层传入的序列，重复项会保持首次出现顺序并被去重。
+    """
+
+    if values is None:
+        raw_values: Iterable[str] = ()
+    elif isinstance(values, str):
+        raw_values = values.split(",")
+    else:
+        raw_values = values
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        level = _normalized_sensitivity_level(value)
+        if level and level not in seen:
+            seen.add(level)
+            normalized.append(level)
+    return tuple(normalized)
+
+
+def require_external_text_sensitivity_approval(
+    sensitivity_level: str,
+    *,
+    approved_sensitivity_levels: str | Iterable[str] | None,
+    synthetic_only_evaluation: bool,
+) -> None:
+    """在任一 HTTP 请求创建前，校验正文分级是否已获明确外发批准。
+
+    ``restricted`` 不因出现在普通 allowlist 中而自动放行，只有 synthetic-only 评测边界同时显式
+    打开时才可提交。这让生产默认即使误配了级别，也会继续阻断受限正文；异常只返回稳定治理结论，
+    不拼接正文、模型输入、Endpoint 或凭据。
+    """
+
+    level = _normalized_sensitivity_level(sensitivity_level)
+    approved = normalize_external_text_sensitivity_levels(approved_sensitivity_levels)
+    if not level or level not in approved:
+        raise RuntimeError("外部模型正文敏感级别未获外发批准，已阻断。")
+    if level == "restricted" and not synthetic_only_evaluation:
+        raise RuntimeError("restricted 正文仅允许在显式 synthetic-only 评测边界内外发，已阻断。")
+
+
+def _embedding_sensitivity_levels(
+    texts: tuple[str, ...],
+    sensitivity_levels: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """校验批量正文与分级一一对应，缺失分级按内部正文处理但仍要求显式批准。"""
+
+    if sensitivity_levels is None:
+        return ("internal",) * len(texts)
+    if isinstance(sensitivity_levels, str):
+        raise ValueError("Embedding 批量正文敏感级别必须逐条提供。")
+    levels = tuple(str(level or "") for level in sensitivity_levels)
+    if len(levels) != len(texts):
+        raise ValueError("Embedding 批量正文与敏感级别数量不一致。")
+    return levels
+
+
+def _normalized_sensitivity_level(value: object) -> str:
+    """把分级标识归一为稳定的小写比较键。"""
+
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _truthy(value: str | None, *, default: bool) -> bool:
+    """读取显式布尔开关；未知值保持保守的关闭状态。"""
+
+    if value is None or not str(value).strip():
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
 def _embedding_endpoint(endpoint: str) -> str:
@@ -342,6 +540,12 @@ def _embedding_endpoint(endpoint: str) -> str:
     if normalized.endswith("/v1"):
         return f"{normalized}/embeddings"
     return f"{normalized}/v1/embeddings"
+
+
+def _retryable_http_status(status_code: int) -> bool:
+    """只把限流与常见服务端瞬态状态视为可重试。"""
+
+    return int(status_code) in {429, 500, 502, 503, 504}
 
 
 def _validate_embedding_endpoint(endpoint: str) -> None:
@@ -401,5 +605,7 @@ __all__ = [
     "build_memory_embedding_provider",
     "memory_embedding_provider_diagnostics",
     "memory_embedding_provider_settings_from_env",
+    "normalize_external_text_sensitivity_levels",
+    "require_external_text_sensitivity_approval",
     "validate_embedding_vector",
 ]

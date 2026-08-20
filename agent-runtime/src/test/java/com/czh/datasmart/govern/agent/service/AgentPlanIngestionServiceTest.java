@@ -393,9 +393,9 @@ class AgentPlanIngestionServiceTest {
         assertEquals("PLANNING", followUp.run().state());
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> compactPlans = (List<Map<String, Object>>) followUp.run().variables().get("toolPlans");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> arguments = (Map<String, Object>) compactPlans.getFirst().get("arguments");
-        assertEquals(2, ((List<?>) arguments.get("objectMappings")).size());
+        assertEquals(List.of("datasourceId", "objectMappings"),
+                compactPlans.getFirst().get("argumentFields"));
+        assertEquals(2, compactPlans.getFirst().get("argumentCount"));
     }
 
     /**

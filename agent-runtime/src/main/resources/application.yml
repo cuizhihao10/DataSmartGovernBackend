@@ -466,6 +466,23 @@ datasmart:
         dispatcher-http-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_HTTP_ENABLED:false}
         task-management-consume-url: ${DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL:http://localhost:8081/internal/agent-async-task-commands/consume}
         dispatcher-http-timeout-ms: 3000
+    async-task-final-state-callback-worker:
+      # 最终态 callback 会写 task-management，因此默认绝不启动后台线程；必须由部署环境显式打开。
+      # 启用时 Java 只从持久化 worker receipt 索引发现候选，AUTO_APPROVED 与 command outbox PUBLISHED 都不是执行成功。
+      enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_TASK_FINAL_STATE_CALLBACK_WORKER_ENABLED:false}
+      # worker 启动还需要 persistence.database-enabled=true、worker-receipt-index-store=postgresql/jdbc、Flyway V8 和 PostgreSQL 可用；缺任一项会 fail-closed。
+      initial-delay-ms: 15000
+      fixed-delay-ms: 5000
+      batch-size: 20
+      max-attempts: 5
+      initial-backoff-seconds: 30
+      max-backoff-seconds: 900
+      # callback HTTP 有独立硬超时；只有网络/5xx/限流进入有限重试，业务拒绝直接转人工补偿。
+      connect-timeout-ms: ${DATASMART_AGENT_RUNTIME_ASYNC_TASK_FINAL_STATE_CALLBACK_CONNECT_TIMEOUT_MS:1500}
+      read-timeout-ms: ${DATASMART_AGENT_RUNTIME_ASYNC_TASK_FINAL_STATE_CALLBACK_READ_TIMEOUT_MS:15000}
+      # visibility timeout 是跨实例领取的恢复窗口；运行时会保证它至少覆盖 connect+read+5 秒落库余量。
+      visibility-timeout-seconds: 60
+      worker-id: ${DATASMART_AGENT_RUNTIME_ASYNC_TASK_FINAL_STATE_CALLBACK_WORKER_ID:agent-runtime-final-state-callback-worker}
     workspace-text-search-worker:
       # 受控代码仓库精确检索 Worker。单模块开发默认关闭，完整 Compose 才显式打开。
       enabled: ${DATASMART_AGENT_RUNTIME_WORKSPACE_TEXT_SEARCH_WORKER_ENABLED:false}

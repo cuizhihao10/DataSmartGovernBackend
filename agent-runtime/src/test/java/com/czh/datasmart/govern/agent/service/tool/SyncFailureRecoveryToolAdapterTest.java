@@ -125,6 +125,7 @@ class SyncFailureRecoveryToolAdapterTest {
                     exchange.getRequestMethod() + " " + exchange.getRequestURI() + " " + exchange.getProtocol(),
                     exchange.getRequestHeaders().getFirst("Content-Type"),
                     exchange.getRequestHeaders().getFirst("Upgrade"),
+                    exchange.getRequestHeaders().getFirst("X-DataSmart-Rag-Sensitivity-Level"),
                     body));
             byte[] responseBody = """
                     {"answer":"先扩大目标字符字段，再重试失败对象。",
@@ -167,6 +168,7 @@ class SyncFailureRecoveryToolAdapterTest {
             assertEquals("POST /agent/rag/query HTTP/1.1", request.requestLine());
             assertTrue(request.contentType().startsWith(MediaType.APPLICATION_JSON_VALUE));
             assertNull(request.upgrade());
+            assertEquals("restricted", request.sensitivityLevel());
             assertEquals("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     ((Map<?, ?>) outcome.output().get("evidenceAudit")).get("evidenceDigest"));
             assertTrue(request.body().contains("\"tenantId\":10"));
@@ -328,8 +330,12 @@ class SyncFailureRecoveryToolAdapterTest {
         }
     }
 
-    /** Low-sensitive transport facts captured by the raw contract endpoint. */
-    private record ObservedHttpRequest(String requestLine, String contentType, String upgrade, String body) {
+    /** 真实 HTTP 合同端点捕获的低敏传输事实。 */
+    private record ObservedHttpRequest(String requestLine,
+                                       String contentType,
+                                       String upgrade,
+                                       String sensitivityLevel,
+                                       String body) {
     }
 
     private AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot snapshot(String auditId, String toolCode) {

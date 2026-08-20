@@ -21,6 +21,8 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 **当前智能网关进度补充**：`permission-admin` 已新增 Agent 工具预算策略评估入口，可按角色、租户套餐、workspace 风险和 worker backlog 生成 Python Runtime 可消费的 `toolCallBudget`；`agent-runtime` 已新增 Skill 可见性快照 runtime event 专用查询入口，可把 Python Runtime 的 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` 纳入 Java 控制面 replay/index 视图；Python Runtime 现在会把 Skill Publication Manifest 的 `contentFingerprint` 绑定到 `intelligentGatewayGovernance.skillManifest`、`skillVisibility.manifestBinding` 和可回放事件 attributes，Java 专用投影视图也能按 Manifest 绑定状态与来源聚合；独立 Skill 可见性快照索引已具备 `memory/postgresql|jdbc` 目标实现，`mysql` 仅保留为迁移期兼容别名；索引链路已新增低基数 Micrometer 指标、只读诊断接口、Prometheus 告警规则和 projection duplicate 场景下的幂等补物化能力；gateway 已为 `/api/agent/plans` 生成会话级 READY Skill 准入缓存上下文，并通过 HMAC 签名传递给 Python Runtime，Python 侧只缓存 Skill admission decision，不缓存用户 prompt、完整 AgentPlan、模型输出或工具结果；Python Runtime 已接入官方 MCP Python SDK 1.x 出站 Client，支持受控 Streamable HTTP/stdio、真实 `initialize`、`tools/list`、`tools/call`、工具命名空间和 admission 闸门，详见 [出站 MCP Client 接入说明](docs/mcp-client-integration.md)；长期记忆已切换到 PostgreSQL/pgvector 目标路径，并保留 Chroma 兼容适配边界。
 
+**2026-08-20 事实一致性增量**：固定栈中的 MySQL、Chroma 和 Qwen2 仅作为迁移期兼容或历史方案保留，不是新代码的永久依赖；当前目标存储为 PostgreSQL/pgvector。reasoning provider 通过可替换的模型路由与 Provider 接口接入，当前本地验收实际使用 `gpt-5.6-sol`；该模型名只属于本地验收证据，不构成永久模型约束。Java/data-sync 当前已接入策略回滚、限界调参、刷新元数据、checkpoint 恢复、失败分片 replay、字段映射修复六类受治理 repair；逐动作真实故障注入黑盒 E2E 尚未全部完成。
+
 ---
 
 ## 文档修订记录
@@ -43,7 +45,7 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 ### 1.2 核心技术栈约束（AI必须遵循）
 
-#### 后端技术栈（固定，不可随意变更）
+#### 后端技术栈约束（基础版本固定，存储与模型适配可演进）
 
 - 基础环境：JDK 21（Eclipse Temurin）、Spring Boot 3.5.11
 
@@ -53,13 +55,13 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 - 可观测性：Spring Boot Actuator、Prometheus 2.50.x、Grafana 10.4.x
 
-- 数据存储：MySQL 8.0+（业务数据）、Redis 7.2+（缓存/会话）、Neo4j 5.20+（知识图谱）、Chroma（向量存储）、MinIO（文件存储）
+- 数据存储：PostgreSQL/pgvector（业务事实、Agent 长期记忆与语义检索目标）、Redis 7.2+（缓存/会话）、Neo4j 5.20+（知识图谱）、MinIO（文件存储）；MySQL 8.0+ 与 Chroma 仅作为迁移期兼容/历史适配选项，不作为新代码固定依赖
 
-#### AI智能体技术栈（固定，OpenClaw风格）
+#### AI智能体技术栈（治理边界固定，Provider/模型可替换，OpenClaw风格）
 
 - 运行时：LangGraph、OpenClaw Runtime
 
-- 大模型：Qwen2-7B/Qwen2-VL（开源，可微调）
+- 推理路由：可替换 reasoning provider（OpenAI-compatible、vLLM、SGLang 等）；当前本地验收实际使用 `gpt-5.6-sol`；Qwen2-7B/Qwen2-VL 仅为历史模型选项，不写入业务模块或长期合同
 
 - 推理优化：vLLM 0.6+（AWQ量化）
 
@@ -97,8 +99,8 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 |网关接入层|会话路由、权限校验、多渠道接入、请求限流|Nginx 1.24+、智能体网关（Spring Boot实现）|1. 支持智能体路由（根据用户需求匹配对应智能体）；2. 实现RBAC权限校验（区分用户/智能体权限）；3. 支持限流、熔断，避免高并发压垮后端|
 |Java核心业务层|业务逻辑处理、任务管理、数据持久化、第三方系统集成|Spring Boot 3.5.11、JDK 21虚拟线程、MyBatis-Plus 3.5.5|1. 用虚拟线程提升任务并发吞吐量；2. 任务管理需支持断点续行、失败重试；3. 所有业务接口需统一异常处理、日志记录|
 |智能体运行时层|智能体生命周期管理、技能插件调度、工作区隔离、状态同步|LangGraph、OpenClaw Runtime|1. 支持8个专项智能体协同调度；2. 技能插件可一键注册、调用；3. 实现工作区隔离与状态持久化；4. 支持智能体会话上下文保持|
-|Python AI算法层|大模型推理、多智能体逻辑、技能插件实现、GraphRAG检索|Qwen2-7B、vLLM、LangChain、GraphRAG|1. 推理延迟需降低70%+（vLLM优化）；2. GraphRAG需构建数据治理知识图谱；3. 技能插件需符合OpenClaw规范，支持输入输出校验|
-|中间件/存储层|数据存储、消息传递、缓存、文件存储|MySQL、Redis、Kafka、Neo4j、Chroma、MinIO|1. 数据库需支持分表分库（预留扩展）；2. Kafka消息需保证幂等性、可靠性；3. 向量存储需支持高效检索（适配GraphRAG）|
+|Python AI算法层|大模型推理、多智能体逻辑、技能插件实现、GraphRAG检索|可替换 reasoning provider、vLLM/SGLang、LangChain、GraphRAG|1. 推理延迟需降低70%+（按实际 Provider 优化）；2. GraphRAG需构建数据治理知识图谱；3. 技能插件需符合OpenClaw规范，支持输入输出校验|
+|中间件/存储层|数据存储、消息传递、缓存、文件存储|PostgreSQL/pgvector、Redis、Kafka、Neo4j、MinIO；MySQL/Chroma 迁移期兼容|1. 数据库需支持分区与扩展；2. Kafka消息需保证幂等性、可靠性；3. 向量存储需支持高效检索（适配GraphRAG）|
 |基础设施层|容器化部署、环境一致性、运维自动化|Docker、Docker Compose、Ubuntu 22.04|1. 所有组件需容器化，支持一键部署；2. 配置文件需区分开发/测试/生产环境；3. 支持日志挂载、数据持久化|
 ### 2.2 核心组件交互流程（AI需理解的协同逻辑）
 
@@ -166,7 +168,7 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 - 核心组件：任务生成器、任务调度器、任务监控器、任务复盘器
 
-- 依赖模块：虚拟线程池、Kafka消息队列、MySQL（任务存储）、Redis（任务缓存）
+- 依赖模块：虚拟线程池、Kafka消息队列、PostgreSQL（任务存储）、Redis（任务缓存）
 
 - 交互对象：智能体网关、智能体运行时层、可观测性模块
 
@@ -200,7 +202,7 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 - 核心组件：数据源连接器、元数据采集器、连接池管理器、数据源监控器
 
-- 依赖模块：MySQL（数据源配置存储）、智能体运行时层（数据源接入智能体）
+- 依赖模块：PostgreSQL（数据源配置存储）、智能体运行时层（数据源接入智能体）
 
 - 交互对象：数据质量模块、ETL开发模块、数据源接入智能体
 
@@ -234,7 +236,7 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 - 核心组件：规则生成器、异常检测器、清洗方案生成器、质量报告生成器
 
-- 依赖模块：MySQL（质量规则存储）、Neo4j（规则关联）、数据质量智能体
+- 依赖模块：PostgreSQL（质量规则存储）、Neo4j（规则关联）、数据质量智能体
 
 - 交互对象：数据源管理模块、ETL开发模块、合规脱敏模块
 
@@ -334,14 +336,14 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 |智能体名称|核心职责|技术方案|设计需求|
 |---|---|---|---|
-|总控调度智能体|需求解析、任务拆解、智能体协调、进度监控、结果汇总|Qwen2-7B微调（任务规划方向）、LangGraph状态流转|1. 需求解析准确率≥95%；2. 任务拆解需合理，分配至对应专项智能体；3. 支持实时监控任务进度|
-|数据源接入智能体|多源数据接入、元数据采集、连接测试、连接维护|Qwen2-VL（多模态元数据提取）、JDBC/ODBC工具|1. 支持主流数据源接入；2. 元数据采集完整（表结构、字段口径）；3. 连接异常可自动重试|
-|数据质量智能体|质量规则生成、异常数据检测、清洗方案推荐、质量复盘|Qwen2-7B微调（数据质量方向）、GraphRAG（规则检索）|1. 规则生成贴合业务需求；2. 异常检测准确率≥98%；3. 清洗方案可执行|
-|ETL开发智能体|自然语言转ETL脚本、脚本调试、性能优化、脚本发布|Qwen2-7B微调（SQL/Spark代码生成）、代码调试工具|1. 脚本生成准确率≥96%；2. 支持脚本性能优化；3. 脚本可直接发布执行|
-|数据资产智能体|数据字典生成、表关系图谱构建、业务口径映射、资产检索|Qwen2-7B微调（知识图谱方向）、Neo4j（图谱存储）|1. 表关系图谱构建准确；2. 业务口径映射清晰；3. 资产检索响应≤500ms|
-|合规脱敏智能体|敏感数据识别、分级分类、脱敏方案生成、合规审计|Qwen2-7B微调（敏感数据识别方向）、脱敏算法库|1. 敏感数据识别准确率≥99%；2. 脱敏方案符合合规要求；3. 支持脱敏审计日志|
-|运维告警智能体|指标监控、异常告警、自动恢复、运维复盘|Qwen2-7B微调（运维方向）、Prometheus指标采集|1. 告警响应≤10秒；2. 支持简单故障自动恢复；3. 定期生成运维复盘报告|
-|反思优化智能体|任务复盘、规则优化、智能体能力迭代、技能插件升级|Qwen2-7B微调（反思学习方向）、DPO微调|1. 复盘报告需有针对性优化建议；2. 支持智能体能力迭代；3. 可自动优化技能插件参数|
+|总控调度智能体|需求解析、任务拆解、智能体协调、进度监控、结果汇总|可替换 reasoning provider（当前本地验收 `gpt-5.6-sol`）、LangGraph状态流转|1. 需求解析准确率≥95%；2. 任务拆解需合理，分配至对应专项智能体；3. 支持实时监控任务进度|
+|数据源接入智能体|多源数据接入、元数据采集、连接测试、连接维护|可替换多模态模型 Provider、JDBC/ODBC工具|1. 支持主流数据源接入；2. 元数据采集完整（表结构、字段口径）；3. 连接异常可自动重试|
+|数据质量智能体|质量规则生成、异常数据检测、清洗方案推荐、质量复盘|可替换 reasoning provider、GraphRAG（规则检索）|1. 规则生成贴合业务需求；2. 异常检测准确率≥98%；3. 清洗方案可执行|
+|ETL开发智能体|自然语言转ETL脚本、脚本调试、性能优化、脚本发布|可替换代码/ reasoning provider、代码调试工具|1. 脚本生成准确率≥96%；2. 支持脚本性能优化；3. 脚本可直接发布执行|
+|数据资产智能体|数据字典生成、表关系图谱构建、业务口径映射、资产检索|可替换 reasoning provider、Neo4j（图谱存储）|1. 表关系图谱构建准确；2. 业务口径映射清晰；3. 资产检索响应≤500ms|
+|合规脱敏智能体|敏感数据识别、分级分类、脱敏方案生成、合规审计|可替换 reasoning/multimodal provider、脱敏算法库|1. 敏感数据识别准确率≥99%；2. 脱敏方案符合合规要求；3. 支持脱敏审计日志|
+|运维告警智能体|指标监控、异常告警、自动恢复、运维复盘|可替换 reasoning provider、Prometheus指标采集|1. 告警响应≤10秒；2. 支持简单故障自动恢复；3. 定期生成运维复盘报告|
+|反思优化智能体|任务复盘、规则优化、智能体能力迭代、技能插件升级|可替换 reasoning provider、DPO微调|1. 复盘报告需有针对性优化建议；2. 支持智能体能力迭代；3. 可自动优化技能插件参数|
 
 #### 3.3.1 当前可验收的六专业 Agent 受治理闭环
 
@@ -368,13 +370,13 @@ Recovery 的每项建议独立经过工具白名单和可验证配置校验。�
 
 Autopilot 是首次人工授权后运行的有界无人值守低风险恢复控制面。用户在首次确认 Agent Run 时可选提交 `autopilotPolicy`；Java 会在任何工具副作用前把不可替换的 `autopilotAuthorization` 快照写入该 Run。快照绑定 tenant/application/project、用户/actor/Agent/delegation、根 session/run、有效期、恢复轮数和总时长预算，以及 SHA-256 策略摘要；后续 Run 不能替换或扩大这份授权。默认上限为 `5` 轮、`120` 分钟，分别限制在 `1-10` 轮和 `5-1440` 分钟；自动风险上限固定为 `LOW`。
 
-"平台开放工具"在这里表示工具已注册且可治理，不表示模型拥有任意调用权。Recovery 模型动作必须确定性映射到已注册工具，并继续经过 tenant/project 范围、可见性、`allowed_actions`、参数 schema、风险、审批、预算和 Java 控制面检查；Python Runtime 不创建审批、不写业务数据、不派发 worker。Python 只可受限委派最小只读工具；任何可能改变状态的 Recovery 都必须回到 Java。首次授权盒内只有 `RETRY_EXECUTION`，以及已复核持久 preview、精确 selector 和回执的 `APPLY_QUARANTINE`，可进入 Java/data-sync 的有界执行分支；其它动作、高风险或越权建议仍走 Java handoff/人工审批。
+"平台开放工具"在这里表示工具已注册且可治理，不表示模型拥有任意调用权。Recovery 模型动作必须确定性映射到已注册工具，并继续经过 tenant/project 范围、可见性、`allowed_actions`、参数 schema、风险、审批、预算和 Java 控制面检查；Python Runtime 不创建审批、不写业务数据、不派发 worker。Python 只可受限委派最小只读工具；任何可能改变状态的 Recovery 都必须回到 Java。首次授权盒内除既有 `RETRY_EXECUTION` 和满足真实 preview、精确 selector、durable receipt 门禁的 `APPLY_QUARANTINE` 外，Java/data-sync 已接入六类受治理 repair：`ROLLBACK_EXECUTION_POLICY`（策略回滚）、`TUNE_EXECUTION_POLICY`（限界调参）、`REFRESH_METADATA`（刷新元数据并重新预检）、`RESUME_FROM_CHECKPOINT`（checkpoint 恢复）、`REPLAY_FAILED_SHARDS`（失败分片 replay）和 `REPAIR_FIELD_MAPPING`（字段映射修复）。这些动作仍必须逐项经过授权、证据、幂等和风险复核；逐动作独立真实故障注入黑盒 E2E 尚未全部完成。
 
 `RECOVERY_AGENT` 由模型根据错误新颖度、诊断覆盖度、已有引用和置信度自主选择 `SEARCH` 或 `SKIP`。缺少 grounded 证据时选择 `SEARCH`，本轮只生成只读 `SEARCH_RECOVERY_KNOWLEDGE`，取得 durable RAG 证据后才在下一轮重新评估恢复；`SKIP` 不会绕过任何工具、授权、schema、风险、预算或审批门禁。兼容旧 Provider 的 `AUTO` 会在无 grounded 引用时归一为 `SEARCH`，已有引用时归一为 `SKIP`。
 
-授权层允许预先声明 `RETRY_EXECUTION`、`APPLY_QUARANTINE`、`RECONNECT_DATASOURCE`、`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS`、`REFRESH_METADATA`；高风险 `CHANGE_SCHEMA`、`CHANGE_CREDENTIAL`、`DELETE_DATA`、`OVERWRITE_TARGET`、`EXPAND_DATA_SCOPE` 始终进入 `WAITING_APPROVAL`。data-sync 的低风险资格白名单包含 `RETRY_EXECUTION`、`APPLY_QUARANTINE`、`RESUME_FROM_CHECKPOINT` 和 `REPLAY_FAILED_SHARDS`，但当前 Agent Runtime 实际执行分支只接受 `RETRY_EXECUTION` 与满足 preview/selector/receipt 门禁的 `APPLY_QUARANTINE`；其余即使得到 `AUTO_APPROVED` 也会因没有执行器停在 `ATTENTION_REQUIRED`，不能因出现在策略 JSON 中就获得无人值守执行资格。预算/截止时间耗尽、同一错误连续三次、证据或幂等指纹缺失、置信度低于 `0.70` 等情况进入 `ATTENTION_REQUIRED`；作用域、授权或动作不匹配则 `REJECTED`。
+授权层允许预先声明 `RETRY_EXECUTION`、`APPLY_QUARANTINE`、`RECONNECT_DATASOURCE`、`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS`、`REFRESH_METADATA`、`ROLLBACK_EXECUTION_POLICY`、`TUNE_EXECUTION_POLICY` 和 `REPAIR_FIELD_MAPPING`；高风险 `CHANGE_SCHEMA`、`CHANGE_CREDENTIAL`、`DELETE_DATA`、`OVERWRITE_TARGET`、`EXPAND_DATA_SCOPE` 始终进入 `WAITING_APPROVAL`。data-sync 的低风险资格白名单包含既有 retry/quarantine 以及上述六类 repair；Java/data-sync 当前已为六类 repair 接入确定性执行分支，但每个动作仍需通过源码中的参数、策略、指纹、范围与回执门禁，不能因出现在策略 JSON 中就获得无人值守执行资格。逐动作独立真实故障注入 E2E 仍是剩余验收项。预算/截止时间耗尽、同一错误连续三次、证据或幂等指纹缺失、置信度低于 `0.70` 等情况进入 `ATTENTION_REQUIRED`；作用域、授权或动作不匹配则 `REJECTED`。
 
-当前源码已经把 `AUTO_APPROVED` 接到 V20-V25 PostgreSQL durable 控制面：V20 case/授权快照与 receipt、V21 trigger outbox、V22 consumer-result、V23 sidecar-compensation、V24 quarantine-receipt，以及 V25 的 `SEARCH`/`SKIP`、策略、证据数量和 evidence-ID digest 低敏投影。后续链路包括 Kafka 触发、Agent Runtime 消费、Python Recovery 规划、Java 证据与双策略复核、data-sync 同幂等键失败对象重试或 preview 约束的 quarantine、worker 处理和最终 receipt 收敛。状态机允许 `AUTO_APPROVED -> RECOVERY_STARTED -> RECOVERED`；安全拒绝或失败则收敛到 `ATTENTION_REQUIRED`。该事实不意味着模型可以任意执行，单条 `AUTO_APPROVED` 也不是副作用或成功证据：自动动作仍限于首次授权范围内的低风险白名单，高风险和越权动作不会进入 worker。
+当前源码已经把 `AUTO_APPROVED` 接到 V20-V25 PostgreSQL durable 控制面：V20 case/授权快照与 receipt、V21 trigger outbox、V22 consumer-result、V23 sidecar-compensation、V24 quarantine-receipt，以及 V25 的 `SEARCH`/`SKIP`、策略、证据数量和 evidence-ID digest 低敏投影。后续链路包括 Kafka 触发、Agent Runtime 消费、Python Recovery 规划、Java 证据与双策略复核、data-sync 对 retry/quarantine 及六类 repair 的受治理执行、worker 处理和最终 receipt 收敛。状态机允许 `AUTO_APPROVED -> RECOVERY_STARTED -> RECOVERED`；安全拒绝或失败则收敛到 `ATTENTION_REQUIRED`。该事实不意味着模型可以任意执行，单条 `AUTO_APPROVED` 也不是副作用或成功证据：自动动作仍限于首次授权范围内的低风险白名单，高风险和越权动作不会进入 worker；六类 repair 的逐动作真实黑盒 E2E 仍需分别验收。
 
 普通同步规划的结构化意图只决定 RAG 是否作为 `knowledge.rag.query` 候选工具向模型开放；模型可调用或跳过，规则兜底不得在模型选择跳过后补写 RAG ToolPlan。Recovery 已由模型按诊断事实自主选择 `SEARCH`/`SKIP`，并由 V25 持久化其低敏决策投影。repository workspace 仅指 `workspace.text.search`/文件工具使用的受控、allowlist 文件系统搜索根，不能与产品的 tenant/application/project 层级，或历史 `workspaceId` 数据隔离概念混为一谈；本轮不启用 Elasticsearch 或 Web Search 作为自治恢复依赖。
 
@@ -393,13 +395,13 @@ Autopilot 是首次人工授权后运行的有界无人值守低风险恢复控�
 
 - 核心组件：大模型推理引擎、GraphRAG检索引擎、技能插件实现、推理优化器
 
-- 依赖模块：vLLM、Qwen2-7B/Qwen2-VL、LangChain、Neo4j、Chroma
+- 依赖模块：可替换模型 Provider（OpenAI-compatible、vLLM、SGLang）、LangChain、Neo4j、PostgreSQL/pgvector；Chroma 仅保留迁移期兼容适配
 
 - 交互对象：智能体运行时层、中间件/存储层
 
 #### 技术方案
 
-1. 大模型推理：基于vLLM实现Qwen2-7B/Qwen2-VL推理优化，开启AWQ量化，降低显存占用、提升推理速度；
+1. 大模型推理：通过模型路由调用可替换 reasoning provider；当前本地验收实际使用 `gpt-5.6-sol`，vLLM/SGLang/OpenAI-compatible serving profile 只作为可替换部署路径，不把某个模型写死为长期依赖；
 
 2. GraphRAG检索：构建「数据标准-业务场景-表结构-字段口径」知识图谱，提升检索准确率；
 
@@ -429,11 +431,12 @@ Autopilot 是首次人工授权后运行的有界无人值守低风险恢复控�
 
 |组件|技术方案|设计需求|
 |---|---|---|
-|MySQL 8.0+|存储业务数据（任务、用户、权限、数据源配置等）|1. 支持分表分库（预留扩展）；2. 开启主从复制，保障数据可靠性；3. 支持索引优化，查询延迟≤100ms|
+|PostgreSQL/pgvector|存储业务事实、Agent 长期记忆与 RAG 向量|1. 通过 schema/索引支持范围隔离与扩展；2. 纳入备份恢复与迁移门禁；3. 语义检索适配 pgvector|
 |Redis 7.2+|缓存（会话、任务状态、热点数据）、会话存储|1. 支持持久化（RDB+AOF）；2. 缓存命中率≥95%；3. 支持分布式锁，避免并发冲突|
 |Kafka 3.6.x|异步消息传递（Java层与AI层、智能体间通信）|1. 消息可靠性≥99.99%；2. 支持消息幂等性，避免重复消费；3. 支持消息分区，提升并发处理能力|
 |Neo4j 5.20+|存储数据治理知识图谱（表关系、业务口径等）|1. 图谱查询延迟≤500ms；2. 支持批量导入与更新；3. 支持复杂关系查询|
-|Chroma|向量存储（智能体记忆、RAG检索向量）|1. 向量检索响应≤300ms；2. 支持向量更新与删除；3. 适配Qwen2系列模型的向量输出|
+|MySQL 8.0+|迁移期兼容业务存储与历史联调|仅用于尚未迁移服务的兼容路径，不作为新功能固定依赖；存量迁移需按路线登记|
+|Chroma|迁移期兼容/历史向量适配|不作为新代码固定依赖；目标向量索引为 PostgreSQL/pgvector，embedding 维度由可替换 Provider 路由决定|
 |MinIO|文件存储（元数据文档、质量报告、ETL脚本等）|1. 支持文件上传/下载/删除；2. 支持权限控制；3. 支持文件备份与恢复|
 ### 3.6 基础设施层（部署支撑模块）
 

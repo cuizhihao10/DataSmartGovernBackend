@@ -173,6 +173,46 @@ class AgentCommandTaskFinalStateCallbackDispatchServiceTest {
         server.verify();
     }
 
+    /**
+     * durable job 的 replay 或任务关联发生变化时，必须在 HTTP 前停止，不能先发送再事后补偿。
+     */
+    @Test
+    void shouldRejectChangedReceiptExpectationBeforeCallingTaskManagement() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        AgentCommandTaskFinalStateCallbackDispatchService service = service(builder, storeWith(successReceipt()));
+        AgentCommandTaskFinalStateCallbackDispatchExpectation staleExpectation =
+                new AgentCommandTaskFinalStateCallbackDispatchExpectation(
+                        "cmd-final-001",
+                        11L,
+                        9001L,
+                        9101L,
+                        "worker-final-001",
+                        "audit-final-001",
+                        "10",
+                        "20",
+                        "1001",
+                        "run-final",
+                        "session-final",
+                        "command.run-program",
+                        "SUCCEEDED",
+                        "agent-command-final-state:CMD-FINAL-001:SUCCEEDED:11"
+                );
+
+        AgentCommandTaskFinalStateCallbackDispatchResponse response = service.dispatch(
+                request(false),
+                platformAccess(),
+                "trace-final-dispatch",
+                staleExpectation
+        );
+
+        assertEquals("SKIPPED_EXPECTED_RECEIPT_CHANGED", response.deliveryStatus());
+        assertFalse(response.dispatchAttempted());
+        assertFalse(response.dispatched());
+        assertTrue(response.issueCodes().contains("FINAL_STATE_CALLBACK_EXPECTATION_MISMATCH"));
+        server.verify();
+    }
+
     private AgentCommandTaskFinalStateCallbackDispatchService service(RestClient.Builder builder,
                                                                       InMemoryAgentToolActionWorkerReceiptIndexStore store) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();

@@ -160,4 +160,65 @@ class GatewayContractFilterTest {
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
                 .isEqualTo("workspace-a");
     }
+
+    /**
+     * 浏览器伪造 public 分级不能降低网关默认保护级别。
+     */
+    @Test
+    void shouldReplaceUntrustedRagSensitivityWithInternalDefault() {
+        GatewayContractFilter filter = new GatewayContractFilter(new GatewayContextProperties());
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/agent/rag/query")
+                        .header(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, "public")
+                        .build()
+        );
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders()
+                .getFirst(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL)).isEqualTo("internal");
+    }
+
+    /**
+     * 企业受信上游可以声明合法分级，该值随后会由签名过滤器纳入 HMAC。
+     */
+    @Test
+    void shouldCopyValidRagSensitivityFromTrustedUpstream() {
+        GatewayContextProperties properties = new GatewayContextProperties();
+        properties.setTrustIncomingPlatformContext(true);
+        GatewayContractFilter filter = new GatewayContractFilter(properties);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/agent/rag/query")
+                        .header(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, " Confidential ")
+                        .build()
+        );
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders()
+                .getFirst(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL)).isEqualTo("confidential");
+    }
+
+    /**
+     * 受信链路出现未知分级通常表示版本漂移或配置错误，必须按 restricted 失败关闭。
+     */
+    @Test
+    void shouldFailClosedForUnknownTrustedRagSensitivity() {
+        GatewayContextProperties properties = new GatewayContextProperties();
+        properties.setTrustIncomingPlatformContext(true);
+        GatewayContractFilter filter = new GatewayContractFilter(properties);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/agent/rag/query")
+                        .header(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, "unknown-level")
+                        .build()
+        );
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders()
+                .getFirst(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL)).isEqualTo("restricted");
+    }
 }

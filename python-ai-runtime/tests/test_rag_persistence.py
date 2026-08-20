@@ -25,6 +25,7 @@ from datasmart_ai_runtime.services.rag import (
     RagDocument,
     RagHybridRetriever,
     RagKnowledgeBaseSettings,
+    RagPipeline,
     RagQuery,
     UnavailableRagKnowledgeBase,
     build_default_governance_rag_pipeline,
@@ -254,6 +255,40 @@ class RagPersistenceTest(unittest.TestCase):
         self.assertEqual(1, len(provider.batch_calls))
         self.assertEqual(written, len(provider.batch_calls[0]))
 
+    def test_pgvector_ingestion_forwards_chunk_sensitivity_to_embedding_governance(self) -> None:
+        """持久化摄取不能把 restricted chunk 伪装成默认 internal 后交给外部 Embedding。"""
+
+        connection = _FakePostgresConnection()
+        provider = _RecordingBatchEmbeddingProvider(dimensions=4)
+        knowledge_base = PostgresRagKnowledgeBase(
+            connection,
+            settings=RagKnowledgeBaseSettings(
+                runtime_mode="test",
+                store_type="pgvector",
+                embedding_model="BAAI/bge-m3",
+                embedding_dimensions=4,
+            ),
+            embedding_provider=provider,
+        )
+
+        knowledge_base.upsert_documents(
+            (
+                RagDocument(
+                    document_id="restricted-embedding-doc",
+                    title="受限评测资料",
+                    content="synthetic restricted corpus only",
+                    source_uri="test://restricted-embedding-doc",
+                    tenant_id="tenant-a",
+                    project_id="project-a",
+                    workspace_key="workspace-a",
+                    source_type=RagChunkSourceType.DATASET,
+                    sensitivity_level="restricted",
+                ),
+            )
+        )
+
+        self.assertEqual(("restricted",), provider.batch_sensitivity_levels[0])
+
     def test_pgvector_ingestion_rejects_unbounded_document_or_chunk_batches(self) -> None:
         """单次摄取必须在调用远程模型和数据库前执行文档数、chunk 数硬上限。"""
 
@@ -385,6 +420,158 @@ class RagPersistenceTest(unittest.TestCase):
         self.assertEqual(1, len(provider.single_calls))
         self.assertEqual([], provider.batch_calls)
 
+    def test_postgres_exact_identifier_is_loaded_before_generic_candidate_window(self) -> None:
+        """持久化 exact 查询应优先加载元数据所有者，而不是只依赖全文排序。"""
+
+        connection = _FakePostgresConnection()
+        knowledge_base = PostgresRagKnowledgeBase(
+            connection,
+            settings=RagKnowledgeBaseSettings(
+                runtime_mode="production",
+                store_type="postgresql",
+                postgresql_dsn="host=postgres",
+                candidate_limit=5,
+            ),
+        )
+        knowledge_base.upsert_documents(
+            (
+                RagDocument(
+                    document_id="generic-reference",
+                    title="通用 Kafka 运维手册",
+                    content="正文引用 OPS-KAF-208，但这不是该资料码的主资料。",
+                    source_uri="test://generic-reference",
+                    tenant_id="tenant-a",
+                    project_id="project-a",
+                    workspace_key="workspace-a",
+                    source_type=RagChunkSourceType.RUNBOOK,
+                ),
+                RagDocument(
+                    document_id="exact-owner",
+                    title="Kafka 堆积处置 Runbook",
+                    content="OPS-KAF-208 的主处置步骤是检查积压并验证消费恢复。",
+                    source_uri="test://exact-owner",
+                    tenant_id="tenant-a",
+                    project_id="project-a",
+                    workspace_key="workspace-a",
+                    source_type=RagChunkSourceType.RUNBOOK,
+                    metadata={
+                        "artifactCode": "OPS-KAF-208",
+                        "retrievalAnchor": "global:runbook-kafka-backlog",
+                    },
+                ),
+            )
+        )
+
+        routes = ModelRouteRegistry(default_model_routes())
+        pipeline = RagPipeline(
+            retriever=RagHybridRetriever(knowledge_base),
+            model_routes=routes,
+            model_gateway=ModelGatewayGovernanceService(routes),
+            model_providers=ModelProviderRegistry(),
+        )
+        result = pipeline.answer(
+            RagQuery(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                workspace_key="workspace-a",
+                actor_id="actor-a",
+                question="请查询 OPS-KAF-208 的当前处置步骤。",
+                retrieval_mode="exact_search",
+                generate_answer=False,
+            )
+        )
+
+        self.assertEqual(("exact-owner",), tuple(item.document_id for item in result.citations))
+        self.assertTrue(
+            any("RAG_EXACT_IDENTIFIER" in sql for sql, _ in connection.statements)
+        )
+        exact_statement = next(
+            (params for sql, params in connection.statements if "RAG_EXACT_IDENTIFIER" in sql),
+            (),
+        )
+        self.assertEqual(("tenant-a", "project-a", "workspace-a"), exact_statement[:3])
+        self.assertEqual(("ops-kaf-208",) * 6, exact_statement[3:9])
+        self.assertEqual(5, exact_statement[-1])
+
+    def test_postgres_superseded_identifier_returns_only_current_replacement(self) -> None:
+        """持久化历史资料码只能通过关系跳转到现行资料，不能把旧正文带入结果。"""
+
+        connection = _FakePostgresConnection()
+        knowledge_base = PostgresRagKnowledgeBase(
+            connection,
+            settings=RagKnowledgeBaseSettings(
+                runtime_mode="production",
+                store_type="postgresql",
+                postgresql_dsn="host=postgres",
+            ),
+        )
+        knowledge_base.upsert_documents(
+            (
+                RagDocument(
+                    document_id="history-index-v1",
+                    title="旧版 RAG 索引手册",
+                    content="旧版内容不应直接用于当前执行。",
+                    source_uri="test://history-index-v1",
+                    tenant_id="tenant-a",
+                    project_id="project-a",
+                    workspace_key="workspace-a",
+                    source_type=RagChunkSourceType.GIT_HISTORY,
+                    metadata={
+                        "artifactCode": "HIS-RAG-001",
+                        "retrievalAnchor": "global:history-index-v1",
+                        "evidenceStatus": "superseded",
+                        "supersededBy": "runbook-index-current",
+                    },
+                ),
+                RagDocument(
+                    document_id="runbook-index-current",
+                    title="现行 RAG 索引 Runbook",
+                    content="现行步骤是先校验索引版本，再执行受治理重建。",
+                    source_uri="test://runbook-index-current",
+                    tenant_id="tenant-a",
+                    project_id="project-a",
+                    workspace_key="workspace-a",
+                    source_type=RagChunkSourceType.RUNBOOK,
+                    metadata={
+                        "artifactCode": "OPS-RAG-503",
+                        "retrievalAnchor": "global:runbook-index-current",
+                    },
+                ),
+            )
+        )
+
+        replacements = knowledge_base.replacement_chunks_for_query(
+            RagQuery(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                workspace_key="workspace-a",
+                actor_id="actor-a",
+                question="HIS-RAG-001",
+            ),
+            ("his-rag-001",),
+        )
+
+        self.assertEqual(("runbook-index-current",), tuple(item.document_id for item in replacements))
+        self.assertNotIn("旧版内容", " ".join(item.text for item in replacements))
+        self.assertTrue(
+            any("RAG_SUPERSEDED_MAPPING" in sql for sql, _ in connection.statements)
+        )
+        self.assertTrue(
+            any("RAG_CURRENT_REPLACEMENT" in sql for sql, _ in connection.statements)
+        )
+        mapping_statement = next(
+            (params for sql, params in connection.statements if "RAG_SUPERSEDED_MAPPING" in sql),
+            (),
+        )
+        current_statement = next(
+            (params for sql, params in connection.statements if "RAG_CURRENT_REPLACEMENT" in sql),
+            (),
+        )
+        self.assertEqual(("tenant-a", "project-a", "workspace-a"), mapping_statement[:3])
+        self.assertEqual(("his-rag-001",) * 4, mapping_statement[3:7])
+        self.assertEqual(("tenant-a", "project-a", "workspace-a"), current_statement[:3])
+        self.assertEqual(("runbook-index-current",) * 4, current_statement[3:7])
+
     def test_environment_contract_treats_dedicated_rag_dsn_as_explicit_store(self) -> None:
         parsed = rag_knowledge_base_settings_from_env(
             {
@@ -463,6 +650,11 @@ class RagPersistenceTest(unittest.TestCase):
             compose,
         )
         self.assertIn(
+            "DATASMART_RAG_EMBEDDING_APPROVED_SENSITIVITY_LEVELS: "
+            "${DATASMART_RAG_EMBEDDING_APPROVED_SENSITIVITY_LEVELS:-}",
+            compose,
+        )
+        self.assertIn(
             "DATASMART_RAG_RERANK_ENDPOINT: ${DATASMART_RAG_RERANK_ENDPOINT:-https://api.siliconflow.cn/v1/rerank}",
             compose,
         )
@@ -470,7 +662,30 @@ class RagPersistenceTest(unittest.TestCase):
             "DATASMART_RAG_RERANK_MODEL: ${DATASMART_RAG_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}",
             compose,
         )
+        self.assertIn(
+            "DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS: "
+            "${DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS:-}",
+            compose,
+        )
         self.assertIn("SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}", compose)
+
+    def test_application_compose_wires_neo4j_graphrag_provider_and_driver_extra(self) -> None:
+        """完整 Compose 必须同时装配 Neo4j Provider、schema 初始化和 Python 驱动。"""
+
+        repository_root = Path(__file__).resolve().parents[2]
+        compose = (repository_root / "docker-compose.application.yml").read_text(encoding="utf-8")
+        env_example = (repository_root / ".env.application.example").read_text(encoding="utf-8")
+        delivery_check = (repository_root / "scripts" / "containerized-delivery-check.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("PYTHON_RUNTIME_EXTRAS: api,rag,graph,kafka,redis,postgresql,mcp", compose)
+        self.assertIn("DATASMART_GRAPH_RAG_PROVIDER: ${DATASMART_GRAPH_RAG_PROVIDER:-neo4j}", compose)
+        self.assertIn("DATASMART_GRAPH_RAG_NEO4J_URI: ${DATASMART_GRAPH_RAG_NEO4J_URI:-bolt://neo4j:7687}", compose)
+        self.assertIn("DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA: ${DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA:-true}", compose)
+        self.assertIn("DATASMART_GRAPH_RAG_PROVIDER=neo4j", env_example)
+        self.assertIn("DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA=true", env_example)
+        self.assertIn('"PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis"', delivery_check)
 
     def test_application_compose_persists_langgraph_checkpoints_fail_closed(self) -> None:
         repository_root = Path(__file__).resolve().parents[2]
@@ -527,6 +742,25 @@ class RagPersistenceTest(unittest.TestCase):
                 }
             )
 
+    def test_rag_embedding_external_text_approval_is_explicit_and_independent(self) -> None:
+        """Embedding 的正文外发批准必须显式配置，且不能被 Reranker 配置替代。"""
+
+        provider = rag_embedding_provider_from_env(
+            {
+                "DATASMART_RAG_EMBEDDING_PROVIDER": "openai-compatible",
+                "DATASMART_RAG_EMBEDDING_ENDPOINT": "https://api.siliconflow.cn/v1/embeddings",
+                "DATASMART_RAG_EMBEDDING_MODEL": "BAAI/bge-m3",
+                "DATASMART_RAG_EMBEDDING_DIMENSIONS": "1024",
+                "DATASMART_RAG_EMBEDDING_APPROVED_SENSITIVITY_LEVELS": " internal ",
+                "DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS": "restricted",
+                "SILICONFLOW_API_KEY": "unit-test-placeholder",
+            }
+        )
+
+        self.assertIsNotNone(provider)
+        assert provider is not None
+        self.assertEqual(("internal",), getattr(provider, "_settings").approved_sensitivity_levels)
+
 
 class _FakePostgresConnection:
     """用于验证 SQL 装配和行映射合同的轻量 DB-API 测试替身。"""
@@ -568,17 +802,29 @@ class _RecordingBatchEmbeddingProvider:
         self._dimensions = dimensions
         self.single_calls: list[str] = []
         self.batch_calls: list[tuple[str, ...]] = []
+        self.batch_sensitivity_levels: list[tuple[str, ...]] = []
 
-    def embed_text(self, text: str) -> tuple[float, ...]:
+    def embed_text(
+        self,
+        text: str,
+        *,
+        sensitivity_level: str = "internal",
+    ) -> tuple[float, ...]:
         """记录不期望发生的单条调用，便于回归测试给出明确失败原因。"""
 
         self.single_calls.append(text)
         return tuple(0.25 for _ in range(self._dimensions))
 
-    def embed_texts(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+    def embed_texts(
+        self,
+        texts: tuple[str, ...],
+        *,
+        sensitivity_levels: tuple[str, ...] | None = None,
+    ) -> tuple[tuple[float, ...], ...]:
         """一次返回全部输入对应的固定维度测试向量。"""
 
         self.batch_calls.append(texts)
+        self.batch_sensitivity_levels.append(tuple(sensitivity_levels or ()))
         return tuple(
             tuple((index + 1) / 10 for _ in range(self._dimensions))
             for index, _ in enumerate(texts)
@@ -592,7 +838,11 @@ class _FakePostgresCursor:
         self.rowcount = 1
 
     def execute(self, sql, params=()) -> None:
-        normalized = sql.lstrip().upper()
+        statement = sql.lstrip().upper()
+        # 生产 SQL 在 SELECT 前带有可审计的 RAG 通道标记；测试替身先剥离注释，再复用普通 SQL 分支。
+        normalized = statement
+        if normalized.startswith("/*") and "*/" in normalized:
+            normalized = normalized[normalized.index("*/") + 2 :].lstrip()
         values = tuple(params)
         self._connection.statements.append((sql, values))
         self.rowcount = 0
@@ -640,6 +890,131 @@ class _FakePostgresCursor:
         if normalized.startswith("SELECT"):
             if normalized.startswith("SELECT 1"):
                 self._rows = []
+                return
+            if "RAG_EXACT_IDENTIFIER" in statement:
+                # exact SQL 每个标识符包含 4 个元数据等值参数和 2 个正文兼容参数。
+                identifier_count = normalized.count("LOWER(DOCUMENT_ID) = %S")
+                identifier_width = 6
+                tenant_id, project_id, workspace_key = values[:3]
+                scope_offset = 3
+                identifiers = tuple(
+                    str(values[scope_offset + index * identifier_width]).casefold()
+                    for index in range(identifier_count)
+                )
+
+                def metadata_for(row):
+                    raw = row.get("metadata_json", {})
+                    if isinstance(raw, dict):
+                        return raw
+                    return json.loads(raw or "{}")
+
+                matching_rows = []
+                for row in self._connection.rows:
+                    if not (
+                        row["tenant_id"] in {"*", tenant_id}
+                        and row["project_id"] in {"*", project_id}
+                        and row["workspace_key"] in {"*", workspace_key}
+                    ):
+                        continue
+                    metadata = metadata_for(row)
+                    strong_values = {
+                        str(row["document_id"]).casefold(),
+                        str(metadata.get("artifactCode") or "").casefold(),
+                        str(metadata.get("retrievalAnchor") or "").casefold(),
+                        str(metadata.get("logicalDocumentKey") or "").casefold(),
+                    }
+                    searchable = (
+                        str(row["title"]).casefold(),
+                        str(row["chunk_text"]).casefold(),
+                    )
+                    if any(
+                        identifier in strong_values
+                        or any(identifier in value for value in searchable)
+                        for identifier in identifiers
+                    ):
+                        matching_rows.append(dict(row))
+                self._rows = matching_rows
+                return
+            if "RAG_SUPERSEDED_MAPPING" in statement:
+                # 历史关系查询只返回 metadata_json，模拟“旧正文不会离开数据库查询阶段”。
+                identifier_count = normalized.count("LOWER(DOCUMENT_ID) = %S")
+                identifier_width = 4
+                tenant_id, project_id, workspace_key = values[:3]
+                scope_offset = 3
+                identifiers = tuple(
+                    str(values[scope_offset + index * identifier_width]).casefold()
+                    for index in range(identifier_count)
+                )
+                matching_rows = []
+                for row in self._connection.rows:
+                    if not (
+                        row["tenant_id"] in {"*", tenant_id}
+                        and row["project_id"] in {"*", project_id}
+                        and row["workspace_key"] in {"*", workspace_key}
+                    ):
+                        continue
+                    metadata = row["metadata_json"]
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata or "{}")
+                    if str(metadata.get("sourceStatus") or "").upper() != "SUPERSEDED" and str(
+                        metadata.get("evidenceStatus") or ""
+                    ).lower() != "superseded":
+                        continue
+                    strong_values = {
+                        str(row["document_id"]).casefold(),
+                        str(metadata.get("artifactCode") or "").casefold(),
+                        str(metadata.get("retrievalAnchor") or "").casefold(),
+                        str(metadata.get("logicalDocumentKey") or "").casefold(),
+                    }
+                    if any(identifier in strong_values for identifier in identifiers):
+                        matching_rows.append({"metadata_json": row["metadata_json"]})
+                self._rows = matching_rows
+                return
+            if "RAG_CURRENT_REPLACEMENT" in statement:
+                variant_count = normalized.count("LOWER(DOCUMENT_ID) = %S")
+                variant_width = 4
+                tenant_id, project_id, workspace_key = values[:3]
+                scope_offset = 3
+                variants = tuple(
+                    str(values[scope_offset + index * variant_width]).casefold()
+                    for index in range(variant_count)
+                )
+                matching_rows = []
+                for row in self._connection.rows:
+                    if not (
+                        row["tenant_id"] in {"*", tenant_id}
+                        and row["project_id"] in {"*", project_id}
+                        and row["workspace_key"] in {"*", workspace_key}
+                    ):
+                        continue
+                    metadata = row["metadata_json"]
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata or "{}")
+                    if str(metadata.get("sourceStatus") or "").upper() == "SUPERSEDED" or str(
+                        metadata.get("evidenceStatus") or ""
+                    ).lower() == "superseded":
+                        continue
+                    candidate_values = {
+                        str(row["document_id"]).casefold(),
+                        str(metadata.get("artifactCode") or "").casefold(),
+                        str(metadata.get("logicalDocumentKey") or "").casefold(),
+                        str(metadata.get("retrievalAnchor") or "").casefold(),
+                    }
+                    candidate_values.update(
+                        value.rsplit(":", 1)[-1]
+                        for value in tuple(candidate_values)
+                        if value
+                    )
+                    if any(
+                        candidate == variant
+                        or candidate.endswith("-" + variant)
+                        or candidate.endswith(":" + variant)
+                        for variant in variants
+                        for candidate in candidate_values
+                        if candidate
+                    ):
+                        matching_rows.append(dict(row))
+                self._rows = matching_rows
                 return
             scope_offset = 1 if "WEBSEARCH_TO_TSQUERY" in normalized or "VECTOR_SCORE" in normalized else 0
             tenant_id, project_id, workspace_key = values[scope_offset : scope_offset + 3]

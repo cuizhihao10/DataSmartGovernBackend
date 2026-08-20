@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
+import com.czh.datasmart.govern.agent.config.AgentCommandTaskFinalStateCallbackWorkerProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateCallbackDispatchRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateCallbackDispatchResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateCallbackSuggestionView;
@@ -14,12 +15,15 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateL
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateReconciliationResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.Data;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -44,8 +48,7 @@ import java.util.Locale;
  * <p>4. 缺少 taskId、taskRunId、executorId 或幂等键时 fail-closed，不猜测、不补造。</p>
  */
 @Service
-@RequiredArgsConstructor
-public class AgentCommandTaskFinalStateCallbackDispatchService {
+public class AgentCommandTaskFinalStateCallbackDispatchService implements AgentCommandTaskFinalStateCallbackDispatcher {
 
     public static final String PAYLOAD_POLICY =
             "LOW_SENSITIVE_FINAL_STATE_CALLBACK_DISPATCH_NO_COMMAND_NO_STDIO_NO_PAYLOAD_BODY";
@@ -53,8 +56,54 @@ public class AgentCommandTaskFinalStateCallbackDispatchService {
     private static final String TARGET_SERVICE = "task-management";
 
     private final AgentRuntimeProperties properties;
-    private final RestClient.Builder restClientBuilder;
     private final AgentCommandTaskFinalStateReconciliationService reconciliationService;
+    private final CallbackRestClientFactory restClientFactory;
+
+    /**
+     * Spring 生产构造器：为最终态 callback 创建带硬超时的独立 HTTP client。
+     *
+     * <p>这里 clone 自动装配 builder，保留 JSON converter、观测和公共定制，同时避免修改共享 builder
+     * 影响其他工具。读取超时由 callback worker 配置控制，并由 worker 的最小 visibility lease 覆盖。</p>
+     */
+    @Autowired
+    public AgentCommandTaskFinalStateCallbackDispatchService(
+            AgentRuntimeProperties properties,
+            RestClient.Builder restClientBuilder,
+            AgentCommandTaskFinalStateReconciliationService reconciliationService,
+            AgentCommandTaskFinalStateCallbackWorkerProperties workerProperties) {
+        this(properties, reconciliationService, baseUrl -> {
+            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+            requestFactory.setConnectTimeout(Duration.ofMillis(workerProperties.normalizedConnectTimeoutMs()));
+            requestFactory.setReadTimeout(Duration.ofMillis(workerProperties.normalizedReadTimeoutMs()));
+            return restClientBuilder.clone()
+                    .baseUrl(baseUrl)
+                    .requestFactory(requestFactory)
+                    .build();
+        });
+    }
+
+    /**
+     * 面向 MockRestServiceServer 单元测试的构造器。
+     *
+     * <p>测试 server 已把自身 request factory 安装到 builder，因此本构造器不再覆盖它；生产 Spring
+     * 装配只会选择上面的四参数构造器。</p>
+     */
+    AgentCommandTaskFinalStateCallbackDispatchService(
+            AgentRuntimeProperties properties,
+            RestClient.Builder restClientBuilder,
+            AgentCommandTaskFinalStateReconciliationService reconciliationService) {
+        this(properties, reconciliationService, baseUrl -> restClientBuilder.baseUrl(baseUrl).build());
+    }
+
+    /** 统一保存依赖，便于生产超时客户端和测试 mock 客户端共享全部业务逻辑。 */
+    private AgentCommandTaskFinalStateCallbackDispatchService(
+            AgentRuntimeProperties properties,
+            AgentCommandTaskFinalStateReconciliationService reconciliationService,
+            CallbackRestClientFactory restClientFactory) {
+        this.properties = properties;
+        this.reconciliationService = reconciliationService;
+        this.restClientFactory = restClientFactory;
+    }
 
     /**
      * 对 command 重新对账，并按结果向 task-management 投递一次受控回调。
@@ -64,10 +113,12 @@ public class AgentCommandTaskFinalStateCallbackDispatchService {
      * @param traceId 当前链路 ID，会透传给 task-management，便于跨服务排障。
      * @return 低敏投递结果，包含本次重新对账响应和投递层状态。
      */
+    @Override
     public AgentCommandTaskFinalStateCallbackDispatchResponse dispatch(
             AgentCommandTaskFinalStateCallbackDispatchRequest request,
             AgentRuntimeEventQueryAccessContext accessContext,
-            String traceId) {
+            String traceId,
+            AgentCommandTaskFinalStateCallbackDispatchExpectation expectation) {
         AgentCommandTaskFinalStateReconciliationResponse reconciliation = reconciliationService.reconcile(
                 request.getCommandId(),
                 request.getToolCode(),
@@ -82,6 +133,18 @@ public class AgentCommandTaskFinalStateCallbackDispatchService {
         CallbackDispatchPlan plan = buildPlan(request, reconciliation);
         if (!plan.dispatchable()) {
             return response(request, reconciliation, plan, false, false, false, null);
+        }
+        /*
+         * 后台 worker 传入 expectation 时，最后一次对账必须仍与 durable job 完全一致。
+         * 这一步发生在任何 HTTP body 组装和网络副作用之前，关闭“重新对账读到新 receipt，却先发送
+         * 新回调、再由 worker 事后发现幂等键漂移”的 TOCTOU 窗口。
+         */
+        if (expectation != null && !expectation.matches(reconciliation, plan)) {
+            CallbackDispatchPlan changedPlan = plan.withStatus("SKIPPED_EXPECTED_RECEIPT_CHANGED")
+                    .withIssue("FINAL_STATE_CALLBACK_EXPECTATION_MISMATCH")
+                    .withAction("停止旧 callback；由 durable worker 按最新 receipt 创建新 job 或转人工补偿。");
+            return response(request, reconciliation, changedPlan, false, false, false,
+                    "最终态事实已变化，本次未调用 task-management。");
         }
         if (isDryRun(request)) {
             return response(request, reconciliation, plan.asDryRun(), false, false, false, null);
@@ -98,6 +161,25 @@ public class AgentCommandTaskFinalStateCallbackDispatchService {
                     accepted ? safeMessage(downstream.getMessage(), "task-management 已接受最终态回调。")
                             : safeMessage(downstream == null ? null : downstream.getMessage(),
                             "task-management 拒绝最终态回调，响应说明已隐藏或为空。"));
+        } catch (RestClientResponseException exception) {
+            /*
+             * 429 和 5xx 属于暂态容量/服务故障，可以由同一幂等键有限重试；其他 4xx 是确定性合同或
+             * 权限拒绝，继续重试不会自愈，应立即交给补偿队列。
+             */
+            boolean retryable = exception.getStatusCode().value() == 429
+                    || exception.getStatusCode().is5xxServerError();
+            String deliveryStatus = exception.getStatusCode().value() == 429
+                    ? "FAILED_DOWNSTREAM_RATE_LIMITED"
+                    : retryable ? "FAILED_DOWNSTREAM_UNAVAILABLE" : "FAILED_DOWNSTREAM_REJECTED";
+            CallbackDispatchPlan failedPlan = plan.withStatus(deliveryStatus)
+                    .withIssue(retryable
+                            ? "TASK_MANAGEMENT_FINAL_STATE_CALLBACK_UNAVAILABLE"
+                            : "TASK_MANAGEMENT_REJECTED_FINAL_STATE_CALLBACK")
+                    .withAction(retryable
+                            ? "按同一幂等键有限重试，并检查 task-management 健康、容量和限流。"
+                            : "检查当前 runId、executorId、任务状态、权限和回调合同后人工补偿。");
+            return response(request, reconciliation, failedPlan, true, false, false,
+                    "task-management 拒绝或未完成回调，响应正文和内部地址已隐藏。");
         } catch (RestClientException exception) {
             CallbackDispatchPlan failedPlan = plan.withStatus("FAILED_DOWNSTREAM_UNAVAILABLE")
                     .withIssue("TASK_MANAGEMENT_FINAL_STATE_CALLBACK_UNAVAILABLE")
@@ -210,7 +292,7 @@ public class AgentCommandTaskFinalStateCallbackDispatchService {
     private TaskManagementEnvelope invokeTaskManagement(CallbackDispatchPlan plan,
                                                         AgentCommandTaskFinalStateReconciliationResponse reconciliation,
                                                         String traceId) {
-        RestClient client = restClientBuilder.baseUrl(resolveTaskManagementBaseUrl()).build();
+        RestClient client = restClientFactory.create(resolveTaskManagementBaseUrl());
         return switch (plan.targetOperation()) {
             case "TASK_COMPLETE" -> client.post()
                     .uri("/tasks/{taskId}/complete", plan.taskId())
@@ -430,4 +512,10 @@ public class AgentCommandTaskFinalStateCallbackDispatchService {
     private record DeferBody(Long runId, String executorId, String idempotencyKey, String reason, Integer delaySeconds) {}
 
     private record ProgressBody(Long runId, String executorId, String idempotencyKey, Integer progress, String checkpoint) {}
+
+    /** 创建限定于 callback 服务的 RestClient，生产实现负责安装硬超时。 */
+    @FunctionalInterface
+    private interface CallbackRestClientFactory {
+        RestClient create(String baseUrl);
+    }
 }

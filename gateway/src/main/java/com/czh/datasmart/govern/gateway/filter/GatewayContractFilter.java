@@ -18,6 +18,7 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -67,6 +68,7 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
             PlatformContextHeaders.REQUESTED_POLICY_VERSION,
             PlatformContextHeaders.TENANT_PLAN_CODE,
             PlatformContextHeaders.WORKSPACE_RISK_LEVEL,
+            PlatformContextHeaders.RAG_SENSITIVITY_LEVEL,
             PlatformContextHeaders.TOOL_BUDGET_POLICY_VERSION,
             PlatformContextHeaders.SKILL_VISIBILITY_CACHE_VERSION,
             PlatformContextHeaders.SKILL_VISIBILITY_CACHE_KEY,
@@ -193,6 +195,15 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         headers.add(contextProperties.getRoutePrefixHeader(), routePrefix);
         headers.add(contextProperties.getOriginalPathHeader(), request.getURI().getPath());
 
+        if (shouldPropagateRagSensitivity(routePrefix)) {
+            /*
+             * 浏览器正文或 Header 都不能自行声明“这是公开数据”。普通 Agent 请求先按 internal 建立
+             * Gateway 可信默认值；只有下面的受信上游复制分支才能覆盖它。该 Header 随后会进入 HMAC，
+             * 因此 Python Runtime 可以区分“网关默认分级”和“调用方自报分级”。
+             */
+            headers.set(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, "internal");
+        }
+
         if (contextProperties.isMirrorTraceIdToLegacyRequestId()) {
             headers.add(contextProperties.getLegacyRequestIdHeader(), traceId);
         }
@@ -264,6 +275,43 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_TYPE);
         copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_REASON);
         copyIfPresent(request, headers, PlatformContextHeaders.REQUESTED_POLICY_VERSION);
+        copyTrustedRagSensitivity(request, headers, routePrefix);
+    }
+
+    /**
+     * 复制企业受信上游声明的 RAG 正文分级。
+     *
+     * <p>该方法只会在 {@code trustIncomingPlatformContext=true} 后执行。合法值会规范化为小写；
+     * 未知值按 {@code restricted} 处理，而不是回退到较宽松的 {@code internal}。使用 {@code set}
+     * 覆盖网关默认值，可以保证下游和 HMAC canonical payload 都只看到一个确定值。</p>
+     */
+    private void copyTrustedRagSensitivity(ServerHttpRequest request,
+                                           HttpHeaders headers,
+                                           String routePrefix) {
+        if (!shouldPropagateRagSensitivity(routePrefix)) {
+            return;
+        }
+        String incoming = request.getHeaders().getFirst(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL);
+        if (incoming == null || incoming.isBlank()) {
+            return;
+        }
+        String normalized = incoming.trim().toLowerCase(Locale.ROOT);
+        String trustedValue = switch (normalized) {
+            case "public", "internal", "confidential", "restricted", "sensitive" -> normalized;
+            default -> "restricted";
+        };
+        headers.set(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, trustedValue);
+    }
+
+    /**
+     * 判断当前路由是否会进入 Agent/RAG 运行时。
+     *
+     * <p>RAG 既可能由显式查询接口触发，也可能由规划阶段的模型自主工具选择触发，所以整个 Agent
+     * 路由统一携带分级；普通数据同步或数据源 API 不需要该 Header，避免扩大控制面字段传播范围。</p>
+     */
+    private boolean shouldPropagateRagSensitivity(String routePrefix) {
+        return "/api/agent/**".equals(routePrefix)
+                || "/api/internal/agent-runtime/**".equals(routePrefix);
     }
 
     /**

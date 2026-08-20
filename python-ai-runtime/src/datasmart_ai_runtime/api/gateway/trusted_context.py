@@ -32,6 +32,11 @@ AGENT_RUNTIME_SOURCE_SERVICE = "agent-runtime"
 TRUSTED_ROOT_KEY = "trustedControlPlane"
 TOOL_POLICY_ENVELOPE_HEADER = "X-DataSmart-Tool-Policy-Envelope"
 MAX_TOOL_POLICY_ENVELOPE_BYTES = 4096
+RAG_SENSITIVITY_LEVEL_HEADER = "X-DataSmart-Rag-Sensitivity-Level"
+
+# RAG 正文分级必须由受信控制面声明。普通请求体中的 sensitivityLevel 只是一段自报文本，
+# 不能用来把真实的受限日志降级成 public/internal 后送往外部 Embedding 或 Reranker。
+_RAG_SENSITIVITY_LEVELS = {"public", "internal", "confidential", "restricted", "sensitive"}
 
 
 def runtime_event_access_context_from_gateway_headers(
@@ -292,6 +297,7 @@ def enrich_rag_query_payload_from_trusted_headers(
             authorized_project_ids=request_context.get("authorizedProjectIds")
             if isinstance(request_context, Mapping)
             else (),
+            sensitivity_level=_trusted_rag_sensitivity(headers, default="internal"),
         )
 
     if source_service == AGENT_RUNTIME_SOURCE_SERVICE:
@@ -312,14 +318,15 @@ def enrich_rag_query_payload_from_trusted_headers(
             workspace_key=_header(headers, "X-DataSmart-Workspace-Id"),
             trace_id=_header(headers, "X-DataSmart-Trace-Id"),
             authorized_project_ids=_csv(_header(headers, "X-DataSmart-Authorized-Project-Ids")),
+            sensitivity_level=_trusted_rag_sensitivity(headers, default="internal"),
         )
 
     if effective_signature_config.required:
         raise GatewaySignatureVerificationError("missing-trusted-source")
 
-    # 仅保留未启用可信边界的离线学习/单测兼容。只要 Compose 或生产把 required 打开，
-    # 上面的分支就会拒绝任何没有 Gateway HMAC 或 Agent Runtime 内部 token 的请求。
-    return sanitized
+    # 仅保留未启用可信边界的离线学习/单测兼容。即使本地没有强制验签，也不能把请求体自报的
+    # public 当成可信分级；无受信来源时按最高保护级别处理，外部模型会默认 fail-closed。
+    return _apply_untrusted_rag_sensitivity(sanitized)
 
 
 def _apply_trusted_rag_scope(
@@ -332,6 +339,7 @@ def _apply_trusted_rag_scope(
     workspace_key: object,
     trace_id: object,
     authorized_project_ids: object,
+    sensitivity_level: str,
 ) -> dict[str, object]:
     """把已验真的作用域覆盖到 RAG payload，并执行应用/项目/授权集合完整性校验。"""
 
@@ -353,7 +361,7 @@ def _apply_trusted_rag_scope(
     for key in (
         "tenantId", "tenant_id", "applicationId", "application_id", "projectId", "project_id",
         "actorId", "actor_id", "workspaceKey", "workspace_key", "traceId", "trace_id",
-        "trustedControlPlane", "variables",
+        "sensitivityLevel", "sensitivity_level", "trustedControlPlane", "variables",
     ):
         sanitized.pop(key, None)
     sanitized.update({
@@ -361,10 +369,42 @@ def _apply_trusted_rag_scope(
         "projectId": project_text,
         "actorId": actor_text,
         "workspaceKey": workspace_text,
+        "sensitivityLevel": _normalize_trusted_rag_sensitivity(sensitivity_level, default="restricted"),
     })
     if trace_text := _string_value(trace_id):
         sanitized["traceId"] = trace_text
     return sanitized
+
+
+def _apply_untrusted_rag_sensitivity(payload: Mapping[str, object]) -> dict[str, object]:
+    """清除未验真的分级声明，并按 restricted 处理直连正文。"""
+
+    sanitized = dict(payload)
+    sanitized.pop("sensitivityLevel", None)
+    sanitized.pop("sensitivity_level", None)
+    sanitized["sensitivityLevel"] = "restricted"
+    return sanitized
+
+
+def _trusted_rag_sensitivity(headers: Mapping[str, str], *, default: str) -> str:
+    """读取已纳入 Gateway HMAC 或内部服务令牌边界的 RAG 分级。"""
+
+    raw_value = _header(headers, RAG_SENSITIVITY_LEVEL_HEADER)
+    # 兼容旧 gateway 未发送该 Header 的情况，但不能把“发送了未知值”当成正常 internal。
+    # 未知值可能来自版本不一致或恶意构造，统一按 restricted 处理，避免错误配置扩大外发范围。
+    if raw_value is None or not str(raw_value).strip():
+        return _normalize_trusted_rag_sensitivity(None, default=default)
+    return _normalize_trusted_rag_sensitivity(raw_value, default="restricted")
+
+
+def _normalize_trusted_rag_sensitivity(value: object, *, default: str) -> str:
+    """规范化受信分级；未知值降级到更保守的默认级别。"""
+
+    normalized_default = str(default or "restricted").strip().lower()
+    if normalized_default not in _RAG_SENSITIVITY_LEVELS:
+        normalized_default = "restricted"
+    normalized_value = str(value or "").strip().lower()
+    return normalized_value if normalized_value in _RAG_SENSITIVITY_LEVELS else normalized_default
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:

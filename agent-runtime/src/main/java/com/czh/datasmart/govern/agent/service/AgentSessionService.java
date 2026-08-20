@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunPublicVariablesProjector;
 import com.czh.datasmart.govern.agent.controller.dto.AgentConversationMessageView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentDelegationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionView;
@@ -749,7 +750,7 @@ public class AgentSessionService {
                 run.getDryRun(),
                 run.getRequireHumanApproval(),
                 run.getNextActions(),
-                run.getVariables(),
+                AgentRunPublicVariablesProjector.project(run.getVariables()),
                 run.getCreateTime(),
                 run.getUpdateTime(),
                 run.getFinishTime(),

@@ -2,6 +2,18 @@
 
 本目录是 DataSmart Govern 的离线中文 RAG 评测基准，不是运行时默认知识库，也不是客户资料导入目录。
 
+## GraphRAG 事实包
+
+`graph/organization-reporting-facts.json` 是一份单独的合成 GraphRAG 事实包，不会因为被放在评测目录
+就自动写入数据库。它把来源文档、实体标准 ID/别名和 `REPORTS_TO` 关系边放在结构化字段中，并声明
+`sourceStatus=COMPLETE` 与 `graphIngestionApproval.status=APPROVED`。运行 `scripts/rag-graph-ingest.py`
+时先做 dry-run；只有显式确认后，摄取器才会校验来源 URI/chunk、租户/项目/workspace、时间、可信度、
+当前关系冲突和端点完整性，再调用 Neo4j Provider 幂等写入。
+
+这份事实包用于验证“文档事实 -> 图物化 -> 两跳查询 -> 完整引用链”的基础合同，不代表生产组织目录。
+真实业务来源应在各自文档或结构化元数据完成审批后，生成同一 schema 的事实包；模型抽取只能产生候选，
+不能直接写图。
+
 ## 合成边界
 
 - 全部文本、标题、错误码、表名、运行参数和事件均为原创合成样本。
@@ -135,7 +147,7 @@ worker 日志和恢复账本才包含失败或处置字段。跨格式关联键�
 356 份原文件双哈希、752 条黄金用例、范围隔离和高置信敏感模式。以后即使数量和文件名不变，也不能把
 任一类型退化成通用事故模板或重复占位文本。
 
-三视角诊断扩充后的最终离线词法指纹是
+三视角诊断扩充后、职责门禁优化前的历史离线词法指纹是
 `50a11dec76941de6fc7da4b34adcde9113649751aff3c253b5dfcf5fcd78448a`：149,609 个 chunk、752 条用例、
 0 个执行错误、0 范围泄漏。Recall@K 为 `0.773174`，MRR 为 `0.658708`，引用精确率为 `0.427832`，
 单用例通过率为 `0.170213`；当前只有范围隔离和过期证据抑制通过严格门禁。该结果说明资产完整性与隔离
@@ -164,3 +176,55 @@ python -B -m unittest discover -s python-ai-runtime/evaluation/rag -p "test_*.py
 合成语料摄取脚本默认只校验。真正写库除了需要两个显式参数，还要求运行模式属于
 `local/development/dev/test/testing/learning`；空模式、生产、预发布和 staging 均会 fail-closed，避免评测资产
 污染客户知识库。
+
+## 2026-08-18 算法回归补充
+
+本轮运行时检索器增加了受控查询意图先验，但没有把黄金集答案或 `documentId` 写入算法。`category`、`sourceType`、
+`contentFormat`、标题和标签只表达资料职责，最终仍要通过 scope 过滤、词法/向量召回、Reranker 和证据门禁。多证据
+问题先按 facet 做有界集合覆盖；如果某个 facet 已存在 `intentScore >= 0.85` 的明确职责候选，只有同样达到职责门槛的
+资料才可以宣告该 facet 已覆盖。完全没有职责候选时才退回词法覆盖，兼容尚未补齐 Manifest category 的旧资料。
+`topK` 始终是上限，不是必须填满的数量；没有匹配意图或正文信号的资料不会被强行引用。
+
+facet 文本负责激活职责，可选的整句上下文只在职责内部做消歧。例如 Checkpoint/安全位点问题中的“失败对象 replay”
+优先选择 replay 案例；明确写出“从接口标识追踪到最终验证”时，同一个 replay facet 才选择 Recovery 事件流水。整句
+上下文不会激活 facet 中不存在的新意图，因此不会重新产生“一份综合资料冒充全部职责”的问题。
+
+拒答锚点提取现在先删除固定治理泛词，再生成中文 n-gram，专门避免“规则的”被切成“则的”并误放行知识库外实体。
+未知实体仍作为锚点保留；多个独立两字业务词可以联合证明一个 facet，单个泛词不能。Checkpoint 先验仅由明确的
+“Checkpoint 事故/检查点事故/位点事故”表达激活，普通 CDC 检查点不会自动带入 Recovery 事故资料。
+
+本轮新增回归覆盖：
+
+- 字段映射恢复手册 + 字段案例 + Worker 执行日志；
+- API 合同 + Recovery 事件 + Agent 状态快照；
+- Kafka 任务案例优先于通用成功任务参数；
+- 限流事故 + API 任务案例 + 连接器能力清单；
+- Checkpoint 事故 + 失败分片 replay + Recovery 决策；
+- 接口/WebSocket 合同 + Agent 状态快照 + Recovery 事件流水；
+- 全量执行接口 + 全量任务案例 + 数据库恢复台账；
+- 检索隔离 + 授权事实的多两字 facet。
+
+2026-08-18 职责门禁与生命周期上下文修复后的可复现离线结果：
+
+| 子集 | 当前结果 |
+| --- | --- |
+| `multi_document`（12 条） | `12/12`；Recall/MRR=`1.0/1.0`，nDCG=`0.889327`，引用精确率/召回率=`1.0/1.0` |
+| `cross-format-multi-global-*`（12 条） | `12/12`；Recall/MRR=`1.0/1.0`，nDCG=`0.876666`，引用精确率/召回率=`1.0/1.0` |
+| 代表性跨格式用例（5 条） | `5/5`；Recall/MRR=`1.0/1.0`，nDCG=`0.866204`，引用精确率/召回率=`1.0/1.0` |
+| `no_answer + stale_conflict + history_lookup + cross_scope_refusal`（68 条） | `68/68`；检索、引用、拒答指标均为 `1.0`，范围泄漏=`0`，过期抑制=`1.0` |
+| `exact_error_code`（80 条） | `80/80`；Recall/MRR/nDCG/引用指标均为 `1.0`，范围泄漏=`0` |
+
+算法相关管线测试为 `45 passed`；五个运行时 RAG/Embedding/Persistence 测试文件与评测资产合同合计
+`103 passed`，`compileall` 和 `git diff --check` 通过。Python Runtime 全测试目录本轮为
+`1263 passed, 1 skipped`。
+此前记录的 `exact_error_code 78/80` 是修复前历史值，不再代表当前实现。
+
+上述结果是离线词法/规则基线子集，不是生产验收。2026-08-18 随后通过未跟踪的进程环境 Secret
+实际调用了 SiliconFlow 的两个模型：`siliconflow` 档位同时使用 `BAAI/bge-m3` 与
+`BAAI/bge-reranker-v2-m3`，当前 356 份文档中选取 20 条 `cross_format_semantic` 用例执行错误为 0，
+Recall/MRR/nDCG、引用精确率/召回率和单用例通过率均为 `1.0`，范围泄漏为 `0`，p50/p95 为
+`3760/17363 ms`；另一个 4 条职责聚焦集也为 `4/4`。报告只写入低敏模型名、数据集指纹、文档/用例数量、
+来源 URI 和指标，Embedding SQLite 缓存位于仓库外临时目录，密钥没有写入仓库、命令行、报告或日志。
+这证明当前实现已经真正走过在线 Embedding + Reranker 链路，但不能把 20 条 smoke 结果表述为 752 条
+全量或生产验收。完整 356/752 全量词法与真实模型评测、真实 pgvector、并发性能、Provider 限流/超时/5xx
+故障注入和跨 Java/Kafka/Frontend E2E 仍需单独执行并保存低敏报告。

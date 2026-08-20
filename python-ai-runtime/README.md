@@ -12,13 +12,18 @@
 
 > 2026-08-11 补充：`RECOVERY_AGENT` 的模型输出现在显式包含 `ragDecision`（`SEARCH`/`SKIP`）、`ragReason` 和 confidence。模型按错误新颖度、诊断事实覆盖度、已有 grounded citation 与置信度自行判断是否检索，不再把每个 Recovery 固定为 RAG-first；缺少 grounded 知识时，`SEARCH` 会强制只生成 `SEARCH_RECOVERY_KNOWLEDGE`，下一 durable turn 取得证据后再评估恢复。`SKIP` 仅表示不重复检索，绝不绕过工具可见性、授权、schema、风险、预算、审批或 Java 控制面。旧 Provider 的 `AUTO` 在无 grounded citation 时归一为 `SEARCH`，已有引用时归一为 `SKIP`。
 
-> 2026-08-16 RAG 异构语料补充：评测集现为 188 份中文原文件和 308 条黄金用例，覆盖 Markdown、DOCX、XLSX、TXT、JSON、JSONL、CSV、LOG、SQL。受限提取器不执行宏、公式或外部关系，Manifest 同时校验原文件和提取文本 SHA-256，引用保留原始办公文件 URI。真实 SiliconFlow BGE 全量运行 0 执行错误，真实 pgvector 摄取写入 313 个 1024 维 chunk；范围泄漏为零，但引用精确率、拒答 F1、禁止文档通过率和单用例通过率仍未达门禁，不能表述为生产 RAG 验收。完整数据见 [RAG 黄金集与硅基流动 BGE 评测 Runbook](../docs/rag-evaluation-siliconflow-runbook.md)。
+> 2026-08-16/18 RAG 异构语料补充：历史对照集曾为 188 份中文原文件和 308 条黄金用例；当前评测资产已经扩展为 356 份原文件和 752 条黄金用例，覆盖 Markdown、DOCX、XLSX、TXT、JSON、JSONL、CSV、LOG、SQL。受限提取器不执行宏、公式或外部关系，Manifest 同时校验原文件和提取文本 SHA-256，引用保留原始办公文件 URI。历史 188/308 集合曾完成一次真实 SiliconFlow BGE 与 pgvector 运行；2026-08-18 又在当前指纹上完成 20 条真实 BGE-M3 + BGE-Reranker smoke，证明在线模型链路已经打通，但其分数不能代表当前 356/752 全量集合，也不能表述为生产 RAG 验收。完整数据和分档评测方法见 [RAG 黄金集与硅基流动 BGE 评测 Runbook](../docs/rag-evaluation-siliconflow-runbook.md)。
 
-> 2026-08-12 勘误："平台开放工具"表示工具已注册并受治理，不是模型可任意调用。Recovery action 必须映射到已注册的目标 service/endpoint，并校验 tenant/project 范围、`allowed_actions`、可见性、参数、风险和审批；只有最小的只读、无需审批工具可被受限委派。Python 不创建审批、不直接调用 data-sync 写接口、不派发 worker；`AUTO_APPROVED` 也不是 Python 的执行许可。当前 Java/data-sync 已将它接到首次授权盒内的有界执行分支：`RETRY_EXECUTION` 以稳定幂等键重新排队当前 execution 的失败对象；`APPLY_QUARANTINE` 必须先复核真实只读 preview、精确 selector、范围/预算/指纹并落持久回执，才可改变 quarantine 状态。高风险、越权、证据不足、重复策略未变化或预算耗尽仍停在 `WAITING_APPROVAL`、`REJECTED` 或 `ATTENTION_REQUIRED`。这是源码和聚焦测试事实，不等同于 Docker 或生产 E2E 已通过。
+> 2026-08-12 勘误："平台开放工具"表示工具已注册并受治理，不是模型可任意调用。Recovery action 必须映射到已注册的目标 service/endpoint，并校验 tenant/project 范围、`allowed_actions`、可见性、参数、风险和审批；只有最小的只读、无需审批工具可被受限委派。Python 不创建审批、不直接调用 data-sync 写接口、不派发 worker；`AUTO_APPROVED` 也不是 Python 的执行许可。当前 Java/data-sync 已将它接到首次授权盒内的有界执行分支：除既有 `RETRY_EXECUTION` 与 receipt-bound `APPLY_QUARANTINE` 外，策略回滚、限界调参、刷新元数据、checkpoint 恢复、失败分片 replay、字段映射修复六类受治理 repair 也已接入确定性执行分支；高风险、越权、证据不足、重复策略未变化或预算耗尽仍停在 `WAITING_APPROVAL`、`REJECTED` 或 `ATTENTION_REQUIRED`。这是源码和聚焦测试事实，不等同于逐动作真实故障注入黑盒 E2E 已全部通过。
 
 > 2026-08-12 文档复核：普通规划中，结构化意图只把 `knowledge.rag.query` 作为模型可见候选工具开放；模型没有原生 tool call 时，规则层不能补出 RAG ToolPlan。它与 Recovery 的 `SEARCH`/`SKIP` 决策共同实现“模型按需检索”，但不意味着每条旧路径、每种外部工具或每个 Provider 都已完成运行环境验证。`workspace.text.search` 是受控 worker 注入、allowlist 限制的 repository 文件系统根检索能力，不是产品 `Workspace` 层级，也不使用 Elasticsearch、Web Search 或任意网络抓取作为本轮恢复依赖。
 
 > 2026-08-13 源码与模块回归更新：`AutopilotRecoveryCoordinator` 仍只负责 `RECOVERY_AGENT`、模型自主 RAG 和 Java-governed preview；真实写动作仍由 Java/data-sync 执行。data-sync 返回 receipt 后，新增固定 post-action verification 入口，以稳定 checkpoint/turn ID 运行并持久登记 `PRECHECK_AGENT`/`MONITOR_AGENT`；任何 Specialist、fact sink、HTTP 或 checkpoint 失败都会传播给 Kafka 有界重试。Python 全量为 `1150 passed / 1 skipped`，Agent Runtime 全量为 `693 passed`。尚未完成的是重建后的真实 Docker/Kafka/Provider/worker E2E，不能用模块回归替代该运行证据。
+
+> 2026-08-20 事实一致性增量：正式长期记忆、receipt、lease 和审计 outbox 的目标持久化均为 PostgreSQL（长期记忆语义检索目标为 PostgreSQL/pgvector）；MySQL 仅保留为迁移期兼容/历史驱动选项。Java/data-sync 当前已接入六类受治理 repair：策略回滚、限界调参、刷新元数据、checkpoint 恢复、失败分片 replay、字段映射修复；逐动作真实故障注入黑盒 E2E 尚未全部完成。上述历史测试数字均只表示其所在日期的历史证据，不是未标日期的当前基线。
+
+> 2026-08-20 GraphRAG 容器接通并完成首个受控样本摄取：完整 Docker Compose 默认装配并启用 Neo4j Provider，Python Runtime 镜像包含 `neo4j` Driver，`/agent/rag/diagnostics` 已验证 `provider=neo4j`、`available=true`。结构初始化只创建约束/索引；`scripts/rag-graph-ingest.py` 还会对已审批文档事实执行来源、范围、时间、冲突和稳定 ID 校验，再幂等写入 Neo4j。当前合成组织事实为 3 个实体、2 条关系，并已验证两跳查询；真实 GraphRAG 问题仍必须由真实业务来源生成已审批图事实。没有证据时 GraphRAG 仍 fail-closed，不会用普通文档相似度猜测关系答案。
+> 2026-08-21 应用范围迁移：业务 GraphRAG 事实包、内存结果和 Neo4j 新写入/查询统一使用 `tenantId/applicationId/projectId/sensitivityLevel`；`workspaceKey` 仅能被旧事实包读取为迁移兼容字段，不再参与图授权、冲突键、Cypher 条件或新事实包输出。历史 Neo4j 属性清理脚本为 `docker/neo4j/init/01-application-scope-migration.cypher`，需在备份后人工执行。
 
 这个目录是 DataSmart Govern 的 Python 智能运行时初始骨架，定位不是替代 Java 微服务，而是承接后续 `Agent 编排`、`模型路由`、`RAG/GraphRAG 检索`、`工具计划生成`、`OpenClaw/LangGraph 风格状态流转` 等 AI 能力。
 
@@ -34,7 +39,7 @@
 - `ToolPlanner`：根据目标、变量和工具注册表生成工具计划，先采用可解释的规则式骨架，后续可替换为 LLM 规划器。
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
 - 六专业 Agent 受治理闭环：当前可执行 roster 为 `KNOWLEDGE_AGENT`（RAG/案例证据）、`DATASOURCE_AGENT`（授权范围内的数据源与元数据发现）、`DATA_SYNC_AGENT`（同步配置和生命周期 ToolPlan 草案）、`PRECHECK_AGENT`（确定性预检查）、`RECOVERY_AGENT`（失败事实驱动、可自主 `SEARCH`/`SKIP` 的受治理恢复候选）和 `MONITOR_AGENT`（任务/执行状态只读观察）。`SpecialistAgentCoordinator` 只在 durable checkpoint、租户/项目/操作者范围、delegation 和工具白名单均成立时调度；每个 turn 通过 Java `agent-runtime` 的 session/run 低敏 durable fact 回放，其中只保留角色、状态、范围、checkpoint 与 handoff/bridge 引用，不保存 prompt、SQL、工具参数、凭据、样本或模型原文。
-- 专业 handoff 与 bridge：`DATA_SYNC_AGENT` 和 `RECOVERY_AGENT` 只向 Java ToolPlan bridge 交付受控候选；Java 控制面负责权限、审批、outbox、worker receipt 和反馈。反馈中的可信 `taskId`/`executionId` 才会触发独立的只读 `PRECHECK_AGENT`/`MONITOR_AGENT` 后置复核，Python 不直接创建任务或执行 Recovery。Recovery 的单项只读预览缺少可验证配置时返回 `RECOVERY_ACTION_INPUT_INCOMPLETE` 并跳过该项，其他完整只读预览继续；全部动作均不完整时停在补参等待态，不创建不可执行的 Java ToolPlan。在首次确认固化的 Autopilot 授权范围内，Python 仍只回传候选和低敏证据，Java/data-sync 才能实际调度有界 `RETRY_EXECUTION`，或在真实 preview receipt 完整时调度 `APPLY_QUARANTINE`，并以 durable receipt 收敛到 `RECOVERED` 或 `ATTENTION_REQUIRED`。Recovery 高风险动作始终只生成 Java handoff/审批候选。
+- 专业 handoff 与 bridge：`DATA_SYNC_AGENT` 和 `RECOVERY_AGENT` 只向 Java ToolPlan bridge 交付受控候选；Java 控制面负责权限、审批、outbox、worker receipt 和反馈。反馈中的可信 `taskId`/`executionId` 才会触发独立的只读 `PRECHECK_AGENT`/`MONITOR_AGENT` 后置复核，Python 不直接创建任务或执行 Recovery。Recovery 的单项只读预览缺少可验证配置时返回 `RECOVERY_ACTION_INPUT_INCOMPLETE` 并跳过该项，其他完整只读预览继续；全部动作均不完整时停在补参等待态，不创建不可执行的 Java ToolPlan。在首次确认固化的 Autopilot 授权范围内，Python 仍只回传候选和低敏证据，Java/data-sync 当前可按门禁调度既有 retry/quarantine 及六类受治理 repair，并以 durable receipt 收敛到 `RECOVERED` 或 `ATTENTION_REQUIRED`；逐动作真实故障注入黑盒 E2E 仍是剩余验收项。Recovery 高风险动作始终只生成 Java handoff/审批候选。
 - 六专业 Agent 的 2026-08-10 最终回归记录：`python -m pytest python-ai-runtime\tests -q` 为 `1099 passed`（仅一条 Starlette/TestClient 弃用警告），JDK 21 Java Reactor 为 `1323 tests / 0 failures / 0 errors / 9 skipped`，其中 Agent Runtime 为 `596` 个测试；六 Agent 聚合、异名对象映射与进程退出码回归通过。真实 Success 请求 `six-agent-success-type-normalized-20260810112629` 创建任务 `91`、执行 `2245`，worker `SUCCEEDED` 且读写 `20/20`；真实 Recovery 请求 `six-agent-recovery-rag-durable-20260810214832` 取得 2 条 grounded citation、2 条 durable evidence reference、1 个 Java 只读 preview，后置 PRECHECK/MONITOR 均为 `EXECUTED`，11 项检查无失败和 warning，并以退出码 `0` 结束。独立数据库审计确认审批、审批确认、提交事实和异步命令 outbox 均为 `0`，本轮没有自动创建恢复计划、批准或执行恢复副作用。该证据已取代此前 Provider 401 阻塞记录；正文边界和真实验收矩阵见 [本地端到端闭环 Runbook](../docs/local-e2e-closure-runbook.md)。
 - Agent Skill 治理：已具备本地/远程 Skill descriptor、语义选择、准入策略、准入 runtime event 和智能网关摘要；Java `permission-admin` 已新增 Skill admission evaluate 契约，Python Runtime 已支持可选远程调用。Skill 命中后会继续校验 `grantedPermissions`、`actorRole` 与风险等级；显式缺权限或普通用户命中高风险 Skill 时会进入 `rejectedSkills`，缺少控制面事实时只做条件性推荐。`SKILL_ADMISSION_EVALUATED` 事件与 `intelligentGatewayGovernance.skillAdmission` 会解释 Skill 启用、条件性启用或拒绝原因。
 - 智能网关会话级 Skill 快照：`intelligentGatewayGovernance.skillVisibility` 已能输出本轮会话真正可见的 Skill 能力集、被准入策略隐藏的 Skill、可见风险分布、领域分布、隐藏状态分布和可信事实来源。该快照基于本轮 `AgentSkillPlan`，不会重新拉 Manifest 或重新请求 permission-admin；响应组装器会把它压缩为低敏 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` runtime event，随 `eventEnvelope`、event store、live push 和 publisher 一起发布，便于断线 replay、Java 控制面补索引和后续审计报表。当前快照还会携带 `manifestBinding`，记录 Manifest 绑定状态、来源、`manifestFingerprint`、READY/非 READY 数量和 fallback 状态，用于灰度、缓存、事故复盘和 Skill Marketplace 版本统计。
@@ -45,7 +50,7 @@
 - 模型查询引擎闭环：新增 `ModelQueryEngine`，把首轮模型意图识别和工具反馈二轮推理从“直接调用 Provider”收敛为“模型网关决策 -> token-limit 预检 -> rate-limit -> 会话级安全缓存 -> Provider 调用 -> retry/fallback -> usage/health 回写 -> 低敏 `MODEL_QUERY_EXECUTED` runtime event”。该引擎不保存 prompt、SQL、工具参数正文、模型完整输出、endpoint 或 API Key；SESSION_ONLY 结果缓存只用哈希 key 和会话隔离 namespace。当前仍是进程内限流和进程内缓存，生产应替换为 Redis/API Gateway/模型网关限流、精确 tokenizer、跨实例缓存和 Prometheus 指标。
 - 成熟推理优化诊断：新增 `ModelInferenceOptimizationDiagnosticsService` 与 `/agent/models/inference-optimization/diagnostics`、`/api/agent/models/inference-optimization/diagnostics`。该能力把 `llm.inference-optimization` 从 planned 推进到 control-plane-ready：Python Runtime 会按路由推断 vLLM/SGLang/LiteLLM/OpenAI-compatible serving profile，并列出 TTFT、TPS、queue time、batching、prefix/KV cache hit rate、KV cache/GPU pressure 等低敏指标缺口。它不访问真实模型、不抓取 endpoint、不做训练/微调/后训练/推理内核研发，也不返回 API Key、prompt、messages、SQL、工具参数、样本数据或模型输出；生产闭口仍需要 Prometheus/vLLM/SGLang/LiteLLM 指标回灌、benchmark/eval 基线、精确 tokenizer、分布式限流、租户套餐和灰度压测报告。
 - 上下文微压缩闭环：新增 `ContextMicroCompactor`，并接入 `HybridContextBuilder` 的“过滤/去重/排序之后、总 token 预算之前”阶段。过长上下文会先被确定性抽取成带可信度标记的微压缩摘要，再进入模型意图节点，避免只有“塞全文”或“整块截断”两种粗糙选择；压缩事件通过低敏 `CONTEXT_MICRO_COMPACTED` runtime event 暴露计数、token 节省、来源类型分布和原因码，不返回上下文正文、SQL、样本数据、工具参数、prompt 或模型输出。当前仍是启发式 token 估算和抽取式摘要，后续应接长会话历史摘要、tool-compact、真实 tokenizer 和 worker receipt/artifactReference 的低敏上下文转换。
-- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event、低基数 Prometheus 指标、受控后台 worker、Prometheus 告警规则、审计 outbox、store-backed 检索接入和 `SQLiteFtsAgentMemorySecondaryIndex` 本地全文二级索引；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。SQLite FTS adapter 会在 FTS 命中后回查正式 store 并二次校验范围，检索 attributes 不返回记忆正文或 snippet；当前默认装配仍以本地内存 store 便于学习和单测，后台 worker、审计 outbox 与 FTS 同步 worker 默认不作为生产自动链路开启。生产可通过 `DATASMART_AI_FORMAL_MEMORY_*`、`DATASMART_AI_MEMORY_LEASE_*` 与 `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_*` 切到 MySQL，并显式开启 worker，让 `/agent/plans` 从正式记忆表召回低敏经验，同时让多实例 worker 安全领取候选并留下审计事实。
+- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event、低基数 Prometheus 指标、受控后台 worker、Prometheus 告警规则、审计 outbox、store-backed 检索接入和 `SQLiteFtsAgentMemorySecondaryIndex` 本地全文二级索引；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。SQLite FTS adapter 会在 FTS 命中后回查正式 store 并二次校验范围，检索 attributes 不返回记忆正文或 snippet；当前默认装配仍以本地内存 store 便于学习和单测，后台 worker、审计 outbox 与 FTS 同步 worker 默认不作为生产自动链路开启。生产目标是通过 `DATASMART_AI_FORMAL_MEMORY_*`、`DATASMART_AI_MEMORY_LEASE_*` 与 `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_*` 切到 PostgreSQL；MySQL 仅保留兼容配置与历史迁移路径。启用 worker 后，`/agent/plans` 从正式记忆表召回低敏经验，多实例 worker 安全领取候选并留下审计事实。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。`datasmart_ai_runtime.api` 已从单文件升级为懒加载兼容包，历史 `from datasmart_ai_runtime.api import create_app` 仍可使用，但真实实现已迁入 `api/app.py`。
 - Agent API 层已从根目录 `api_*.py` 平铺迁入 `datasmart_ai_runtime/api/` 能力包：`api/agent/` 承载 `/agent/plans`、A2A/MCP intake 预览、Skill 准入和响应组装；`api/gateway/` 承载签名、nonce、可信上下文和智能网关治理；`api/events/` 承载 runtime event replay/control/WebSocket payload；`api/memory/` 承载长期记忆候选治理和物化管理端；`api/model_gateway/` 承载模型网关低敏响应适配。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件或运行时根包拖成难以维护的巨型模块。
 - Agent 能力闭口验收：`/agent/capabilities/diagnostics` 继续提供完整 tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、tech stack、LLM 能力矩阵；新增 `/agent/capabilities/closure-readiness` 与 `/api/agent/capabilities/closure-readiness`，把同一份矩阵转换成 P0 硬阻塞、控制面转实缺口、生产化加固缺口、readinessScore 和最终收口门禁。当前 `memory.sqlite-fts` 与 `skill.create-publish` 已从 P0 hard blocker 推进到 partial closed-loop，下一阶段重点是把剩余 control-plane-ready 能力转成真实运行事实，并做 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 最小 E2E 联调。`/agent/plans.agentCapabilityClosure.closureReadiness` 也会返回同一份低敏摘要，帮助项目停止发散新增能力，优先关闭最小商业化 Agent Host 的核心缺口。
@@ -258,7 +263,7 @@ permission-admin 管理员权限保护。
 # 5.01 Agent 正式长期记忆 SQL Store
 
 长期记忆现在不再只有内存正式 store。新增 `SqlAgentMemoryStore` 与
-`docker/mysql/migrations/20260602_agent_memory_store_entry.sql`，用于保存已经通过审批并由
+PostgreSQL `ai_memory` schema，用于保存已经通过审批并由
 materializer 落成的低敏正式记忆摘要。
 
 这张表的产品定位是“长期记忆控制面事实源”，不是最终的向量检索引擎：
@@ -269,8 +274,9 @@ materializer 落成的低敏正式记忆摘要。
 - 保存 `expiresAt/materializedAt`，为遗忘任务、归档任务和召回排序留下稳定字段；
 - 只保存 `contentSummary` 这类低敏摘要，不保存完整工具输出、样本数据、原始 SQL、文件正文或敏感日志。
 
-当前 SQL Store 采用 Python DB-API 连接对象，不直接创建连接池；sqlite 单测用于验证语义，生产部署应使用
-MySQL migration 建表并传入 MySQL 驱动连接。后续如果引入 Chroma/Neo4j/MinIO，应围绕同一 `memoryId`
+当前 SQL Store 采用 Python DB-API 连接对象，不直接创建连接池；sqlite 单测用于验证语义，正式部署目标应使用
+PostgreSQL schema 并传入 PostgreSQL 驱动连接。MySQL migration 与驱动仅保留为迁移期兼容/历史选项。后续如果引入
+Chroma/Neo4j/MinIO，应围绕同一 `memoryId`
 构建二级索引，而不是让向量库成为唯一事实源。
 
 该设计也贴合当前 Agent 长期记忆趋势：长期记忆需要跨会话保留，并通过 namespace/key 或类似机制隔离；
@@ -287,11 +293,11 @@ MySQL migration 建表并传入 MySQL 驱动连接。后续如果引入 Chroma/N
 - `AgentApprovedMemoryWriteMaterializer`：为后续 worker 或补偿入口复用；
 - `StoreBackedAgentMemoryRetriever`：注入默认 orchestrator，使 `/agent/plans` 能从正式 store 召回低敏记忆。
 
-生产或准生产环境可以启用 MySQL 正式记忆 store：
+正式目标环境应启用 PostgreSQL 正式记忆 store：
 
 ```powershell
-$env:DATASMART_AI_FORMAL_MEMORY_STORE="mysql"
-$env:DATASMART_AI_FORMAL_MEMORY_MYSQL_DSN="mysql://datasmart:******@localhost:3306/datasmart?charset=utf8mb4"
+$env:DATASMART_AI_FORMAL_MEMORY_STORE="postgresql"
+$env:DATASMART_AI_FORMAL_MEMORY_POSTGRESQL_DSN="postgresql://datasmart:******@localhost:5432/datasmart_govern?options=-csearch_path%3Dai_memory"
 $env:DATASMART_AI_FORMAL_MEMORY_SQL_CONNECT_TIMEOUT_SECONDS="3"
 $env:DATASMART_AI_FORMAL_MEMORY_STORE_FAIL_OPEN="false"
 ```
@@ -304,7 +310,7 @@ $env:DATASMART_AI_FORMAL_MEMORY_SQLITE_PATH=".local/formal-memory.sqlite3"
 ```
 
 新增 `/agent/memory/diagnostics` 会同时返回候选 store、正式 store、retriever 和 materializer 的低敏诊断。
-诊断会脱敏 MySQL DSN，不返回候选内容、正式记忆正文、标签或 namespace 明细；生产环境仍必须通过 gateway 和
+诊断会脱敏 PostgreSQL DSN，不返回候选内容、正式记忆正文、标签或 namespace 明细；生产环境仍必须通过 gateway 和
 permission-admin 保护该接口。
 
 后台 materialization worker 现在已经具备受控启动能力，但默认关闭。也就是说：API 已经具备正式 store、
@@ -319,11 +325,11 @@ materializer、租约、退避、DLQ、补偿、事件和指标装配；只有�
 - 正式记忆 store 回答“模型后续可以召回哪条低敏经验摘要”；
 - receipt store 回答“后台 worker 或同步 materializer 是否已经处理过该候选、尝试几次、成功还是失败”。
 
-生产或准生产环境可以启用 MySQL receipt store：
+正式目标环境应启用 PostgreSQL receipt store：
 
 ```powershell
-$env:DATASMART_AI_MEMORY_RECEIPT_STORE="mysql"
-$env:DATASMART_AI_MEMORY_RECEIPT_MYSQL_DSN="mysql://datasmart:******@localhost:3306/datasmart?charset=utf8mb4"
+$env:DATASMART_AI_MEMORY_RECEIPT_STORE="postgresql"
+$env:DATASMART_AI_MEMORY_RECEIPT_POSTGRESQL_DSN="postgresql://datasmart:******@localhost:5432/datasmart_govern?options=-csearch_path%3Dai_memory"
 $env:DATASMART_AI_MEMORY_RECEIPT_SQL_CONNECT_TIMEOUT_SECONDS="3"
 $env:DATASMART_AI_MEMORY_RECEIPT_STORE_FAIL_OPEN="false"
 ```
@@ -389,14 +395,14 @@ receipt 只保存状态、attemptCount、workerId、memoryId、namespace、低�
 当前已提供两类实现：
 
 - `InMemoryAgentMemoryMaterializationLeaseStore`：用于本地学习、单测和单实例开发，零依赖，但不能跨进程协调；
-- `SqlAgentMemoryMaterializationLeaseStore`：用于 SQLite 联调与 MySQL 生产，使用条件 UPDATE、唯一约束和
+- `SqlAgentMemoryMaterializationLeaseStore`：用于 SQLite 联调与 PostgreSQL 正式目标，使用条件 UPDATE、唯一约束和
   fencing token 阻止过期 worker 覆盖新 worker。
 
-生产或准生产环境可以启用 MySQL lease store：
+正式目标环境应启用 PostgreSQL lease store：
 
 ```powershell
-$env:DATASMART_AI_MEMORY_LEASE_STORE="mysql"
-$env:DATASMART_AI_MEMORY_LEASE_MYSQL_DSN="mysql://datasmart:******@localhost:3306/datasmart?charset=utf8mb4"
+$env:DATASMART_AI_MEMORY_LEASE_STORE="postgresql"
+$env:DATASMART_AI_MEMORY_LEASE_POSTGRESQL_DSN="postgresql://datasmart:******@localhost:5432/datasmart_govern?options=-csearch_path%3Dai_memory"
 $env:DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS="3"
 $env:DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN="false"
 $env:DATASMART_AI_MEMORY_LEASE_SECONDS="60"
@@ -421,7 +427,7 @@ Runner 的执行策略现在是 `BOUNDED_AT_LEAST_ONCE_WITH_LEASE_TOKEN_FENCING_
 - 达到最大尝试次数后进入 `dead_letter`，等待管理员补偿或人工重放；
 - `lease_token` 是内部 fencing 凭证，旧 worker 在租约过期后即使晚到，也不能覆盖新 worker 的成功或失败结果。
 
-当前边界仍然很明确：这一步还没有自动后台循环、Prometheus 指标、管理员重放入口和 Chroma/Neo4j 二级索引同步。
+当前边界仍然很明确：这一步还没有自动后台循环、Prometheus 指标、管理员重放入口和 PostgreSQL/pgvector 二级索引同步；MySQL 仅保留迁移兼容实现。
 下一阶段更建议先补“管理员补偿 + 指标 + 管理路由/CLI”，再决定是否启动常驻 worker，而不是现在就把自动线程悄悄放进 API 进程。
 
 # 5.06 Agent 长期记忆失败退避与 DLQ 基础语义
@@ -469,7 +475,7 @@ dry-run 和受控重排重新放回 Runner 可领取窗口。
 ```json
 {
   "operatorId": "admin-a",
-  "reason": "下游 MySQL 连接恢复后重新物化",
+  "reason": "下游 PostgreSQL 连接恢复后重新物化",
   "dryRun": true,
   "delaySeconds": 30
 }
@@ -572,7 +578,7 @@ $env:DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_STOP_TIMEOUT_SECONDS="5"
 - 当前是单线程循环。多实例部署应使用 SQL lease store，由 lease token fencing 防止多个 worker 覆盖同一候选；
 - 连续 Runner 异常达到 `maxConsecutiveErrors` 后会打开熔断标记并停止后台循环，避免坏配置造成错误风暴；
 - 每轮成功后会写 Runtime Event、event store/publisher、指标和可选审计 outbox；Runtime Event/指标失败仍按旁路处理，审计 outbox 可通过 required 配置改成 fail-closed；
-- 还没有 Java 审计派发、事务级 outbox、批量补偿审批流或 Chroma/Neo4j 二级索引 worker。
+- 还没有 Java 审计派发、事务级 outbox、批量补偿审批流或 PostgreSQL/pgvector 二级索引 worker。
 
 # 5.11 Agent 长期记忆物化 Prometheus 告警规则
 
@@ -598,11 +604,11 @@ $env:DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_STOP_TIMEOUT_SECONDS="5"
   `tenantId/projectId/candidateId/leaseId/requestId/runId/sessionId/traceId/workspaceKey`
   放进 Prometheus 时序；
 - 单条候选排障继续走 Runtime Event replay、lease/receipt 查询和审计日志，Prometheus 只负责聚合趋势与告警；
-- 当前阈值适合本地或早期集成环境。生产环境需要结合租户规模、worker 实例数、候选产生速率、下游 Chroma/Neo4j/MySQL 容量和 SLA 进行调优；
+- 当前阈值适合本地或早期集成环境。生产环境需要结合租户规模、worker 实例数、候选产生速率、下游 PostgreSQL/pgvector 容量和 SLA 进行调优；
 - 告警规则配套新增 `test_prometheus_alert_rules.py`，用于固定 scrape job、核心告警名称、低基数选择器和 dry-run 聚合表达式，降低后续修改时的回归风险。
 
 当前边界仍然明确：这一步还没有把告警接入 Alertmanager 路由模板、Grafana 面板、Java 统一审计 outbox 或客户级 SLA 报表。
-下一步如果继续生产化长期记忆，更适合补审计 outbox/fail-closed 选项、批量补偿审批和 Chroma/Neo4j 二级索引 worker，
+下一步如果继续生产化长期记忆，更适合补审计 outbox/fail-closed 选项、批量补偿审批和 PostgreSQL/pgvector 二级索引 worker，
 而不是继续无限增加单条 Prometheus 规则。
 
 # 5.12 Agent 长期记忆物化审计 Outbox
@@ -628,13 +634,13 @@ $env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_SQLITE_PATH=".local/memory
 $env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE_FAIL_OPEN="true"
 ```
 
-生产 MySQL 模式建议：
+生产 PostgreSQL 模式建议：
 
 ```powershell
 $env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_ENABLED="true"
 $env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_REQUIRED="true"
-$env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE="mysql"
-$env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_MYSQL_DSN="mysql://user:password@localhost:3306/datasmart_govern?charset=utf8mb4"
+$env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE="postgresql"
+$env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_POSTGRESQL_DSN="postgresql://user:password@localhost:5432/datasmart_govern?options=-csearch_path%3Dai_memory"
 $env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE_FAIL_OPEN="false"
 ```
 

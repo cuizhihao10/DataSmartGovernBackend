@@ -77,6 +77,9 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
     }
 
     @Test
+    /**
+     * 新增的任务关联键也必须保持低敏并按既定 SQL 顺序写入，供自动 callback 严格校验 task lease。
+     */
     void upsertShouldBindOnlyLowSensitiveReceiptFields() throws SQLException {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
@@ -91,22 +94,29 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
         assertTrue(inserted);
         verify(statement).setString(1, "receipt-ready");
         verify(statement).setString(2, "command-a");
-        verify(statement).setString(3, "10");
-        verify(statement).setString(4, "20");
-        verify(statement).setString(5, "1001");
-        verify(statement).setString(8, "datasource.metadata.read");
-        verify(statement).setString(9, "RUNNING");
-        verify(statement).setString(10, "DRY_RUN_PASSED");
-        verify(statement).setBoolean(11, true);
-        verify(statement).setBoolean(12, false);
-        verify(statement).setLong(14, 7L);
-        verify(statement).setTimestamp(eq(15), any(Timestamp.class));
-        verify(statement).setTimestamp(eq(16), any(Timestamp.class));
-        verify(statement, never()).setString(eq(17), anyString());
+        verify(statement).setLong(3, 9001L);
+        verify(statement).setLong(4, 9101L);
+        verify(statement).setString(5, "worker-receipt-001");
+        verify(statement).setString(6, "audit-receipt-001");
+        verify(statement).setString(7, "10");
+        verify(statement).setString(8, "20");
+        verify(statement).setString(9, "1001");
+        verify(statement).setString(12, "datasource.metadata.read");
+        verify(statement).setString(13, "RUNNING");
+        verify(statement).setString(14, "DRY_RUN_PASSED");
+        verify(statement).setBoolean(15, true);
+        verify(statement).setBoolean(16, false);
+        verify(statement).setLong(18, 7L);
+        verify(statement).setTimestamp(eq(19), any(Timestamp.class));
+        verify(statement).setTimestamp(eq(20), any(Timestamp.class));
+        verify(statement, never()).setString(eq(21), anyString());
         verify(connection).close();
     }
 
     @Test
+    /**
+     * receipt 重放触发更新时，新增关联键不能让主键定位参数错位。
+     */
     void upsertShouldReturnFalseWhenPostgreSqlReportsConflictAndRefreshesExistingRow() throws SQLException {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
@@ -126,7 +136,11 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
         assertFalse(inserted);
         verify(insertStatement).setString(1, "receipt-ready");
         verify(updateStatement).setString(1, "command-a");
-        verify(updateStatement).setString(16, "receipt-ready");
+        verify(updateStatement).setLong(2, 9001L);
+        verify(updateStatement).setLong(3, 9101L);
+        verify(updateStatement).setString(4, "worker-receipt-001");
+        verify(updateStatement).setString(5, "audit-receipt-001");
+        verify(updateStatement).setString(20, "receipt-ready");
     }
 
     @Test
@@ -148,9 +162,12 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
         assertEquals("command-a", records.getFirst().commandId());
         assertEquals("DRY_RUN_PASSED", records.getFirst().outcome());
         assertEquals("10", records.getFirst().tenantId());
+        assertEquals(701L, records.getFirst().replaySequence());
         ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
         verify(connection).prepareStatement(sqlCaptor.capture());
         assertTrue(sqlCaptor.getValue().contains("agent_tool_action_worker_receipt_index"));
+        assertTrue(sqlCaptor.getValue().contains("id AS replay_sequence"));
+        assertTrue(sqlCaptor.getValue().contains("ORDER BY id, consumed_at"));
         assertTrue(sqlCaptor.getValue().contains("project_id IN (?)"));
         assertTrue(sqlCaptor.getValue().contains("tool_code = ? OR tool_code IS NULL"));
         verify(statement).setString(1, "command-a");
@@ -231,6 +248,10 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
         return new AgentToolActionWorkerReceiptIndexRecord(
                 "receipt-ready",
                 "command-a",
+                9001L,
+                9101L,
+                "worker-receipt-001",
+                "audit-receipt-001",
                 "10",
                 "20",
                 "1001",
@@ -251,6 +272,10 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
     private void stubRow(ResultSet resultSet) throws SQLException {
         when(resultSet.getString("event_identity_key")).thenReturn("receipt-ready");
         when(resultSet.getString("command_id")).thenReturn("command-a");
+        when(resultSet.getLong("task_id")).thenReturn(9001L);
+        when(resultSet.getLong("task_run_id")).thenReturn(9101L);
+        when(resultSet.getString("executor_id")).thenReturn("worker-receipt-001");
+        when(resultSet.getString("audit_id")).thenReturn("audit-receipt-001");
         when(resultSet.getString("tenant_id")).thenReturn("10");
         when(resultSet.getString("project_id")).thenReturn("20");
         when(resultSet.getString("actor_id")).thenReturn("1001");
@@ -262,7 +287,11 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
         when(resultSet.getBoolean("pre_check_passed")).thenReturn(true);
         when(resultSet.getBoolean("side_effect_executed")).thenReturn(false);
         when(resultSet.getString("error_code")).thenReturn(null);
-        when(resultSet.getLong("replay_sequence")).thenReturn(7L);
+        /*
+         * JDBC 查询把数据库 identity id 投影为 replay_sequence。这里使用与写入时 7L 不同的值，
+         * 可防止实现误把进程内 projection sequence 当成跨重启 durable 游标。
+         */
+        when(resultSet.getLong("replay_sequence")).thenReturn(701L);
         when(resultSet.wasNull()).thenReturn(false);
         when(resultSet.getTimestamp("consumed_at"))
                 .thenReturn(Timestamp.from(Instant.parse("2026-06-18T00:00:00Z")));

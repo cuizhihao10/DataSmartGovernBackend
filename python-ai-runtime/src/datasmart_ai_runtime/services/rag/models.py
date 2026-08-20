@@ -56,7 +56,8 @@ class RagDocument:
     字段说明：
     - `document_id`：稳定文档 ID，后续用于增量更新、删除、审计和引用；
     - `title/content/source_uri`：标题、正文和来源，`source_uri` 可以是文档路径、MinIO 对象、数据库记录或 URL；
-    - `tenant_id/project_id/workspace_key`：范围隔离字段，检索时必须先过滤再排序；
+    - `tenant_id/application_id/project_id`：产品业务范围隔离字段，检索时必须先过滤再排序；
+      `workspace_key` 仅保留给旧版知识记录迁移，不再作为新业务事实的归属维度；
     - `source_type/tags`：用于过滤、召回加权和诊断；
     - `sensitivity_level`：当前只作为低敏提示，生产环境应与权限中心/数据分级分类联动。
     """
@@ -66,6 +67,7 @@ class RagDocument:
     content: str
     source_uri: str
     tenant_id: str = "*"
+    application_id: str = "*"
     project_id: str = "*"
     workspace_key: str = "*"
     source_type: RagChunkSourceType = RagChunkSourceType.DOCUMENT
@@ -97,6 +99,7 @@ class RagChunk:
     project_id: str
     workspace_key: str
     source_type: RagChunkSourceType
+    application_id: str = "*"
     tags: tuple[str, ...] = ()
     sensitivity_level: str = "internal"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -108,17 +111,21 @@ class RagQuery:
 
     字段说明：
     - `question`：用户问题或 Agent 子问题；
-    - `tenant_id/project_id/workspace_key`：硬隔离边界；
+    - `tenant_id/application_id/project_id`：硬隔离边界；
+    - `workspace_key`：旧版请求兼容字段，新请求不应把它当产品业务层级；
     - `top_k/candidate_limit`：最终证据数量与候选窗口大小；
     - `max_context_chars`：压缩后允许进入模型的证据上下文字符预算；
     - `generate_answer`：是否调用模型生成答案。检索评测、压测或只看证据时可以关闭；
     - `trace_id/session_id`：链路追踪和缓存隔离字段，不写入知识库。
+    - `sensitivity_level`：问题正文的数据分级。Embedding 与 Reranker 必须分别校验该级别是否允许
+      外发，不能因为候选文档已经获批就默认放行用户问题或故障日志。
     """
 
     tenant_id: str
     project_id: str
     actor_id: str
     question: str
+    application_id: str = "*"
     workspace_key: str = "*"
     top_k: int = 5
     candidate_limit: int = 32
@@ -126,10 +133,21 @@ class RagQuery:
     generate_answer: bool = True
     trace_id: str | None = None
     session_id: str | None = None
-    # `hybrid` 是类似主流编码 Agent 的默认检索策略：模型使用同一个受治理知识工具，存储适配器在内部
-    # 组合 FTS 与 pgvector。`lexical` 适合精确错误码和标识符；`vector` 用于精确证据较弱时的语义扩展。
-    retrieval_mode: str = "hybrid"
+    sensitivity_level: str = "internal"
+    # `auto` 是面向 Agent 的默认路径：模型先在 hybrid、graph、hybrid_graph 之间做一次受治理选择；
+    # 选择 hybrid 后，存储适配器再在内部组合 FTS 与 pgvector。`lexical` 适合精确错误码和标识符，
+    # `vector` 用于精确证据较弱时的语义扩展。评测和运维需要稳定复现时，仍可显式指定具体模式。
+    retrieval_mode: str = "auto"
     source_types: tuple[str, ...] = ()
+    # GraphRAG 的关系遍历上限独立于普通 chunk 检索。当前只允许 1 到 3 跳，避免把一个简单的关系
+    # 问题扩展成没有边界的全图搜索；普通 hybrid/lexical/vector 查询会忽略该字段。
+    graph_max_hops: int = 3
+    # 结构化图查询字段是可选的。自然语言关系问题仍由 GraphRAG Provider 解析；显式字段用于
+    # 后台 Agent 或测试在已经完成实体消歧后直接指定起点和跳数。
+    graph_start_entity: str | None = None
+    graph_relation: str | None = None
+    graph_hops: int | None = None
+    graph_as_of: str | None = None
 
 
 def rag_query_explicitly_requests_history(query: RagQuery) -> bool:
@@ -158,6 +176,11 @@ class RagScoredChunk:
     - `fused_score`：多路召回融合分数；
     - `rerank_score`：重排后的最终相关性；
     - `diversity_penalty`：MMR 去冗余时的相似惩罚。
+    - `exact_score`：稳定资料码、检索锚点或受治理替代关系的精确匹配分；
+    - `exact_match_identifiers`：命中的精确标识符，便于审计“为什么这份资料被优先选中”。
+
+    `exact_score` 不是模型可信度，也不是权限结论。它只说明查询中出现的稳定标识符与当前已授权
+    chunk 的元数据或正文发生了精确匹配；权限仍然必须由知识库范围过滤在排序前完成。
     """
 
     chunk: RagChunk
@@ -168,6 +191,8 @@ class RagScoredChunk:
     diversity_penalty: float = 0.0
     final_score: float = 0.0
     match_terms: tuple[str, ...] = ()
+    exact_score: float = 0.0
+    exact_match_identifiers: tuple[str, ...] = ()
 
     def to_summary(self) -> dict[str, Any]:
         """输出低敏候选摘要，不返回完整 chunk 文本。"""
@@ -185,6 +210,8 @@ class RagScoredChunk:
             "diversityPenalty": round(self.diversity_penalty, 6),
             "finalScore": round(self.final_score, 6),
             "matchTerms": self.match_terms,
+            "exactScore": round(self.exact_score, 6),
+            "exactMatchIdentifiers": self.exact_match_identifiers,
         }
 
 
@@ -232,6 +259,11 @@ class RagPipelineResult:
     generated: bool = False
     retrieved_chunks: tuple[RagScoredChunk, ...] = ()
     reranker_input_chunks: tuple[RagScoredChunk, ...] = ()
+    # GraphRAG 使用结构化关系边作为证据，不会伪造 RagScoredChunk。以下三个字段只在
+    # `retrievalMode=graph` 时填充，普通 RAG 响应保持原有形状。
+    graph_path: tuple[dict[str, Any], ...] = ()
+    graph_citations: tuple[dict[str, Any], ...] = ()
+    graph_refusal_reason: str | None = None
 
     def to_summary(self) -> dict[str, Any]:
         """输出 API 响应结构。
@@ -241,7 +273,7 @@ class RagPipelineResult:
         retriever 与 reranker 的内部候选不在此方法输出，只能由同进程评测器读取。
         """
 
-        return {
+        summary = {
             "schemaVersion": RAG_PIPELINE_SCHEMA_VERSION,
             "answer": self.answer,
             "generated": self.generated,
@@ -252,6 +284,12 @@ class RagPipelineResult:
             "modelSummary": dict(self.model_summary),
             "payloadPolicy": "RAG_COMPRESSED_EVIDENCE_WITH_CITATIONS_NO_RAW_FULL_DOCUMENT",
         }
+        if self.graph_path or self.graph_citations or self.graph_refusal_reason:
+            # 只有图模式才返回这些字段，避免给原有调用方增加一组永远为空的合同字段。
+            summary["graphPath"] = tuple(dict(item) for item in self.graph_path)
+            summary["graphCitations"] = tuple(dict(item) for item in self.graph_citations)
+            summary["graphRefusalReason"] = self.graph_refusal_reason
+        return summary
 
 
 __all__ = [

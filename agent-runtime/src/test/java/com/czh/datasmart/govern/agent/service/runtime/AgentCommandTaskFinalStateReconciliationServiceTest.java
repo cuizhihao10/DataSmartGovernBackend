@@ -120,6 +120,68 @@ class AgentCommandTaskFinalStateReconciliationServiceTest {
         assertTrue(response.issueCodes().contains("WORKER_CAPACITY_LIMITED_NOT_TERMINAL"));
     }
 
+    /**
+     * 审批自动通过只说明审批链路已满足，不能替代真实 command worker 的执行回执。
+     *
+     * <p>这条回归保护自动 callback worker 不会因为授权盒或审批优化，把尚未执行的任务提前置为成功。</p>
+     */
+    @Test
+    void shouldNotTreatAutoApprovedReceiptAsTerminalSuccess() {
+        InMemoryAgentToolActionWorkerReceiptIndexStore store = new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
+        store.upsert(receipt("receipt-auto-approved", "AUTO_APPROVED", "RUNNING", true, false,
+                "AGENT_COMMAND_AUTO_APPROVED", 35L));
+        AgentCommandTaskFinalStateReconciliationService service = service(store);
+
+        AgentCommandTaskFinalStateReconciliationResponse response = service.reconcile(
+                "cmd-final-001",
+                "command.run-program",
+                "10",
+                "20",
+                "1001",
+                "run-final",
+                "session-final",
+                null,
+                platformAccess()
+        );
+
+        assertEquals(false, response.terminal());
+        assertEquals(false, response.callbackRecommended());
+        assertFalse("SUCCEEDED".equals(response.reconciledTaskStatus()));
+        assertFalse("SUCCEEDED".equals(response.callbackSuggestion().callbackStatus()));
+        assertTrue(response.issueCodes().contains("AUTO_APPROVED_IS_NOT_EXECUTION_SUCCESS"));
+    }
+
+    /**
+     * command outbox 已发布只证明消息已交给下游，不能替代 worker 的真实副作用执行结果。
+     *
+     * <p>这条回归防止把投递成功和执行成功混为一谈，尤其保护多实例重试和下游异步消费场景。</p>
+     */
+    @Test
+    void shouldNotTreatPublishedReceiptAsTerminalSuccess() {
+        InMemoryAgentToolActionWorkerReceiptIndexStore store = new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
+        store.upsert(receipt("receipt-published", "PUBLISHED", "RUNNING", true, false,
+                "AGENT_COMMAND_OUTBOX_PUBLISHED", 36L));
+        AgentCommandTaskFinalStateReconciliationService service = service(store);
+
+        AgentCommandTaskFinalStateReconciliationResponse response = service.reconcile(
+                "cmd-final-001",
+                "command.run-program",
+                "10",
+                "20",
+                "1001",
+                "run-final",
+                "session-final",
+                null,
+                platformAccess()
+        );
+
+        assertEquals(false, response.terminal());
+        assertEquals(false, response.callbackRecommended());
+        assertFalse("SUCCEEDED".equals(response.reconciledTaskStatus()));
+        assertFalse("SUCCEEDED".equals(response.callbackSuggestion().callbackStatus()));
+        assertTrue(response.issueCodes().contains("OUTBOX_PUBLISHED_IS_NOT_EXECUTION_SUCCESS"));
+    }
+
     @Test
     void shouldReturnWaitingWhenReceiptIsMissing() {
         AgentCommandTaskFinalStateReconciliationService service = service(new InMemoryAgentToolActionWorkerReceiptIndexStore(100));

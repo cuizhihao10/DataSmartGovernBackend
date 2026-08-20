@@ -67,6 +67,12 @@ CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_scoped_document
     );
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_search
     ON ai_memory.rag_knowledge_chunk USING GIN (content_search_vector);
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_artifact_code
+    ON ai_memory.rag_knowledge_chunk ((LOWER(metadata_json->>'artifactCode')));
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_retrieval_anchor
+    ON ai_memory.rag_knowledge_chunk ((LOWER(metadata_json->>'retrievalAnchor')));
+CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_logical_document_key
+    ON ai_memory.rag_knowledge_chunk ((LOWER(metadata_json->>'logicalDocumentKey')));
 CREATE INDEX IF NOT EXISTS idx_rag_knowledge_chunk_embedding_model
     ON ai_memory.rag_knowledge_chunk (embedding_model, embedding_dimension, enabled);
 

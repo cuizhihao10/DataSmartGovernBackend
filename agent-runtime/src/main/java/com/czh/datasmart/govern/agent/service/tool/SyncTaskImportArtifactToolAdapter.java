@@ -21,12 +21,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Executes artifact-reference task import tools against data-sync.
+ * 执行基于制品引用的同步任务导入工具。
  *
- * <p>Upload is intentionally not an Agent tool: the browser/user uploads the file
- * first and the model receives only {@code artifactRef}. Repair and commit remain
- * approval-required tool definitions, so this adapter can only be reached after
- * Java has validated the user's confirmation and current project permissions.</p>
+ * <p>上传动作刻意不开放为 Agent 工具：浏览器先把文件上传到受控存储，模型只接收
+ * {@code artifactRef}。修复和正式提交仍属于需要审批的工具定义，只有 Java 已校验用户确认、当前项目
+ * 权限和工具参数后，本适配器才会被调用。</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -173,7 +172,17 @@ public class SyncTaskImportArtifactToolAdapter implements AgentToolAdapter {
                 .uri(uri)
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
+                .headers(headers -> {
+                    httpSupport.applyUserDelegationHeaders(headers, context);
+                    if (AI_RUNTIME_SERVICE.equals(service)) {
+                        /*
+                         * Java 直连 Python RAG 时，用户委托 Header 只说明“代表谁查询”，不能证明调用进程
+                         * 身份。内部服务令牌负责证明 agent-runtime，internal 分级则明确约束外部模型外发。
+                         */
+                        httpSupport.applyPythonRuntimeInternalServiceToken(headers);
+                        httpSupport.applyInternalRagSensitivity(headers);
+                    }
+                })
                 .body(body)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {
@@ -211,8 +220,7 @@ public class SyncTaskImportArtifactToolAdapter implements AgentToolAdapter {
     }
 
     /**
-     * Resolve a server-created output reference while still accepting the literal
-     * artifact reference supplied by the browser on the first dry-run.
+     * 解析服务端生成的工具输出引用；首次 dry-run 仍接受浏览器上传后得到的字面制品引用。
      */
     private String resolvedText(AgentToolExecutionContext context,
                                 Object candidate,
@@ -225,7 +233,7 @@ public class SyncTaskImportArtifactToolAdapter implements AgentToolAdapter {
         return requiredText(value, message);
     }
 
-    /** Resolve a derived numeric value such as the immutable artifact version. */
+    /** 解析不可变制品版本等由前序工具派生的正整数。 */
     private int resolvedPositiveInteger(AgentToolExecutionContext context,
                                         Object candidate,
                                         String defaultTool,

@@ -11,6 +11,7 @@ from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceSe
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.rag.knowledge_base import RagHybridRetriever
+from datasmart_ai_runtime.services.rag.graph_rag import GraphRagProvider
 from datasmart_ai_runtime.services.rag.models import RagChunkSourceType, RagDocument
 from datasmart_ai_runtime.services.rag.pipeline import RagPipeline
 from datasmart_ai_runtime.services.rag.reranker_provider import (
@@ -35,6 +36,7 @@ def build_default_governance_rag_pipeline(
     reranker: RagReranker | None = None,
     knowledge_base_settings: RagKnowledgeBaseSettings | None = None,
     connection_factory: RagPostgresConnectionFactory | None = None,
+    graph_rag_provider: GraphRagProvider | None = None,
 ) -> RagPipeline:
     """构建默认治理 RAG 管线。
 
@@ -61,6 +63,7 @@ def build_default_governance_rag_pipeline(
         model_routes=model_routes,
         model_gateway=model_gateway,
         model_providers=model_providers,
+        graph_rag_provider=graph_rag_provider,
     )
 
 

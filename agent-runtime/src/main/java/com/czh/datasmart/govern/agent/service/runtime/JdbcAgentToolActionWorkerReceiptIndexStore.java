@@ -33,7 +33,7 @@ import java.util.List;
 @Component
 @ConditionalOnExpression(
         "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
-                + ".isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}') "
+                + ".isPostgresqlDurable('${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActionWorkerReceiptIndexStore {
@@ -182,7 +182,11 @@ public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActi
         appendEquals(sql, parameters, "run_id", query.runId());
         appendEquals(sql, parameters, "session_id", query.sessionId());
         appendToolCodeCompatibility(sql, parameters, query.toolCode());
-        sql.append(" ORDER BY COALESCE(replay_sequence, -1), consumed_at LIMIT ?");
+        /*
+         * PostgreSQL identity id 是 durable receipt 顺序。原始 replay_sequence 由单个 JVM projection 分配，
+         * 重启或多实例时可能重复，因此不能再参与恢复和 callback 的先后裁决。
+         */
+        sql.append(" ORDER BY id, consumed_at LIMIT ?");
         parameters.add(Math.min(query.normalizedLimit(), maxQueryLimit));
         return new SqlQuery(sql.toString(), List.copyOf(parameters));
     }

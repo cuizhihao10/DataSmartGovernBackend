@@ -61,6 +61,36 @@ Kafka、outbox、连接器版本、容量、脏数据和 DDL。生成器将展�
 旧版 188/308 指标只能作为历史对照，不能代表本轮 356/752 资产的当前分数；重新发布质量结论前必须使用
 新 Manifest 指纹完成词法与 BGE 全量评测。
 
+## 1.1 离线管线与线上模型的职责边界
+
+离线管线和 Embedding/Reranker 不是二选一的两套 RAG。它们处在同一条链路的不同位置：
+
+| 阶段 | 主要执行方式 | 解决的问题 | 是否作为线上质量主指标 |
+| --- | --- | --- | --- |
+| 文档摄取 | 离线或增量后台任务解析 Markdown、DOCX、XLSX、日志、JSON 等，切块并生成文档向量 | 把原始资料变成可检索索引，保存来源、范围、时间和版本 | 否，主要看摄取成功率、索引完整性和向量一致性 |
+| 查询召回 | 线上请求生成 query embedding，并在 pgvector/全文索引中做范围过滤后的混合召回 | 找到“可能相关”的候选，优先保证相关文档不漏掉 | 是，重点看 Recall@K、候选覆盖率、范围泄漏率 |
+| 精排 | 线上把有界候选窗口交给 `BAAI/bge-reranker-v2-m3` | 在相似候选中判断哪份证据最适合回答当前问题 | 是，重点看 MRR、nDCG、引用精确率和单用例通过率 |
+| 证据治理 | 线上确定性门禁、时效/来源校验、去重、拒答和引用绑定 | 防止模型拿弱证据或越权/过期证据生成答案 | 是，范围泄漏必须为 0，拒答和禁止文档门禁必须通过 |
+| 回归评测 | 离线固定黄金集，分别运行 lexical、Reranker 消融和 Embedding+Reranker 档位 | 比较算法版本、模型版本、chunk/阈值和索引版本是否退化 | 是发布前门禁，但不把离线词法分数冒充线上模型分数 |
+
+实际生产中最常见的形态是“离线建立索引，线上查询和重排”：文档向量可以在摄取时批量生成并持久化，
+但用户问题的向量必须在请求时生成；Reranker 通常也在请求时对当前候选重排。只有固定 FAQ、批处理报表等
+场景才会把答案或重排结果预计算。DataSmart 的数据同步、事故恢复和运维问答都依赖实时范围、最新配置、
+错误日志和权限事实，因此不能只依赖离线预计算结果。
+
+因此当前真正需要优化的线上指标优先级是：
+
+1. 先提高 Embedding/混合召回的 `Recall@K` 和候选覆盖率，避免目标资料根本没有进入 Reranker；
+2. 再提高 Reranker 的 `MRR`、`nDCG@K` 和多证据排序，减少相似事故、成功案例和泛化手册互相串线；
+3. 同时提高最终引用精确率、引用召回率、拒答 F1 和单用例通过率，不能只看“目标文档曾经被召回”；
+4. 最后验证 p50/p95、吞吐、429/5xx/超时恢复和费用，确保模型质量提升没有破坏无人值守恢复的时延预算；
+5. 全部指标都必须按租户/项目、问题类型、来源格式和是否多证据分层，不能让容易的精确码用例掩盖自然问法退化。
+
+离线词法结果仍然不可省略：它是没有外部 Provider 时的可重复安全基线，用来守住范围隔离、拒答、过期
+证据抑制、引用来源和算法回归；但它只能回答“基础管线有没有退化”，不能回答“BGE-M3 和 Reranker 在生产
+语义检索上是否达标”。发布报告必须明确写出 `lexical`、`siliconflow-rerank` 和 `siliconflow` 档位，
+并在同一 Manifest 指纹、同一黄金集和同一门禁下比较。
+
 ## 2. 完整性校验
 
 ```powershell
@@ -126,6 +156,38 @@ Reranker 输入和最终引用三个阶段，因此比只检查最终引用更�
 替代检索、引用和拒答指标。
 
 ## 4. SiliconFlow 配置
+
+### 4.1 真实外发窗口与多证据路由
+
+评测中的 ``candidateLimit`` 是召回器的上限，不能直接等同于 Reranker 真正阅读的文档数。远端
+Provider 还受 ``DATASMART_RAG_RERANK_MAX_DOCUMENTS`` 约束；管线会在调用 Reranker 前调用同一个
+``prepare_candidates`` 协议，并把返回值同时用于：
+
+1. 发送到 ``/v1/rerank`` 的 ``documents`` 数组；
+2. 低敏报告的 ``rerankerInputDocumentIds``；
+3. 后续证据门禁、引用和单用例评测。
+
+对于“接口追踪、Recovery 事件、分片 replay、最终验证”这类明确要求多个互补证据面的查询，Provider
+会在已经通过租户/项目/工作区过滤、且已经被召回的候选中保留 facet 代表，再按融合排序补齐到上限。
+这是一种有界的运行时 fan-out：不会重新扫描知识库、扩大权限范围、绕过 ``sourceStatus``/时效过滤，
+也不会把候选总数扩到供应商上限之外。单一事实查询仍保持原始候选顺序，精确资料码仍优先。
+
+因此重现多文档窗口问题时应显式固定上限，例如：
+
+```powershell
+$env:SILICONFLOW_API_KEY = Read-Host "SiliconFlow API Key" -MaskInput
+$env:DATASMART_RAG_RERANK_MAX_DOCUMENTS = "16"
+python -B scripts/rag-evaluation.py `
+  --profile siliconflow `
+  --case-type cross_format_multi_document `
+  --embedding-cache "$env:TEMP/datasmart-rag-bge-cache.sqlite" `
+  --report "$env:TEMP/datasmart-rag-cross-format-window.json"
+```
+
+报告的 ``runProfile`` 会保存 ``candidateLimitPolicy``、``rerankerMaxDocuments`` 和不含敏感信息的
+``retrievalParameters``。它不会保存 Endpoint、API Key、问题正文、文档正文或供应商原始响应。比较两次
+指标前必须确认数据集指纹、模型名、候选策略和外发上限一致；否则只能把结果当作不同实验，不能宣称
+算法改动带来的收益。
 
 Embedding 使用：
 
@@ -270,3 +332,86 @@ Letter 页面、1 英寸页边距、文本提取和表格几何检查；300 张�
 6. 按 tenant/project 分层检查范围泄漏必须持续为零，并对模型、语料、chunk 参数和索引版本建立可比记录。
 
 使用 `--enforce-quality-gate` 后，任何门禁失败都会返回退出码 `2`，可直接接入 CI。
+
+## 2026-08-18 复测记录与当前解释
+
+本轮先完成离线算法回归，再用受控 Secret 调用远程 BGE。当前管线测试为 `45 passed`；五个运行时
+RAG/Embedding/Persistence 测试文件与评测资产合同合计 `103 passed`，`compileall` 和 `git diff --check` 通过；
+Python Runtime 全测试目录本轮为 `1263 passed, 1 skipped`。
+
+运行时新增的意图先验不是黄金答案表，也不包含任何文档 ID。它把“成功任务参数、字段映射、Worker 日志、API 合同、
+Recovery 决策、限流事故”等自然表达映射到 Manifest 的职责 `category`，只作为很小的排序修正；权限范围、来源状态、
+词法/向量证据和 Reranker 门槛仍然优先。多证据选择先按 facet 做集合覆盖；某 facet 已有
+`intentScore >= 0.85` 的明确职责候选时，通用资料不能只凭整句词法重合宣告该 facet 已覆盖。facet 文本负责激活职责，
+整句上下文只在 Recovery 职责内部区分 replay 案例和事件流水。所有候选都必须先通过上游门禁，且不会为了填满
+`topK` 被强行引用。
+
+拒答用例曾被“规则的”这类中文 n-gram 边界碎片误放行。本轮在生成拒答锚点前移除固定治理泛词，只保留未知实体和
+稳定字段/错误码；因此“火星冷链、量子账本、海岛传感器”等知识库外实体能够触发更高的无锚点门槛，而“当前阈值、
+普通规则”不会单独构成答案依据。对 facet 来说，两个以上独立两字业务词可以联合证明主题，避免“授权事实”被错误拒绝。
+
+本轮可复现的离线子集结果如下。报告文件位于本机临时目录，不进入仓库：
+
+| 命令筛选 | 用例 | 关键结果 | 门禁 |
+| --- | ---: | --- | --- |
+| `multi_document` | 12 | Recall/MRR=`1.0/1.0`，nDCG=`0.889327`，引用精确率/召回率=`1.0/1.0`，通过 `12/12` | 通过 |
+| `cross-format-multi-global-*` | 12 | Recall/MRR=`1.0/1.0`，nDCG=`0.876666`，引用精确率/召回率=`1.0/1.0`，通过 `12/12` | 通过 |
+| 代表性跨格式用例 | 5 | Recall/MRR=`1.0/1.0`，nDCG=`0.866204`，引用精确率/召回率=`1.0/1.0`，通过 `5/5` | 通过 |
+| `no_answer` | 12 | 拒答 Precision/Recall/F1=`1.0/1.0/1.0`，通过 `12/12` | 通过 |
+| `stale_conflict` | 12 | Recall/MRR/nDCG/引用指标=`1.0`，过期抑制=`1.0`，通过 `12/12` | 通过 |
+| `history_lookup` | 16 | Recall/MRR/nDCG/引用指标=`1.0`，通过 `16/16` | 通过 |
+| `cross_scope_refusal` | 28 | 范围泄漏=`0`，拒答 F1=`1.0`，通过 `28/28` | 通过 |
+| `exact_error_code` | 80 | Recall/MRR/nDCG/引用指标=`1.0`，通过 `80/80` | 通过 |
+
+`multi_document` 在此前一次过宽补充阶段出现过额外引用；收窄 Checkpoint 意图、增加职责门禁并传递生命周期上下文后，
+当前跨格式全局集和代表集的引用精确率/召回率均为 `1.0`。这说明评测必须同时看 Recall、Citation Precision、Citation
+Recall 和单用例通过率，不能只看“目标文档是否曾出现在候选窗口”。
+
+2026-08-18 已完成一次真实 SiliconFlow smoke。密钥通过当前 PowerShell 进程的隐藏输入转为环境变量，
+没有写入仓库、命令行参数、报告或 Git，评测结束后立即移除。当前 356 份文档、752 条黄金集的同一数据集
+指纹上，`siliconflow` 档位实际标记并调用 `BAAI/bge-m3` Embedding 和 `BAAI/bge-reranker-v2-m3` Reranker；
+20 条 `cross_format_semantic` 用例执行错误数为 0，结果如下：
+
+| 指标 | 当前 20 条 smoke |
+| --- | ---: |
+| Recall@K / MRR / nDCG@K | `1.000000 / 1.000000 / 1.000000` |
+| 引用精确率 / 引用召回率 | `1.000000 / 1.000000` |
+| 范围泄漏率 | `0.000000` |
+| 禁止文档通过率 / 过期抑制率 | `1.000000 / 1.000000` |
+| 单用例通过率 | `1.000000`（20/20） |
+| p50 / p95 | `3760 ms / 17363 ms` |
+
+另一个包含告警历史、连接器清单、可观测性手册和 Schema 恢复手册的 4 条职责聚焦集也为 `4/4`，
+所有核心检索和引用指标为 `1.0`。这已经证明当前实现不是“只做离线”：查询向量和候选重排都实际经过远程
+模型；但 20 条 smoke 不能替代 752 条全量、真实 PostgreSQL/pgvector、并发容量和生产稳定性验收。报告位于
+本机临时目录，不纳入仓库；Embedding SQLite 缓存同样位于仓库外。
+
+下一轮应在同一 Manifest 指纹上执行完整 `siliconflow`，并单独保存 embedding cache、模型名、数据集指纹、
+限流/重试统计和 p50/p95。若 Provider 不可达，应记录为环境失败，不能改写成代码失败或伪造通过。
+
+剩余发布项保持明确：当前离线子集通过不代表 356/752 全量门禁通过；仍需复跑全量词法与 BGE、在 PostgreSQL/pgvector
+上验证真实向量与 HNSW、执行并发/容量/429/超时/5xx 故障测试，并完成 Java Kafka、Recovery 和前端 API/WebSocket 的
+真实端到端合同验证。LibreOffice 页面渲染若本机未安装，仍记录为视觉 QA 环境阻塞，不影响 OOXML/提取文本合同结果。
+
+## 2026-08-20 当前复核：自主路由已接入，质量门禁仍未通过
+
+当前运行时默认 `retrievalMode=auto`，由 Agent 路由模型在 `hybrid`、`graph` 和 `hybrid_graph` 之间选择；没有
+模型决策、模型输出非法或 GraphRAG 能力未装配时，系统记录受控兜底原因并保持 fail-closed。前端 `/agent/rag/query`
+调用已显式提交 `retrievalMode=auto`，并能读取 `decisionMode`、`decisionSource`、`graphPath` 和 `graphCitations`。
+
+本轮代码修改后的后端聚焦回归为 `127 passed`，前端 `build`、`lint`、API adapter contract 和 Agent control-plane
+contract 均通过。新增的职责候选保护只会从已经通过 scope/source 过滤的候选中选一个文档代表，不能凭资料 category
+扩大检索范围；因此它解决的是“目标已召回但未进入 BGE Reranker 窗口”的结构性损失，而不是把黄金集答案写进代码。
+
+最近一份可用的 356 文档、752 用例真实 BGE 报告（Embedding=`BAAI/bge-m3`，Reranker=`BAAI/bge-reranker-v2-m3`）
+指标仍为：Recall@K `0.735019`、MRR `0.740403`、nDCG `0.729877`、引用精确率 `0.725070`、引用召回率
+`0.735019`、拒答 F1 `0.824742`、单用例通过率 `0.710106`、执行错误 `0`。因此当前结论仍是“实现已继续优化，
+但 RAG 生产质量门禁未完成”，不能把单元测试或 20 条 smoke 当作全量达标。
+
+本机当前 PowerShell 进程未发现 `SILICONFLOW_API_KEY`、`DATASMART_RAG_EMBEDDING_API_KEY` 或
+`DATASMART_RAG_RERANK_API_KEY` 环境变量。真实全量复测必须由 Secret Manager 或当前进程临时注入这些变量；脚本
+不会从命令行读取密钥，也不会把密钥写入报告、缓存、仓库或日志。缺少变量时属于环境阻塞，不计作模型或代码执行错误。
+
+下一轮真实评测应固定同一 Manifest 指纹，重新保存独立的 Embedding 缓存和报告，并重点对比：目标文档是否进入
+Reranker 输入窗口、职责候选是否通过 evidence gate、多文档 facet 是否完整、引用是否多余，以及 p50/p95 是否受
+候选窗口保护影响。只有全量报告达到质量门禁，才能更新本文档为“RAG 优化完成”。

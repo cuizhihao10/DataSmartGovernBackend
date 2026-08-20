@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.agent.config.AgentRagCommandWorkerClientProperti
 import com.czh.datasmart.govern.agent.config.AgentWorkspaceTextSearchWorkerProperties;
 import com.czh.datasmart.govern.agent.config.AgentCommandSafetyPrecheckProperties;
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import com.czh.datasmart.govern.agent.config.AgentCommandTaskFinalStateCallbackWorkerProperties;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeEventConsumerProperties;
 import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
@@ -50,6 +51,7 @@ import org.springframework.kafka.annotation.EnableKafkaRetryTopic;
         AgentToolServiceAuthorizationProperties.class,
         AgentToolActionResumeFactBundleProperties.class,
         AgentAsyncTaskCommandOutboxProperties.class,
+        AgentCommandTaskFinalStateCallbackWorkerProperties.class,
         AgentRunToolDagConfirmationProperties.class,
         AgentToolExecutionEventProperties.class,
         AgentToolExecutionEventOutboxProperties.class,

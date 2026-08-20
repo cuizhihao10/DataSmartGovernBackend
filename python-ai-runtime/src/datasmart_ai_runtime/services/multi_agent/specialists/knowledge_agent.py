@@ -280,6 +280,9 @@ class KnowledgeSpecialistAgent:
             actor_id=request.scope.actor_id,
             question=question,
             workspace_key="*",
+            # 知识专业 Agent 使用 auto，让受治理模型判断普通文档、GraphRAG 或联合证据路径；
+            # Recovery 等需要强制特定检索合同的调用方仍可显式传入 lexical/graph。
+            retrieval_mode="auto",
             generate_answer=True,
             trace_id=trace_id,
             session_id=request.session_id,

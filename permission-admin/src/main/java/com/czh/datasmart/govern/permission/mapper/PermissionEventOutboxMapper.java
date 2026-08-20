@@ -45,6 +45,21 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
     List<PermissionEventOutbox> selectDispatchable(@Param("batchSize") int batchSize);
 
     /**
+     * 只查询图事实审批事件，避免图事实 dispatcher 误抢权限策略事件。
+     */
+    @Select("""
+            SELECT *
+            FROM permission_event_outbox
+            WHERE event_type = 'GRAPH_FACTS_APPROVED'
+              AND status IN ('PENDING', 'FAILED')
+              AND attempt_count < max_attempts
+              AND (next_retry_time IS NULL OR next_retry_time <= CURRENT_TIMESTAMP)
+            ORDER BY create_time ASC
+            LIMIT #{batchSize}
+            """)
+    List<PermissionEventOutbox> selectGraphFactDispatchable(@Param("batchSize") int batchSize);
+
+    /**
      * 尝试声明某条事件的发送权。
      *
      * <p>只有 PENDING/FAILED 状态能进入 SENDING。

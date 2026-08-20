@@ -61,6 +61,50 @@ class RagCommandWorkerApiTest(unittest.TestCase):
         self.assertEqual("rag-query:sha256:explicitqueryref", request.query_ref)
         self.assertFalse(request.generate_answer)
 
+    def test_request_builder_cannot_downgrade_control_fact_sensitivity(self) -> None:
+        """顶层或 arguments 的自报分级不能覆盖 Java 控制面分级。"""
+
+        request = rag_command_worker_request_from_payload(
+            {
+                "sensitivityLevel": "public",
+                "arguments": {
+                    "question": "查询受限故障日志",
+                    "sensitivityLevel": "public",
+                },
+                "controlFacts": {
+                    "commandId": "taoc_rag_worker_sensitivity_001",
+                    "runId": "run-rag-worker-sensitivity",
+                    "sessionId": "session-rag-worker-sensitivity",
+                    "tenantId": "10",
+                    "projectId": "20",
+                    "actorId": "30",
+                    "sensitivityLevel": "confidential",
+                },
+            }
+        )
+
+        self.assertEqual("confidential", request.sensitivity_level)
+
+    def test_request_builder_defaults_to_restricted_without_control_fact(self) -> None:
+        """旧 command 没有可信分级时必须选择保守默认值。"""
+
+        request = rag_command_worker_request_from_payload(
+            {
+                "sensitivityLevel": "public",
+                "arguments": {
+                    "question": "查询公开说明",
+                    "sensitivityLevel": "public",
+                },
+                "controlFacts": {
+                    "commandId": "taoc_rag_worker_sensitivity_002",
+                    "runId": "run-rag-worker-sensitivity-2",
+                    "sessionId": "session-rag-worker-sensitivity-2",
+                },
+            }
+        )
+
+        self.assertEqual("restricted", request.sensitivity_level)
+
     def test_internal_route_executes_rag_and_returns_only_low_sensitive_worker_result(self) -> None:
         """内部 worker route 应执行 RAG，但响应不能返回 question、answer 或 evidence 正文。"""
 

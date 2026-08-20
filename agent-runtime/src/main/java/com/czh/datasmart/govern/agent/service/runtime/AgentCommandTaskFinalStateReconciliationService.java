@@ -235,7 +235,6 @@ public class AgentCommandTaskFinalStateReconciliationService {
 
     private List<String> missingCapabilities() {
         return List.of(
-                "AUTOMATED_FINAL_STATE_CALLBACK_WORKER_WITH_IDEMPOTENCY_TABLE",
                 "TASK_MANAGEMENT_DURABLE_FINAL_STATE_RECONCILIATION_HISTORY",
                 "QUEUE_VISIBILITY_TIMEOUT_AND_WORKER_HEARTBEAT_ALIGNMENT",
                 "BUSINESS_COMPENSATION_POLICY_BY_TOOL_TYPE"

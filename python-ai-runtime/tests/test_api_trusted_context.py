@@ -27,6 +27,29 @@ from datasmart_ai_runtime.api.gateway.trusted_context import (
 class ApiTrustedContextTest(unittest.TestCase):
     """Python API 边界可信事实装配测试。"""
 
+    def test_java_python_gateway_signature_fixed_vector_is_stable(self) -> None:
+        """固定向量必须与 Java gateway 完全一致，避免双端 Header 顺序静默漂移。"""
+
+        headers = {
+            "X-DataSmart-Source-Service": "datasmart-govern-gateway",
+            "X-DataSmart-Trace-Id": "trace-001",
+            "X-DataSmart-Tenant-Id": "10",
+            "X-DataSmart-Application-Id": "10010",
+            "X-DataSmart-Project-Id": "20",
+            "X-DataSmart-Actor-Id": "1001",
+        }
+
+        self.assertEqual(
+            "klJuOvLHb-PydGFyjStf2PwQ3Gy6ID80z-cClQ2iJkg",
+            sign_gateway_payload(
+                headers,
+                timestamp="1800000000000",
+                nonce="nonce-001",
+                key_id="gateway-local-v1",
+                secret="secret-for-test",
+            ),
+        )
+
     def test_runtime_event_context_comes_from_signed_headers(self) -> None:
         """Event subscription identity must come from the signed Gateway snapshot."""
 
@@ -144,6 +167,93 @@ class ApiTrustedContextTest(unittest.TestCase):
         self.assertEqual("trace-001", payload["traceId"])
         self.assertEqual("如何恢复失败同步？", payload["question"])
         self.assertNotIn("trustedControlPlane", str(payload))
+
+    def test_rag_body_sensitivity_cannot_downgrade_signed_gateway_default(self) -> None:
+        """请求体自报 public 不能把没有可信分级的 gateway 请求降级。"""
+
+        headers = self._signed_headers(original_path="/api/agent/rag/query")
+        payload = enrich_rag_query_payload_from_trusted_headers(
+            {
+                "question": "查询受限故障日志",
+                "sensitivityLevel": "public",
+                "sensitivity_level": "public",
+            },
+            headers,
+            signature_config=GatewaySignatureVerificationConfig(
+                required=True,
+                secret="secret-for-test",
+            ),
+            now_ms=1_800_000_000_100,
+        )
+
+        self.assertEqual("internal", payload["sensitivityLevel"])
+        self.assertNotIn("sensitivity_level", payload)
+
+    def test_signed_gateway_sensitivity_is_used_and_unknown_value_fails_closed(self) -> None:
+        """只有纳入 HMAC 的合法分级才会生效，未知分级按 restricted 处理。"""
+
+        headers = self._signed_headers(
+            original_path="/api/agent/rag/query",
+            sensitivity_level="confidential",
+        )
+        payload = enrich_rag_query_payload_from_trusted_headers(
+            {"question": "查询历史事故", "sensitivityLevel": "public"},
+            headers,
+            signature_config=GatewaySignatureVerificationConfig(
+                required=True,
+                secret="secret-for-test",
+            ),
+            now_ms=1_800_000_000_100,
+        )
+        self.assertEqual("confidential", payload["sensitivityLevel"])
+
+        unknown_headers = self._signed_headers(
+            original_path="/api/agent/rag/query",
+            sensitivity_level="not-a-real-level",
+        )
+        unknown_payload = enrich_rag_query_payload_from_trusted_headers(
+            {"question": "查询历史事故", "sensitivityLevel": "public"},
+            unknown_headers,
+            signature_config=GatewaySignatureVerificationConfig(
+                required=True,
+                secret="secret-for-test",
+            ),
+            now_ms=1_800_000_000_100,
+        )
+        self.assertEqual("restricted", unknown_payload["sensitivityLevel"])
+
+    def test_untrusted_rag_source_always_uses_restricted_sensitivity(self) -> None:
+        """没有 gateway 或内部服务凭证时，任何正文分级都只能按 restricted 处理。"""
+
+        payload = enrich_rag_query_payload_from_trusted_headers(
+            {"question": "查询公开说明", "sensitivityLevel": "public"},
+            {},
+            signature_config=GatewaySignatureVerificationConfig(required=False),
+        )
+
+        self.assertEqual("restricted", payload["sensitivityLevel"])
+
+    def test_agent_runtime_sensitivity_uses_header_not_body(self) -> None:
+        """Agent Runtime 内部凭证通过后，分级仍只能来自受信 Header。"""
+
+        headers = {
+            "X-DataSmart-Source-Service": "agent-runtime",
+            "X-DataSmart-Internal-Service-Token": "service-token",
+            "X-DataSmart-Tenant-Id": "10",
+            "X-DataSmart-Application-Id": "10010",
+            "X-DataSmart-Project-Id": "20",
+            "X-DataSmart-Authorized-Project-Ids": "20",
+            "X-DataSmart-Actor-Id": "1001",
+            "X-DataSmart-Workspace-Id": "workspace-a",
+            "X-DataSmart-Rag-Sensitivity-Level": "confidential",
+        }
+        payload = enrich_rag_query_payload_from_trusted_headers(
+            {"question": "查询内部日志", "sensitivityLevel": "public"},
+            headers,
+            internal_service_token="service-token",
+        )
+
+        self.assertEqual("confidential", payload["sensitivityLevel"])
 
     def test_rag_gateway_request_without_signature_fails_closed(self) -> None:
         """生产 RAG 入口不能把只有 source-service 的请求升级成可信项目上下文。"""
@@ -480,6 +590,7 @@ class ApiTrustedContextTest(unittest.TestCase):
         *,
         timestamp: str = "1800000000000",
         original_path: str = "/api/agent/plans",
+        sensitivity_level: str | None = None,
     ) -> dict[str, str]:
         """构造与 Java gateway 签名协议一致的测试 Header。"""
 
@@ -506,6 +617,8 @@ class ApiTrustedContextTest(unittest.TestCase):
             GATEWAY_SIGNATURE_NONCE: "nonce-001",
             GATEWAY_SIGNATURE_KEY_ID: "gateway-local-v1",
         }
+        if sensitivity_level is not None:
+            headers["X-DataSmart-Rag-Sensitivity-Level"] = sensitivity_level
         headers[GATEWAY_SIGNATURE] = sign_gateway_payload(
             headers,
             timestamp=timestamp,

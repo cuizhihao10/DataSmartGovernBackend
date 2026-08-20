@@ -22,8 +22,9 @@ import java.util.List;
  * Store 负责仓储语义、查询范围收口、异常包装和可替换边界；Mapper 只负责 SQL 字段清单、
  * 插入/刷新参数绑定、动态查询参数绑定和 ResultSet 还原。</p>
  *
- * <p>安全边界必须非常清晰：本 mapper 只处理 commandId、租户/项目/actor、run/session、toolCode、
- * taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、replaySequence 和时间戳。
+ * <p>安全边界必须非常清晰：本 mapper 只处理 commandId、taskId/taskRunId/executorId/auditId 等低敏关联键、
+ * 租户/项目/actor、run/session、toolCode、taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、
+ * replaySequence 和时间戳。
  * 它没有任何 JSON payload 字段，也不会保存 prompt、SQL、工具参数值、样本数据、模型输出、凭证、
  * token、内部 endpoint 或工具结果正文。worker receipt 是恢复前的宿主事实，不是第二份敏感上下文缓存。</p>
  */
@@ -33,12 +34,15 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
      * worker receipt 查询统一字段清单。
      *
      * <p>所有查询方法都复用这一份字段清单，避免 INSERT/UPSERT 与 SELECT 字段漂移。
-     * 表内自增 id 不进入领域模型，因为恢复事实包只关心低敏业务定位符和最新状态，不关心数据库行号。</p>
+     * 表内自增 id 通过别名进入 {@code replaySequence}：memory 模式可以使用 JVM 投影顺序，但 JDBC 模式必须使用
+     * PostgreSQL identity 才能在重启和多实例间保持单调稳定。表内原始 replay_sequence 仍作为生产者诊断字段保存，
+     * 查询和 callback 幂等决策不再依赖它。</p>
      */
     static final String SELECT_COLUMNS = """
-            event_identity_key, command_id, tenant_id, project_id, actor_id,
+            event_identity_key, command_id, task_id, task_run_id, executor_id, audit_id,
+            tenant_id, project_id, actor_id,
             run_id, session_id, tool_code, task_status, outcome,
-            pre_check_passed, side_effect_executed, error_code, replay_sequence,
+            pre_check_passed, side_effect_executed, error_code, id AS replay_sequence,
             consumed_at, indexed_at
             """;
 
@@ -53,15 +57,16 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
      */
     static final String INSERT_SQL = """
             INSERT INTO agent_tool_action_worker_receipt_index (
-                event_identity_key, command_id, tenant_id, project_id, actor_id,
+                event_identity_key, command_id, task_id, task_run_id, executor_id, audit_id,
+                tenant_id, project_id, actor_id,
                 run_id, session_id, tool_code, task_status, outcome,
                 pre_check_passed, side_effect_executed, error_code, replay_sequence,
                 consumed_at, indexed_at
             ) VALUES (
+                ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?
+                ?, ?, ?, ?
             )
             ON CONFLICT (event_identity_key) DO NOTHING
             """;
@@ -78,6 +83,10 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
     static final String UPDATE_SQL = """
             UPDATE agent_tool_action_worker_receipt_index SET
                 command_id = ?,
+                task_id = ?,
+                task_run_id = ?,
+                executor_id = ?,
+                audit_id = ?,
                 tenant_id = ?,
                 project_id = ?,
                 actor_id = ?,
@@ -110,6 +119,10 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
         int index = 1;
         setNullableString(statement, index++, truncate(record.eventIdentityKey(), 240));
         setNullableString(statement, index++, truncate(record.commandId(), 180));
+        setNullableLong(statement, index++, record.taskId());
+        setNullableLong(statement, index++, record.taskRunId());
+        setNullableString(statement, index++, truncate(record.executorId(), 160));
+        setNullableString(statement, index++, truncate(record.auditId(), 200));
         setNullableString(statement, index++, truncate(record.tenantId(), 80));
         setNullableString(statement, index++, truncate(record.projectId(), 80));
         setNullableString(statement, index++, truncate(record.actorId(), 120));
@@ -137,6 +150,10 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
                                  AgentToolActionWorkerReceiptIndexRecord record) throws SQLException {
         int index = 1;
         setNullableString(statement, index++, truncate(record.commandId(), 180));
+        setNullableLong(statement, index++, record.taskId());
+        setNullableLong(statement, index++, record.taskRunId());
+        setNullableString(statement, index++, truncate(record.executorId(), 160));
+        setNullableString(statement, index++, truncate(record.auditId(), 200));
         setNullableString(statement, index++, truncate(record.tenantId(), 80));
         setNullableString(statement, index++, truncate(record.projectId(), 80));
         setNullableString(statement, index++, truncate(record.actorId(), 120));
@@ -164,6 +181,10 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
         return new AgentToolActionWorkerReceiptIndexRecord(
                 resultSet.getString("event_identity_key"),
                 resultSet.getString("command_id"),
+                nullableLong(resultSet, "task_id"),
+                nullableLong(resultSet, "task_run_id"),
+                resultSet.getString("executor_id"),
+                resultSet.getString("audit_id"),
                 resultSet.getString("tenant_id"),
                 resultSet.getString("project_id"),
                 resultSet.getString("actor_id"),

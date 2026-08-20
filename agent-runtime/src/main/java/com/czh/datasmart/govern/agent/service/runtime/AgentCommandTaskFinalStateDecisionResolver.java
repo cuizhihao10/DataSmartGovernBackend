@@ -32,6 +32,8 @@ class AgentCommandTaskFinalStateDecisionResolver {
             case "WORKER_PRECHECK_PASSED" -> workerPrecheckPassed(latest);
             case "CAPACITY_LIMITED" -> capacityLimited(latest);
             case "DRY_RUN_PASSED" -> dryRunPassed(latest);
+            case "AUTO_APPROVED" -> autoApprovedNotExecuted(latest);
+            case "PUBLISHED" -> publishedNotExecuted(latest);
             default -> unknownOutcome(latest, outcome);
         };
     }
@@ -191,6 +193,51 @@ class AgentCommandTaskFinalStateDecisionResolver {
                 evidence(latest, "FINAL_STATE_RECEIPT_DRY_RUN_ONLY"),
                 issues,
                 List.of("继续等待真实 command worker receipt。", "确认 outbox dispatcher 与 worker 是否已经领取命令。")
+        );
+    }
+
+    /**
+     * 审批自动通过只说明治理前提已满足，绝不能替代 worker 的真实副作用执行回执。
+     *
+     * <p>把这个 outcome 显式列出来而不是落入 unknown 分支，是为了让自动 callback worker、运维台和后续规则扩展
+     * 都能一眼看出：AUTO_APPROVED 不是成功终态，不能发送 SUCCEEDED callback。</p>
+     */
+    private AgentCommandTaskFinalStateDecision autoApprovedNotExecuted(AgentToolActionWorkerReceiptIndexRecord latest) {
+        return decision(
+                "WAITING_REAL_WORKER_RECEIPT",
+                "RUNNING",
+                false,
+                false,
+                false,
+                true,
+                null,
+                "命令已获得自动审批，但尚未收到真实 worker 执行 receipt，不能推进任务成功。",
+                null,
+                null,
+                evidence(latest, "FINAL_STATE_RECEIPT_AUTO_APPROVED_ONLY"),
+                List.of("AUTO_APPROVED_IS_NOT_EXECUTION_SUCCESS"),
+                List.of("继续等待 EXECUTION_SUCCEEDED、EXECUTION_FAILED 或补偿 receipt。")
+        );
+    }
+
+    /**
+     * command outbox 已发布只表示下游接收通道已确认，执行器可能尚未领取、尚未完成或稍后失败。
+     */
+    private AgentCommandTaskFinalStateDecision publishedNotExecuted(AgentToolActionWorkerReceiptIndexRecord latest) {
+        return decision(
+                "WAITING_REAL_WORKER_RECEIPT",
+                "RUNNING",
+                false,
+                false,
+                false,
+                true,
+                null,
+                "命令 outbox 已发布，但尚未收到真实 worker 执行 receipt，不能推进任务成功。",
+                null,
+                null,
+                evidence(latest, "FINAL_STATE_RECEIPT_PUBLISHED_ONLY"),
+                List.of("OUTBOX_PUBLISHED_IS_NOT_EXECUTION_SUCCESS"),
+                List.of("继续等待真实 worker receipt，并检查下游消费与回执写回链路。")
         );
     }
 

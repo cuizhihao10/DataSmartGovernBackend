@@ -174,7 +174,7 @@ try {
             "build",
             "-f", "docker/runtime/python-ai-runtime.Dockerfile",
             "--build-arg", "PYTHON_IMAGE=$PythonImage",
-            "--build-arg", "PYTHON_RUNTIME_EXTRAS=api,rag,kafka,redis",
+            "--build-arg", "PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis",
             "-t", "datasmart/python-ai-runtime:local",
             "."
         )

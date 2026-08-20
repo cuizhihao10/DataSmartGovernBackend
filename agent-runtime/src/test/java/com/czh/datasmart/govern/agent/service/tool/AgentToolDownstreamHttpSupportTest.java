@@ -53,6 +53,19 @@ class AgentToolDownstreamHttpSupportTest {
                 () -> support.applyUserDelegationHeaders(new HttpHeaders(), context(null, "USER", "101:MANAGER")));
     }
 
+    /** RAG 分类由 Java 控制面选择，普通案例和故障恢复使用不同保护级别。 */
+    @Test
+    void shouldApplyGovernedRagSensitivityLevels() {
+        AgentToolDownstreamHttpSupport support = new AgentToolDownstreamHttpSupport(new AgentRuntimeProperties());
+        HttpHeaders headers = new HttpHeaders();
+
+        support.applyInternalRagSensitivity(headers);
+        assertEquals("internal", headers.getFirst(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL));
+
+        support.applyRestrictedRagSensitivity(headers);
+        assertEquals("restricted", headers.getFirst(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL));
+    }
+
     private AgentToolExecutionContext context(String actorRole, String actorType, String projectRoles) {
         AgentSessionRecord session = new AgentSessionRecord(
                 "session-delegation",

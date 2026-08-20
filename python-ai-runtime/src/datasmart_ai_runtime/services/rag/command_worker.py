@@ -89,6 +89,8 @@ class RagCommandWorkerRunRequest:
     candidate_limit: int = 32
     max_context_chars: int = 4000
     generate_answer: bool = True
+    # 查询正文可能包含故障日志、字段名或配置片段；worker 必须把上游分类传给外部模型治理层。
+    sensitivity_level: str = "internal"
     trace_id: str | None = None
     langgraph_thread_id: str | None = None
     post_to_java: bool = False
@@ -256,6 +258,7 @@ class RagCommandWorkerRunner:
             candidate_limit=max(5, min(int(request.candidate_limit), 200)),
             max_context_chars=max(500, min(int(request.max_context_chars), 12000)),
             generate_answer=bool(request.generate_answer),
+            sensitivity_level=str(request.sensitivity_level or "internal").strip() or "internal",
             trace_id=request.trace_id,
             session_id=request.session_id,
         )

@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "datasmart.business-graph-snapshot.v1",
+  "snapshotId": "business-sync-demo-20260820",
+  "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+  "asOf": "2026-08-20T12:00:00Z",
+  "scope": {
+    "tenantId": "tenant-demo",
+    "applicationId": "app-flashsync",
+    "projectId": "project-orders"
+  },
+  "sourceStatus": "COMPLETE",
+  "applications": [
+    {"id": "app-flashsync", "name": "FlashSync"}
+  ],
+  "projects": [
+    {"id": "project-orders", "name": "订单同步项目", "applicationId": "app-flashsync"}
+  ],
+  "dataSources": [
+    {"id": "source-erp", "name": "ERP 源库", "projectId": "project-orders"},
+    {"id": "target-warehouse", "name": "数仓目标", "projectId": "project-orders"}
+  ],
+  "connectors": [
+    {"id": "connector-postgresql", "name": "PostgreSQL Connector", "version": "42.7"}
+  ],
+  "schemas": [
+    {"id": "erp-public", "name": "public", "dataSourceId": "source-erp"}
+  ],
+  "tables": [
+    {"id": "erp-orders", "name": "orders", "schemaId": "erp-public"}
+  ],
+  "fields": [
+    {"id": "erp-orders-customer-id", "name": "customer_id", "tableId": "erp-orders", "constraintId": "constraint-orders-customer-not-null"}
+  ],
+  "tasks": [
+    {
+      "id": "task-orders-sync",
+      "name": "订单同步",
+      "projectId": "project-orders",
+      "sourceDataSourceId": "source-erp",
+      "targetDataSourceId": "target-warehouse",
+      "sourceTableId": "erp-orders",
+      "successfulVersionId": "task-orders-sync-v7"
+    }
+  ],
+  "taskVersions": [
+    {"id": "task-orders-sync-v7", "name": "订单同步成功配置 v7", "taskId": "task-orders-sync"}
+  ],
+  "executions": [
+    {
+      "id": "execution-orders-20260820",
+      "name": "订单同步执行 2026-08-20",
+      "taskId": "task-orders-sync",
+      "errorId": "error-field-mapping-001",
+      "logId": "log-orders-execution-20260820"
+    }
+  ],
+  "errors": [
+    {
+      "id": "error-field-mapping-001",
+      "name": "字段映射错误",
+      "errorCode": "FIELD_MAPPING_INVALID",
+      "status": "active"
+    }
+  ],
+  "logs": [
+    {
+      "id": "log-orders-execution-20260820",
+      "name": "订单同步执行错误日志",
+      "executionId": "execution-orders-20260820",
+      "errorId": "error-field-mapping-001",
+      "errorCode": "FIELD_MAPPING_INVALID",
+      "traceId": "trace-orders-20260820"
+    }
+  ],
+  "runbooks": [
+    {
+      "id": "runbook-field-mapping",
+      "name": "字段映射错误处理手册",
+      "recommendedActions": ["REFRESH_METADATA"]
+    }
+  ],
+  "actions": [
+    {"id": "REFRESH_METADATA", "name": "刷新元数据"}
+  ],
+  "mappings": [
+    {
+      "id": "mapping-orders-customer-id",
+      "sourceFieldId": "erp-orders-customer-id",
+      "targetFieldId": "erp-orders-customer-id"
+    }
+  ],
+  "constraints": [
+    {
+      "id": "constraint-orders-customer-not-null",
+      "name": "customer_id NOT NULL",
+      "fieldId": "erp-orders-customer-id",
+      "constraintType": "NOT_NULL"
+    }
+  ],
+  "dependencies": []
+}

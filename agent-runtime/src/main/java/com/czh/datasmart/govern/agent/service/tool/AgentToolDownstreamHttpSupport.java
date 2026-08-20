@@ -168,6 +168,26 @@ public class AgentToolDownstreamHttpSupport {
     }
 
     /**
+     * 为普通内部知识、说明文档和成功案例检索声明 {@code internal} 分级。
+     *
+     * <p>分级必须由 Java 控制面固定选择，不能从模型参数或浏览器请求体复制。Python Runtime 会把该
+     * Header 与内部服务令牌一起视为可信证据，再决定是否允许正文进入外部 Embedding/Reranker。</p>
+     */
+    public void applyInternalRagSensitivity(HttpHeaders headers) {
+        headers.set(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, "internal");
+    }
+
+    /**
+     * 为故障日志、错误样本和自治恢复诊断声明 {@code restricted} 分级。
+     *
+     * <p>Recovery 问题可能包含表名、字段值、错误样本或连接信息。即使当前实现已经做过低敏摘要，
+     * 仍按 restricted 失败关闭；只有部署策略明确允许该级别时，外部模型 Provider 才能接收正文。</p>
+     */
+    public void applyRestrictedRagSensitivity(HttpHeaders headers) {
+        headers.set(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, "restricted");
+    }
+
+    /**
      * 为受保护的 Java/Python 或 Java/Java 内部控制面调用附加最小服务令牌。
      *
      * <p>Autopilot 会同时调用 Python 规划入口和 data-sync 内部 case API，两者复用同一个部署级

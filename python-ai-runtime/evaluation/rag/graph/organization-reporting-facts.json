@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "datasmart.graph-facts.v1",
+  "assetBoundary": "synthetic-only",
+  "description": "合成的组织汇报关系图事实；用于验证文档事实经审批后进入 Neo4j，并支持最多两跳关系查询。",
+  "documents": [
+    {
+      "documentId": "rag-graph-tenant-10-org-reporting-001",
+      "title": "组织汇报关系事实说明",
+      "content": "本合成事实说明：张三（别名小张、张工）向李四汇报，李四向王五汇报。关系来源按 chunk 分别记录。",
+      "sourceUri": "synthetic://datasmart-govern/rag-graph/tenant-10-project-101/org-reporting-001",
+      "tenantId": "tenant-10",
+      "projectId": "project-101",
+      "workspaceKey": "tenant-10-project-101",
+      "sourceType": "metadata",
+      "tags": ["graph-rag", "组织关系", "合成评测"],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "sourceStatus": "COMPLETE",
+        "sourceConfidence": 0.98,
+        "sourceConfidenceBasis": "SYNTHETIC_CURATED_APPROVED_GRAPH_FACT",
+        "graphIngestionApproval": {
+          "status": "APPROVED",
+          "approvalId": "synthetic-graph-approval-20260820-001",
+          "approvedBy": "synthetic-governance-fixture",
+          "approvedAt": "2026-08-20T00:00:00Z"
+        }
+      },
+      "graphEntities": [
+        {
+          "standardId": "person-tenant10-zhang-san",
+          "canonicalName": "张三",
+          "aliases": ["小张", "张工"]
+        },
+        {
+          "standardId": "person-tenant10-li-si",
+          "canonicalName": "李四",
+          "aliases": ["李经理"]
+        },
+        {
+          "standardId": "person-tenant10-wang-wu",
+          "canonicalName": "王五",
+          "aliases": ["王总"]
+        }
+      ],
+      "graphRelations": [
+        {
+          "sourceEntityId": "person-tenant10-zhang-san",
+          "targetEntityId": "person-tenant10-li-si",
+          "relation": "REPORTS_TO",
+          "sourceDocumentId": "rag-graph-tenant-10-org-reporting-001",
+          "sourceUri": "synthetic://datasmart-govern/rag-graph/tenant-10-project-101/org-reporting-001",
+          "sourceChunkId": "org-reporting-001-c1",
+          "assertedAt": "2026-08-20T00:00:00Z",
+          "effectiveAt": "2026-08-01T00:00:00Z",
+          "confidence": 0.94,
+          "status": "active"
+        },
+        {
+          "sourceEntityId": "person-tenant10-li-si",
+          "targetEntityId": "person-tenant10-wang-wu",
+          "relation": "REPORTS_TO",
+          "sourceDocumentId": "rag-graph-tenant-10-org-reporting-001",
+          "sourceUri": "synthetic://datasmart-govern/rag-graph/tenant-10-project-101/org-reporting-001",
+          "sourceChunkId": "org-reporting-001-c2",
+          "assertedAt": "2026-08-20T00:00:00Z",
+          "effectiveAt": "2026-08-01T00:00:00Z",
+          "confidence": 0.93,
+          "status": "active"
+        }
+      ]
+    }
+  ]
+}

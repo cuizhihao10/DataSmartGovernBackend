@@ -44,6 +44,20 @@ public final class AgentRuntimeStoreMode {
     }
 
     /**
+     * 判断某个 store 是否明确使用 PostgreSQL durable 实现。
+     *
+     * <p>历史 {@code mysql} 别名仍被通用过渡仓储识别，但 Agent receipt 和最终 callback 使用
+     * PostgreSQL 专用 {@code ON CONFLICT}、Flyway 路径及时间类型，不能因为兼容别名命中就装配到
+     * MySQL。专用 Bean 条件必须调用本方法，避免应用启动成功后才在 SQL 方言处失败。</p>
+     */
+    public static boolean isPostgresqlDurable(String store) {
+        String normalized = normalize(store);
+        return "postgresql".equals(normalized)
+                || "postgres".equals(normalized)
+                || "jdbc".equals(normalized);
+    }
+
+    /**
      * 判断某个 store 配置是否为 memory。
      *
      * <p>该方法主要用于注释和测试表达完整语义；当前大多数 memory Bean 仍直接使用 Spring 条件判断

@@ -254,7 +254,16 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 "nonce-001",
                 "gateway-local-v1",
                 "secret-for-test"
-        )).isEqualTo("EzM3TuiRxWjjTmbv0iEhqdYkVTZPFRmLpVh3P0wPlbQ");
+        )).isEqualTo("klJuOvLHb-PydGFyjStf2PwQ3Gy6ID80z-cClQ2iJkg");
+
+        headers.set(PlatformContextHeaders.RAG_SENSITIVITY_LEVEL, "restricted");
+        assertThat(GatewayPythonRuntimeSignatureFilter.sign(
+                headers,
+                "1800000000000",
+                "nonce-001",
+                "gateway-local-v1",
+                "secret-for-test"
+        )).isNotEqualTo("klJuOvLHb-PydGFyjStf2PwQ3Gy6ID80z-cClQ2iJkg");
     }
 
     /**

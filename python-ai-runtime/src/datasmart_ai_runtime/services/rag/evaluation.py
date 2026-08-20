@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -97,6 +97,15 @@ class RagGoldenCase:
     refusal_reason: str | None
     source_types: tuple[str, ...]
     tags: tuple[str, ...]
+    # GraphRAG 用结构化路径而不是普通 chunk 相关性断言；这些字段对旧版 752 条
+    # 普通 RAG 用例都是空/默认值，因此保持向后兼容。
+    graph_max_hops: int = 3
+    graph_start_entity: str | None = None
+    graph_relation: str | None = None
+    graph_hops: int | None = None
+    graph_as_of: str | None = None
+    expected_graph_path: tuple[Mapping[str, str], ...] = ()
+    graph_expected_reason_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,16 +156,25 @@ class RagEvaluationThresholds:
 
 @dataclass(frozen=True)
 class RagEvaluationRunProfile:
-    """报告中允许持久化的模型与检索配置摘要。"""
+    """报告中允许持久化的模型与检索配置摘要。
+
+    评测结果只有在运行边界可复现时才有比较价值。因此这里保存候选窗口、Reranker 外发上限和少量
+    影响排序的数值参数；这些字段都是低敏配置，不包含 Endpoint、API Key、查询正文、文档正文或上游
+    原始响应。``candidate_limit_policy`` 用来说明黄金用例是否按 ``topK`` 动态计算候选上限，避免把
+    一个全局数字误解成每条用例都使用同一个窗口。
+    """
 
     profile_name: str = "unspecified"
     retrieval_backend: str = "in-memory"
     embedding_model: str | None = None
     reranker_model: str | None = None
     generation_enabled: bool = False
+    candidate_limit_policy: str | None = None
+    reranker_max_documents: int | None = None
+    retrieval_parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def to_summary(self) -> dict[str, Any]:
-        """仅输出模型名和逻辑后端，不输出 Endpoint、凭据或环境变量。"""
+        """输出模型名和可复现检索边界，不输出 Endpoint、凭据或环境变量。"""
 
         return {
             "profileName": self.profile_name,
@@ -164,6 +182,9 @@ class RagEvaluationRunProfile:
             "embeddingModel": self.embedding_model,
             "rerankerModel": self.reranker_model,
             "generationEnabled": self.generation_enabled,
+            "candidateLimitPolicy": self.candidate_limit_policy,
+            "rerankerMaxDocuments": self.reranker_max_documents,
+            "retrievalParameters": dict(self.retrieval_parameters),
         }
 
 
@@ -248,6 +269,8 @@ class RagEvaluationRunner:
         missed_refusal = 0
         correct_answerable = 0
         execution_errors = 0
+        graph_path_expected_count = 0
+        graph_path_pass_count = 0
 
         for golden_case in self._dataset.cases:
             case_started_at = perf_counter()
@@ -270,6 +293,12 @@ class RagEvaluationRunner:
                 (*retrieved_document_ids, *reranker_input_document_ids, *actual_document_ids)
             )
             actual_citation_uris = _unique_tuple(citation.source_uri for citation in citations)
+            actual_graph_path = _safe_graph_path(result)
+            actual_graph_reason_code = (
+                str(result.graph_refusal_reason).strip()
+                if result is not None and result.graph_refusal_reason
+                else None
+            )
             expected_relevance = {
                 item.document_id: item.relevance for item in golden_case.relevant_documents
             }
@@ -278,6 +307,14 @@ class RagEvaluationRunner:
             expected_uri_set = set(golden_case.expected_citation_uris)
             actual_document_set = set(actual_document_ids)
             actual_uri_set = set(actual_citation_uris)
+            expected_graph_document_ids = tuple(
+                str(item.get("sourceDocumentId") or item.get("source_document_id"))
+                for item in golden_case.expected_graph_path
+                if item.get("sourceDocumentId") or item.get("source_document_id")
+            )
+            if golden_case.retrieval_mode == "graph" and not expected_document_ids:
+                expected_document_ids = expected_graph_document_ids
+                expected_document_set = set(expected_document_ids)
             relevant_hits = tuple(
                 document_id for document_id in actual_document_ids if document_id in expected_document_set
             )
@@ -300,7 +337,12 @@ class RagEvaluationRunner:
             scope_leakage_documents += len(scope_leakage_ids)
 
             completed = error_type is None
-            actual_refusal = completed and not actual_document_ids
+            # “没有引用”不等于“已经拒答”。如果模型仍然生成了正文，这正是评测必须识别的无依据
+            # 回答，不能把它计入拒答真阳性并虚高 refusal F1。
+            actual_refusal = completed and (
+                bool(actual_graph_reason_code)
+                or (not actual_document_ids and not bool(result.generated))
+            )
             if golden_case.should_refuse:
                 if actual_refusal:
                     true_refusal += 1
@@ -311,7 +353,7 @@ class RagEvaluationRunner:
             elif completed:
                 correct_answerable += 1
 
-            if not golden_case.should_refuse:
+            if not golden_case.should_refuse and golden_case.retrieval_mode != "graph":
                 recall_values.append(
                     len(set(relevant_hits)) / len(expected_document_set)
                     if expected_document_set
@@ -330,6 +372,21 @@ class RagEvaluationRunner:
                     else 0.0
                 )
 
+            graph_path_matches = True
+            graph_reason_matches = True
+            if golden_case.retrieval_mode == "graph":
+                graph_path_expected_count += 1
+                graph_path_matches = _graph_path_matches(
+                    golden_case.expected_graph_path,
+                    actual_graph_path,
+                )
+                graph_reason_matches = (
+                    golden_case.graph_expected_reason_code is None
+                    or golden_case.graph_expected_reason_code == actual_graph_reason_code
+                )
+                if graph_path_matches and graph_reason_matches:
+                    graph_path_pass_count += 1
+
             if golden_case.forbidden_document_ids:
                 forbidden_case_count += 1
                 if not forbidden_hits:
@@ -346,9 +403,19 @@ class RagEvaluationRunner:
                 and not forbidden_hits
                 and not scope_leakage_ids
                 and (
-                    actual_refusal
+                    (
+                        actual_refusal
+                        and graph_reason_matches
+                        and graph_path_matches
+                    )
                     if golden_case.should_refuse
-                    else (not actual_refusal and expected_evidence_complete and citations_exact)
+                    else (
+                        not actual_refusal
+                        and expected_evidence_complete
+                        and citations_exact
+                        and graph_path_matches
+                        and graph_reason_matches
+                    )
                 )
             )
             case_results.append(
@@ -364,6 +431,12 @@ class RagEvaluationRunner:
                     "actualDocumentIds": actual_document_ids,
                     "expectedCitationUris": golden_case.expected_citation_uris,
                     "actualCitationUris": actual_citation_uris,
+                    "expectedGraphPath": golden_case.expected_graph_path,
+                    "actualGraphPath": actual_graph_path,
+                    "expectedGraphReasonCode": golden_case.graph_expected_reason_code,
+                    "actualGraphReasonCode": actual_graph_reason_code,
+                    "graphPathMatches": graph_path_matches,
+                    "graphReasonMatches": graph_reason_matches,
                     "relevantHitDocumentIds": relevant_hits,
                     "forbiddenDocumentIds": golden_case.forbidden_document_ids,
                     "forbiddenHitDocumentIds": forbidden_hits,
@@ -412,6 +485,10 @@ class RagEvaluationRunner:
             ),
             "casePassRate": round(
                 _safe_ratio(sum(1 for item in case_results if item["passed"]), len(case_results)),
+                6,
+            ),
+            "graphPathAccuracy": round(
+                _safe_ratio(graph_path_pass_count, graph_path_expected_count, empty_value=1.0),
                 6,
             ),
             "latencyP50Ms": _percentile(latencies, 0.50),
@@ -463,8 +540,16 @@ class RagEvaluationRunner:
             candidate_limit=max(32, min(200, golden_case.top_k * 8)),
             generate_answer=False,
             trace_id=f"rag-eval:{golden_case.case_id}",
+            # 黄金集虽然是合成数据，但其问题模拟了事故、日志和配置内容。按 restricted 处理可以
+            # 证明远端评测只有在 synthetic-only 边界与显式批准同时成立时才会真正外发。
+            sensitivity_level="restricted",
             retrieval_mode=_runtime_retrieval_mode(golden_case.retrieval_mode),
             source_types=golden_case.source_types,
+            graph_max_hops=golden_case.graph_max_hops,
+            graph_start_entity=golden_case.graph_start_entity,
+            graph_relation=golden_case.graph_relation,
+            graph_hops=golden_case.graph_hops,
+            graph_as_of=golden_case.graph_as_of,
         )
 
     def _document_visible(self, document_id: str, golden_case: RagGoldenCase) -> bool:
@@ -627,7 +712,7 @@ def _load_golden_cases(
         project_id = _required_text(scope.get("projectId"), "scope.projectId")
         workspace_key = _required_text(scope.get("workspaceKey"), "scope.workspaceKey")
         retrieval_mode = _required_text(raw_case.get("retrievalMode"), "retrievalMode").lower()
-        if retrieval_mode not in {"hybrid", "lexical", "vector", "exact_search"}:
+        if retrieval_mode not in {"hybrid", "lexical", "vector", "exact_search", "graph"}:
             raise RagEvaluationDatasetError(f"RAG 黄金检索模式不受支持：{case_id}")
         top_k = _required_integer(raw_case.get("topK"), "topK", case_id=case_id)
         if top_k < 1 or top_k > 20:
@@ -656,12 +741,12 @@ def _load_golden_cases(
             raise RagEvaluationDatasetError(f"RAG 黄金相关文档重复：{case_id}")
 
         expected_uris = _text_tuple(raw_case.get("expectedCitationUris"), "expectedCitationUris")
-        if any(uri not in documents_by_uri for uri in expected_uris):
+        if retrieval_mode != "graph" and any(uri not in documents_by_uri for uri in expected_uris):
             raise RagEvaluationDatasetError(f"RAG 黄金期望引用不存在：{case_id}")
         relevant_uris = {
             documents_by_id[item.document_id].source_uri for item in relevant_documents
         }
-        if set(expected_uris) != relevant_uris:
+        if retrieval_mode != "graph" and set(expected_uris) != relevant_uris:
             raise RagEvaluationDatasetError(f"RAG 黄金期望引用与相关文档不一致：{case_id}")
         forbidden_ids = _text_tuple(raw_case.get("forbiddenDocumentIds"), "forbiddenDocumentIds")
         if any(document_id not in documents_by_id for document_id in forbidden_ids):
@@ -676,9 +761,39 @@ def _load_golden_cases(
         )
         refusal_reason_raw = raw_case.get("refusalReason")
         refusal_reason = str(refusal_reason_raw).strip() if refusal_reason_raw is not None else None
-        if should_refuse and (relevant_documents or expected_uris or not refusal_reason):
+        raw_graph_path = raw_case.get("expectedGraphPath")
+        graph_path = _parse_graph_path(raw_graph_path, case_id=case_id)
+        graph_reason_raw = raw_case.get("graphExpectedReasonCode")
+        graph_reason = str(graph_reason_raw).strip() if graph_reason_raw is not None else None
+        graph_max_hops = _optional_integer(raw_case.get("graphMaxHops"), "graphMaxHops", case_id, default=3)
+        graph_start_entity = _optional_text(raw_case.get("graphStartEntity"), "graphStartEntity", case_id)
+        graph_relation = _optional_text(raw_case.get("graphRelation"), "graphRelation", case_id)
+        graph_hops = _optional_integer(raw_case.get("graphHops"), "graphHops", case_id, default=None)
+        graph_as_of = _optional_text(raw_case.get("graphAsOf"), "graphAsOf", case_id)
+        if graph_max_hops is None or not 1 <= graph_max_hops <= 3:
+            raise RagEvaluationDatasetError(f"RAG GraphRAG graphMaxHops 必须在 1 到 3 之间：{case_id}")
+        if graph_hops is not None and not 1 <= graph_hops <= 3:
+            raise RagEvaluationDatasetError(f"RAG GraphRAG graphHops 必须在 1 到 3 之间：{case_id}")
+        if retrieval_mode == "graph":
+            graph_uri_set = {
+                str(item.get("sourceUri") or item.get("source_uri"))
+                for item in graph_path
+                if item.get("sourceUri") or item.get("source_uri")
+            }
+            if set(expected_uris) != graph_uri_set:
+                raise RagEvaluationDatasetError(f"GraphRAG 期望引用必须与期望路径来源一致：{case_id}")
+            if not should_refuse and not graph_path:
+                raise RagEvaluationDatasetError(f"GraphRAG 可回答用例必须声明 expectedGraphPath：{case_id}")
+            if should_refuse and (graph_path or expected_uris or not refusal_reason or not graph_reason):
+                raise RagEvaluationDatasetError(f"GraphRAG 拒答用例必须声明稳定原因且不能带成功路径：{case_id}")
+        elif graph_path or graph_reason or any(
+            raw_case.get(field_name) is not None
+            for field_name in ("graphMaxHops", "graphStartEntity", "graphRelation", "graphHops", "graphAsOf")
+        ):
+            raise RagEvaluationDatasetError(f"非 GraphRAG 用例不能携带图查询字段：{case_id}")
+        if should_refuse and retrieval_mode != "graph" and (relevant_documents or expected_uris or not refusal_reason):
             raise RagEvaluationDatasetError(f"RAG 黄金拒答合同不完整：{case_id}")
-        if not should_refuse and not relevant_documents:
+        if not should_refuse and retrieval_mode != "graph" and not relevant_documents:
             raise RagEvaluationDatasetError(f"RAG 可回答用例必须声明相关文档：{case_id}")
         source_types = _text_tuple(raw_case.get("sourceTypes"), "sourceTypes")
         if any(value not in {item.value for item in RagChunkSourceType} for value in source_types):
@@ -700,6 +815,13 @@ def _load_golden_cases(
                 refusal_reason=refusal_reason,
                 source_types=source_types,
                 tags=_text_tuple(raw_case.get("tags"), "tags"),
+                graph_max_hops=graph_max_hops,
+                graph_start_entity=graph_start_entity,
+                graph_relation=graph_relation,
+                graph_hops=graph_hops,
+                graph_as_of=graph_as_of,
+                expected_graph_path=graph_path,
+                graph_expected_reason_code=graph_reason,
             )
         )
     if not cases:
@@ -833,12 +955,10 @@ def _stage_document_ids(
 
 
 def _runtime_retrieval_mode(value: str) -> str:
-    """把黄金集的精确检索语义映射到当前词法通道。"""
+    """把黄金集检索模式映射到运行时，并保留真正的精确搜索语义。"""
 
     normalized = str(value or "hybrid").strip().lower()
-    if normalized == "exact_search":
-        return "lexical"
-    return normalized if normalized in {"hybrid", "lexical", "vector"} else "hybrid"
+    return normalized if normalized in {"hybrid", "lexical", "vector", "exact_search", "graph"} else "hybrid"
 
 
 def _document_matches_scope(
@@ -860,6 +980,119 @@ def _scope_value_visible(document_value: str, query_value: str) -> bool:
     """实现公共 `*` 或精确匹配的单维范围规则。"""
 
     return document_value in {"*", query_value}
+
+
+def _parse_graph_path(value: Any, *, case_id: str) -> tuple[Mapping[str, str], ...]:
+    """解析 GraphRAG 期望路径，只保留实体、关系和来源链字段。"""
+
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise RagEvaluationDatasetError(f"GraphRAG expectedGraphPath 必须是数组：{case_id}")
+    path: list[Mapping[str, str]] = []
+    expected_hop = 1
+    for raw_step in value:
+        if not isinstance(raw_step, Mapping):
+            raise RagEvaluationDatasetError(f"GraphRAG 路径步骤必须是对象：{case_id}")
+        step: dict[str, str] = {}
+        for output_key, aliases in {
+            "hop": ("hop",),
+            "sourceEntityId": ("sourceEntityId", "source_entity_id"),
+            "targetEntityId": ("targetEntityId", "target_entity_id"),
+            "relation": ("relation", "relationType", "relation_type"),
+            "sourceDocumentId": ("sourceDocumentId", "source_document_id"),
+            "sourceUri": ("sourceUri", "source_uri"),
+            "sourceChunkId": ("sourceChunkId", "source_chunk_id"),
+        }.items():
+            raw_value = next((raw_step[key] for key in aliases if key in raw_step), None)
+            if raw_value is None or not str(raw_value).strip():
+                raise RagEvaluationDatasetError(f"GraphRAG 路径字段缺失：{case_id}")
+            step[output_key] = str(raw_value).strip()
+        if int(step["hop"]) != expected_hop:
+            raise RagEvaluationDatasetError(f"GraphRAG 路径 hop 必须从 1 连续递增：{case_id}")
+        expected_hop += 1
+        path.append(step)
+    return tuple(path)
+
+
+def _safe_graph_path(result: RagPipelineResult | None) -> tuple[Mapping[str, str], ...]:
+    """从结果中提取低敏 GraphRAG 路径，不复制关系正文或模型输出。"""
+
+    if result is None or not isinstance(result.graph_path, (list, tuple)):
+        return ()
+    allowed = {
+        "hop",
+        "source_entity_id",
+        "target_entity_id",
+        "relation",
+        "source_document_id",
+        "source_uri",
+        "source_chunk_id",
+    }
+    path: list[Mapping[str, str]] = []
+    for raw_step in result.graph_path:
+        if not isinstance(raw_step, Mapping):
+            continue
+        normalized: dict[str, str] = {}
+        for key in allowed:
+            if raw_step.get(key) is not None:
+                normalized[key] = str(raw_step[key])
+        path.append(normalized)
+    return tuple(path)
+
+
+def _graph_path_matches(
+    expected: tuple[Mapping[str, str], ...],
+    actual: tuple[Mapping[str, str], ...],
+) -> bool:
+    """按关键路径字段做严格逐跳比较。"""
+
+    if len(expected) != len(actual):
+        return False
+    field_aliases = {
+        "hop": ("hop",),
+        "sourceEntityId": ("sourceEntityId", "source_entity_id"),
+        "targetEntityId": ("targetEntityId", "target_entity_id"),
+        "relation": ("relation", "relationType", "relation_type"),
+        "sourceDocumentId": ("sourceDocumentId", "source_document_id"),
+        "sourceUri": ("sourceUri", "source_uri"),
+        "sourceChunkId": ("sourceChunkId", "source_chunk_id"),
+    }
+    for expected_step, actual_step in zip(expected, actual):
+        for aliases in field_aliases.values():
+            expected_value = next((str(expected_step[key]) for key in aliases if key in expected_step), "")
+            actual_value = next((str(actual_step[key]) for key in aliases if key in actual_step), "")
+            if expected_value != actual_value:
+                return False
+    return True
+
+
+def _optional_text(value: Any, field_name: str, case_id: str) -> str | None:
+    """读取可选非空字符串；传入空字符串按未配置处理。"""
+
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        raise RagEvaluationDatasetError(f"RAG {field_name} 不能是空字符串：{case_id}")
+    return normalized
+
+
+def _optional_integer(
+    value: Any,
+    field_name: str,
+    case_id: str,
+    *,
+    default: int | None,
+) -> int | None:
+    """读取图查询可选整数，解析失败时拒绝黄金资产。"""
+
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise RagEvaluationDatasetError(f"RAG {field_name} 必须是整数：{case_id}") from exc
 
 
 def _required_text(value: Any, field_name: str) -> str:

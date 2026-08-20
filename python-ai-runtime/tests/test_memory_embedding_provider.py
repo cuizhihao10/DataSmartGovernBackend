@@ -8,6 +8,8 @@ import json
 import os
 import sys
 import unittest
+from http import client as http_client
+from urllib import error
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -50,6 +52,7 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
             model="embedding-model-v1",
             timeout_seconds=7,
             max_input_chars=100,
+            approved_sensitivity_levels=("internal",),
         )
         provider = OpenAICompatibleMemoryEmbeddingProvider(settings, urlopen=transport)
 
@@ -62,6 +65,71 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
         self.assertEqual("embedding-model-v1", payload["model"])
         self.assertEqual(100, len(payload["input"]))
         self.assertEqual("Bearer test-secret", transport.request.get_header("Authorization"))
+
+    def test_unapproved_restricted_body_is_not_sent_to_embedding_provider(self) -> None:
+        """生产默认必须在建立 HTTP 请求前拒绝未批准的 restricted 正文。"""
+
+        transport = FakeUrlOpen({"data": [{"embedding": [0.25, -0.5]}]})
+        provider = OpenAICompatibleMemoryEmbeddingProvider(
+            MemoryEmbeddingProviderSettings(
+                provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+                endpoint="https://api.siliconflow.cn/v1/embeddings",
+                api_key="test-secret",
+                model="BAAI/bge-m3",
+                approved_sensitivity_levels=("internal",),
+            ),
+            urlopen=transport,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "敏感级别未获外发批准") as captured:
+            provider.embed_text("synthetic-restricted-body", sensitivity_level="restricted")
+
+        self.assertIsNone(transport.request)
+        self.assertNotIn("synthetic-restricted-body", str(captured.exception))
+
+    def test_synthetic_only_boundary_can_explicitly_allow_restricted_embedding(self) -> None:
+        """仅 synthetic-only 评测可在显式配置后发送 restricted Embedding 正文。"""
+
+        transport = FakeUrlOpen({"data": [{"embedding": [0.25, -0.5]}]})
+        provider = OpenAICompatibleMemoryEmbeddingProvider(
+            MemoryEmbeddingProviderSettings(
+                provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+                endpoint="https://api.siliconflow.cn/v1/embeddings",
+                api_key="test-secret",
+                model="BAAI/bge-m3",
+                approved_sensitivity_levels=("restricted",),
+                synthetic_only_evaluation=True,
+            ),
+            urlopen=transport,
+        )
+
+        self.assertEqual(
+            (0.25, -0.5),
+            provider.embed_text("synthetic-restricted-body", sensitivity_level="restricted"),
+        )
+        payload = json.loads(transport.request.data.decode("utf-8"))
+        self.assertEqual("synthetic-restricted-body", payload["input"])
+
+    def test_restricted_approval_without_synthetic_boundary_still_fails_closed(self) -> None:
+        """生产配置不能仅靠把 restricted 放进批准列表就外发正文。"""
+
+        transport = FakeUrlOpen({"data": [{"embedding": [0.25, -0.5]}]})
+        provider = OpenAICompatibleMemoryEmbeddingProvider(
+            MemoryEmbeddingProviderSettings(
+                provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+                endpoint="https://api.siliconflow.cn/v1/embeddings",
+                api_key="test-secret",
+                model="BAAI/bge-m3",
+                approved_sensitivity_levels=("restricted",),
+                synthetic_only_evaluation=False,
+            ),
+            urlopen=transport,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "仅允许在显式 synthetic-only"):
+            provider.embed_text("synthetic-restricted-body", sensitivity_level="restricted")
+
+        self.assertIsNone(transport.request)
 
     def test_openai_compatible_provider_batches_inputs_and_preserves_response_order(self) -> None:
         """批量摄取语料时应一次提交多个低敏文本，并按响应 index 恢复输入顺序。"""
@@ -82,6 +150,7 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
             timeout_seconds=9,
             max_input_chars=100,
             max_batch_size=8,
+            approved_sensitivity_levels=("internal",),
         )
         provider = OpenAICompatibleMemoryEmbeddingProvider(settings, urlopen=transport)
 
@@ -115,6 +184,7 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
             endpoint="https://api.siliconflow.cn/v1/embeddings",
             api_key="test-secret",
             model="BAAI/bge-m3",
+            approved_sensitivity_levels=("internal",),
         )
         for payload in invalid_payloads:
             with self.subTest(payload=payload):
@@ -130,6 +200,7 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
             endpoint="https://api.siliconflow.cn/v1/embeddings",
             api_key="test-secret",
             model="BAAI/bge-m3",
+            approved_sensitivity_levels=("internal",),
         )
         provider = OpenAICompatibleMemoryEmbeddingProvider(
             settings,
@@ -145,6 +216,93 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "index 非法"):
             provider.embed_texts(("第一段", "第二段"))
+
+    def test_embedding_retries_transient_503_but_not_authentication_failure(self) -> None:
+        """瞬态 503 可有限重试，401 鉴权错误必须立即失败。"""
+
+        success_payload = {"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
+        transient_transport = SequenceUrlOpen(
+            (
+                error.HTTPError(
+                    "https://api.siliconflow.cn/v1/embeddings",
+                    503,
+                    "temporary",
+                    hdrs=None,
+                    fp=None,
+                ),
+                success_payload,
+            )
+        )
+        delays: list[float] = []
+        settings = MemoryEmbeddingProviderSettings(
+            provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+            endpoint="https://api.siliconflow.cn/v1/embeddings",
+            api_key="test-secret",
+            model="BAAI/bge-m3",
+            max_attempts=3,
+            retry_base_delay_ms=10,
+            approved_sensitivity_levels=("internal",),
+        )
+        provider = OpenAICompatibleMemoryEmbeddingProvider(
+            settings,
+            urlopen=transient_transport,
+            sleep=delays.append,
+        )
+
+        self.assertEqual((0.1, 0.2), provider.embed_text("字段映射恢复"))
+        self.assertEqual(2, transient_transport.call_count)
+        self.assertEqual([0.01], delays)
+
+        authentication_transport = SequenceUrlOpen(
+            (
+                error.HTTPError(
+                    "https://api.siliconflow.cn/v1/embeddings",
+                    401,
+                    "unauthorized",
+                    hdrs=None,
+                    fp=None,
+                ),
+                success_payload,
+            )
+        )
+        provider = OpenAICompatibleMemoryEmbeddingProvider(
+            settings,
+            urlopen=authentication_transport,
+            sleep=lambda _: None,
+        )
+        with self.assertRaisesRegex(RuntimeError, "status=401"):
+            provider.embed_text("字段映射恢复")
+        self.assertEqual(1, authentication_transport.call_count)
+
+    def test_embedding_retries_incomplete_read_and_remote_disconnect(self) -> None:
+        """响应体被截断或网关主动断连时，应重试完整的幂等请求。"""
+
+        success_payload = {"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
+        transport = SequenceUrlOpen(
+            (
+                http_client.IncompleteRead(b'{"data":'),
+                http_client.RemoteDisconnected("upstream closed"),
+                success_payload,
+            )
+        )
+        delays: list[float] = []
+        provider = OpenAICompatibleMemoryEmbeddingProvider(
+            MemoryEmbeddingProviderSettings(
+                provider_type=MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+                endpoint="https://api.siliconflow.cn/v1/embeddings",
+                api_key="test-secret",
+                model="BAAI/bge-m3",
+                max_attempts=3,
+                retry_base_delay_ms=10,
+                approved_sensitivity_levels=("internal",),
+            ),
+            urlopen=transport,
+            sleep=delays.append,
+        )
+
+        self.assertEqual((0.1, 0.2), provider.embed_text("截断响应恢复"))
+        self.assertEqual(3, transport.call_count)
+        self.assertEqual([0.01, 0.02], delays)
 
     def test_invalid_embedding_values_are_rejected_before_index_write(self) -> None:
         """空数组、NaN 和 Infinity 不能进入 pgvector，否则距离计算和排序结果不可信。"""
@@ -165,12 +323,16 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
                 "DATASMART_AI_MEMORY_EMBEDDING_API_KEY": "secret-value",
                 "DATASMART_AI_MEMORY_EMBEDDING_MODEL": "enterprise-embedding-v2",
                 "DATASMART_AI_MEMORY_EMBEDDING_DIMENSIONS": "1024",
+                "DATASMART_AI_MEMORY_EMBEDDING_APPROVED_SENSITIVITY_LEVELS": "internal, restricted",
+                "DATASMART_AI_MEMORY_EMBEDDING_SYNTHETIC_ONLY_EVALUATION": "true",
             }
         )
         diagnostics = memory_embedding_provider_diagnostics(settings)
 
         self.assertEqual(MemoryEmbeddingProviderType.OPENAI_COMPATIBLE, settings.provider_type)
         self.assertEqual(1024, settings.dimensions)
+        self.assertEqual(("internal", "restricted"), settings.approved_sensitivity_levels)
+        self.assertTrue(settings.synthetic_only_evaluation)
         self.assertTrue(diagnostics["productionReady"])
         self.assertTrue(diagnostics["endpointConfigured"])
         self.assertTrue(diagnostics["apiKeyConfigured"])
@@ -217,6 +379,21 @@ class FakeUrlOpen:
         self.request = http_request
         self.timeout = timeout
         return FakeHttpResponse(self._payload)
+
+
+class SequenceUrlOpen:
+    """按顺序抛异常或返回 JSON，用于验证有限重试边界。"""
+
+    def __init__(self, outcomes: tuple[BaseException | dict[str, object], ...]) -> None:
+        self._outcomes = list(outcomes)
+        self.call_count = 0
+
+    def __call__(self, http_request, *, timeout):
+        self.call_count += 1
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return FakeHttpResponse(outcome)
 
 
 class FakeHttpResponse:

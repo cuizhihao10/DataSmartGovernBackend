@@ -237,15 +237,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 ## 7.6 2026-08-09 双仓迁移后最终复核
 
-本轮以当前 Backend/Frontend dirty worktree、当前源码构建镜像和本机真实服务为证据，未读取或重放旧 Codex 对话。Backend `docs/` 的 38 份 Markdown 已逐份复核，并按其对本轮审查的约束归类如下：
+本轮以当前 Backend/Frontend dirty worktree、当前源码构建镜像和本机真实服务为证据，未读取或重放旧 Codex 对话。Backend `docs/` 的 39 份 Markdown 已逐份复核，并按其对本轮审查的约束归类如下：
 
 - 迁移/架构：`agent-runtime-postgresql-data-migration.md`、`ai-memory-postgresql-data-migration.md`、`ai-memory-postgresql-schema.md`、`data-quality-postgresql-data-migration.md`、`datasource-management-postgresql-data-migration.md`、`data-sync-postgresql-data-migration.md`、`development-jdk21.md`、`gateway-oidc-keycloak-integration.md`、`permission-admin-postgresql-data-migration.md`、`postgresql-migration-roadmap.md`、`python-ai-runtime-package-layout.md`、`task-management-postgresql-data-migration.md`。
-- Agent/RAG：`agent-skill-publication-manifest.md`、`langgraph-postgresql-durable-checkpointer.md`、`mcp-client-integration.md`、`rag-command-worker-implementation.md`、`rag-pipeline-implementation.md`。
+- Agent/RAG：`agent-skill-publication-manifest.md`、`langgraph-postgresql-durable-checkpointer.md`、`mcp-client-integration.md`、`rag-command-worker-implementation.md`、`rag-pipeline-implementation.md`、`rag-evaluation-siliconflow-runbook.md`。
 - 生产运维：`backup-restore-runbook.md`、`capacity-baseline-runbook.md`、`containerized-application-deployment.md`、`failure-drill-runbook.md`、`kubernetes-helm-deployment.md`、`local-e2e-docker-troubleshooting.md`、`observability-agent-runtime-runbook.md`、`observability-data-sync-runbook.md`、`production-environment-values.md`、`production-hardening-runbook.md`、`tenant-onboarding-flashsync.md`。
 - 最终收敛：`codex-migration-handoff-2026-08-09.md`、`final-convergence-delivery-checklist.md`、`final-delivery-closure-runbook.md`、`final-platform-closure-audit.md`、`local-e2e-closure-runbook.md`。
 - 产品与学习资料：`ai-agent-interview-answers.md`、`ai-agent-project-technical-learning-path.md`、`ai-agent-resume-project-experience.md`、`ai-agent-technology-radar.md`、`platform-product-roadmap.md`。
 
-以上为 `12 + 5 + 11 + 5 + 5 = 38` 份文档；分类是审查约束和证据归属，不是成熟度排名。迁移/架构组固定 PostgreSQL/pgvector、Kafka Java/Python 异步边界及 JDK 21/Spring Boot 3.5.11；Agent/RAG 组要求 `SEARCH`/`SKIP`、RAG 证据、LangGraph checkpoint 与 Specialist turn fact 都按 application/tenant/project/session/run 范围持久化隔离；生产运维组把备份恢复、容量、故障演练、Keycloak、Secret 注入、监控和真实环境 E2E 保持为发布门禁；最终收敛组规定静态实现、历史本地验证和环境级证据不得混写；产品与学习组只解释长期蓝图，不能覆盖本轮真实六角色 roster 或被当作上线证据。对 Recovery 而言，审查结论是“Python 只计划，Java/data-sync 在首次授权盒内可有条件执行低风险 quarantine/retry”，而不是“每次都等待审批”或“零副作用”；但单条 `AUTO_APPROVED`、静态指标或旧的只读 Recovery 记录仍不能替代最终 receipt 和隔离环境 E2E。
+以上为 `12 + 6 + 11 + 5 + 5 = 39` 份文档；分类是审查约束和证据归属，不是成熟度排名。迁移/架构组固定 PostgreSQL/pgvector、Kafka Java/Python 异步边界及 JDK 21/Spring Boot 3.5.11；Agent/RAG 组要求 `SEARCH`/`SKIP`、RAG 证据、LangGraph checkpoint 与 Specialist turn fact 都按 application/tenant/project/session/run 范围持久化隔离；生产运维组把备份恢复、容量、故障演练、Keycloak、Secret 注入、监控和真实环境 E2E 保持为发布门禁；最终收敛组规定静态实现、历史本地验证和环境级证据不得混写；产品与学习组只解释长期蓝图，不能覆盖本轮真实六角色 roster 或被当作上线证据。对 Recovery 而言，当前 Java/data-sync 已接入策略回滚、限界调参、刷新元数据、checkpoint 恢复、失败分片 replay、字段映射修复六类受治理 repair，另有 retry/quarantine 既有动作；逐动作真实故障注入黑盒 E2E 仍是剩余验收项。此前各节的测试数量均属于带日期的历史证据，不能当作未标日期的当前基线。
 
 本轮验证证据（2026-08-10 最终复跑）：
 
@@ -266,7 +266,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 本次增量核对的是当前源码及聚焦单元/契约测试中的 Autopilot 授权、决策、执行和持久化合同，不能把它记为已完成的 Docker 或生产无人值守恢复交付。首次确认 Agent Run 的可选 `autopilotPolicy` 会在工具副作用前固化为不可被后续 Run 替换或扩大的 `autopilotAuthorization`；其范围包含 tenant/application/project、用户/actor/Agent/delegation、根 session/run、有效期、循环/时长预算和 SHA-256 摘要。
 
 - 模型可按错误新颖度、诊断覆盖、grounded citation 和置信度选择 `SEARCH` 或 `SKIP`。无 grounded 证据的 `SEARCH` 强制形成只读检索 turn，取得 durable evidence 后才重评恢复；`SKIP` 不放宽工具、授权、预算、风险或审批门禁。
-- data-sync 的确定性评估会把作用域/授权/动作不匹配拒绝为 `REJECTED`；高风险或审批动作置为 `WAITING_APPROVAL`；循环或时间预算耗尽、重复错误、证据/置信度/指纹不足置为 `ATTENTION_REQUIRED`。授权层自动风险上限固定为 `LOW`。低风险资格白名单包含 `RETRY_EXECUTION`、`APPLY_QUARANTINE`、`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS`，但当前 Java 执行器实际支持的写分支只有 `RETRY_EXECUTION` 和已验证 preview/selector/receipt 的 `APPLY_QUARANTINE`；其它候选没有执行器时必须停在 `ATTENTION_REQUIRED`。
+- data-sync 的确定性评估会把作用域/授权/动作不匹配拒绝为 `REJECTED`；高风险或审批动作置为 `WAITING_APPROVAL`；循环或时间预算耗尽、重复错误、证据/置信度/指纹不足置为 `ATTENTION_REQUIRED`。授权层自动风险上限固定为 `LOW`。低风险资格白名单包含既有 `RETRY_EXECUTION`/`APPLY_QUARANTINE` 以及策略回滚、限界调参、刷新元数据、checkpoint 恢复、失败分片 replay、字段映射修复六类 repair；当前 Java/data-sync 已为六类 repair 接入确定性执行分支，但逐动作真实故障注入黑盒 E2E 尚未全部完成。
 - V20-V25 提供低敏 case、策略快照、trigger outbox、消费者结果、sidecar compensation、quarantine receipt，以及模型 `SEARCH`/`SKIP` 决策与 evidence-ID digest 投影的 PostgreSQL schema；单独一条 `AUTO_APPROVED` 是可审计授权决策，只有后续 `RECOVERY_STARTED` 与成功/失败 receipt 才能证明副作用或最终状态，不能作为 HTTP、Kafka、Python 或 worker 已运行的独立证据。
 
 仍未闭环的事实差距是：V20-V25 的实际 Flyway 部署证据、显式启用的 Agent Runtime listener 与真实 broker 投递、共享内部服务令牌下的 Python 规划调用、data-sync retry/quarantine 被 worker 实际处理后的成功/失败 receipt、低基数指标与告警，以及隔离环境的低风险自动 retry/quarantine 和高风险人工审批 E2E。2026-08-13 已补齐此前单列的源码缺口：真实 retry receipt 后，Java 调用固定 Python post-action verification；Python 使用稳定 checkpoint/turn ID 运行 `PRECHECK_AGENT` 与 `MONITOR_AGENT`，并通过既有 Java fact sink 幂等登记 durable fact，任一依赖失败均传播到 Kafka retry。Python 全量 `1150 passed / 1 skipped`、Agent Runtime 全量 `693 passed` 证明模块合同成立，但尚无重建环境下的运行时闭环或发布就绪证据；所有验收和产品表述都必须保持这一边界。
@@ -284,12 +284,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 - `SyncAutopilotRecoveryTriggerOutboxService` 会将该事件写入本地 outbox，事务提交后立即尝试投递；`SyncAutopilotRecoveryTriggerKafkaDispatcher` 使用 `KafkaTemplate` 发送到 `datasmart.agent.autopilot-recovery-trigger.v1`，失败记录进入有界退避或 `DEAD_LETTER`。`DataSyncApplication` 已启用调度，默认配置也开启 trigger、即时投递和定时补偿；V24 的 quarantine receipt 以独立幂等键复放，不把同一 dirty-row 状态变更执行两次。
 - `AgentAutopilotRecoveryTriggerKafkaConsumer` 已以 `@KafkaListener` 订阅同一 topic 和 consumer group；其 `autoStartup` 受 `datasmart.agent-runtime.autopilot-recovery.kafka.enabled` 控制，默认值为 `false`，因此必须显式配置后才会在运行环境消费。
 - consumer 将 payload 交给 `AgentAutopilotRecoveryTriggerConsumerService`，后者重新从 session/root Run/delegation 和持久化 `autopilotAuthorization` 校验作用域、期限和摘要，再由 `AgentAutopilotRecoveryPythonClient` 携带内部服务令牌调用 Python 的 `POST /internal/agent/autopilot/recovery/plan`。Python 入口只做受限 Recovery/RAG 规划，不写入 data-sync 业务数据。
-- `AgentAutopilotRecoveryExecutionService` 会对 Python 候选再次执行证据和 Java/data-sync 双策略校验；当前可进入执行分支的是 `RETRY_EXECUTION`，以及先验证真实 preview、精确 selector、scope、预算、指纹和 durable receipt 的 `APPLY_QUARANTINE`。两者都会在受控状态机中进入 `RECOVERY_STARTED`，data-sync 成功/失败回执再将活动 case 收敛为 `RECOVERED` 或 `ATTENTION_REQUIRED`，但这些仍是静态实现和聚焦测试证据。
+- `AgentAutopilotRecoveryExecutionService` 会对 Python 候选再次执行证据和 Java/data-sync 双策略校验；当前 Java/data-sync 已为策略回滚、限界调参、刷新元数据、checkpoint 恢复、失败分片 replay、字段映射修复六类 repair 接入确定性执行分支，既有 `RETRY_EXECUTION`/receipt-bound `APPLY_QUARANTINE` 仍受同一治理边界约束。各动作进入受控状态机后由 data-sync 回执收敛为 `RECOVERED` 或 `ATTENTION_REQUIRED`；逐动作真实故障注入黑盒 E2E 仍是剩余验收项。
 
 **未验证**
 
 - 当前源码确有精确 topic 的 Java consumer 和 Agent Runtime 到 Python 规划入口的调用绑定，但静态审查不能证明 listener 已启用、consumer group 已收到 broker 记录、内部令牌已正确配置，或 Python 规划已在真实 Provider/RAG 依赖上完成。不能以代码存在、producer 存在、outbox 标记为 `DELIVERED` 或 `AUTO_APPROVED` 推断已发生消费、规划或恢复。
-- 尚无 V20-V25 已由目标环境 Flyway 应用、broker 送达/重投递、可信状态重建、data-sync 决策与 retry/quarantine HTTP、worker 处理、成功或失败 receipt 收敛、恢复后 PRECHECK/MONITOR durable fact、指标或告警实际触发的运行证据。这些仍是隔离环境 E2E 的验收项。
+- 尚无六类 repair 均已逐动作完成的隔离环境真实故障注入 E2E 证据；源码、聚焦测试、receipt 和后置 PRECHECK/MONITOR 合同已接入，但不能把其中一个动作的黑盒结果泛化为全部动作。
 
 **环境阻塞**
 
@@ -495,3 +495,9 @@ V26 新增 `data_sync_agent_execution_correlation`，V27 再把入口区分为 `
 - [ ] 使用新 `356/752` 基线运行 BGE-M3 + BGE-Reranker-v2-M3 全量评测；当前进程没有注入硅基流动 Secret，旧 `188/308` 分数只能作为历史对照。
 - [ ] 在 PostgreSQL FTS/pgvector 上完成新 `356/752` 基线的摄取、检索质量与冷/热性能评测；当前仅完成安全提取和 `VALIDATED_NOT_INGESTED` 校验，不能把内存基线冒充持久化检索结果。
 - [ ] DOCX 结构检查已覆盖全部文件；当前环境缺少 LibreOffice，安装后还需按文档技能要求补做逐页视觉渲染验收。该项是本地渲染工具环境阻塞，不是 DOCX 内容或 OOXML 结构失败。
+
+## 23. 2026-08-20 事实一致性增量
+
+- Backend `docs/` 当前实际为 `39` 份 Markdown，新增 `rag-evaluation-siliconflow-runbook.md`；此前 `38` 份及 `12 + 5 + 11 + 5 + 5` 为 2026-08-09 的历史盘点，已不代表当前数量。
+- 文中既有测试数量、E2E 结果和 smoke 数字均按所在日期保留为历史证据；它们不能在没有新运行日期和新输出的情况下被重述为当前基线。
+- Java/data-sync 当前已接入六类受治理 repair：策略回滚、限界调参、刷新元数据、checkpoint 恢复、失败分片 replay、字段映射修复；逐动作真实故障注入黑盒 E2E 仍未全部完成。

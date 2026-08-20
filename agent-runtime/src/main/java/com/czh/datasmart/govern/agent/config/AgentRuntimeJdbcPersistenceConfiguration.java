@@ -18,7 +18,7 @@ import org.springframework.context.annotation.Configuration;
  * <p>该配置只在同时满足以下条件时生效：
  * 1. {@code datasmart.agent-runtime.persistence.database-enabled=true}；
  * 2. 工具审计、工具事件 outbox、异步命令 outbox、DAG 确认、Skill 可见性索引、恢复事实索引、
- *    command worker lease 或 artifact 正文读取授权事实至少一个明确选择 JDBC durable 仓储。
+ *    command worker lease、artifact 正文读取授权事实或最终态 callback worker 至少一个明确选择 JDBC durable 仓储。
  *
  * <p>这样设计是为了避免一个很常见的商业化项目坑：只要把 JDBC/MyBatis 依赖加入模块，Spring Boot 就可能在默认本地环境
  * 尝试自动创建数据源，导致没有启动 PostgreSQL 的开发者无法运行任何单元测试或应用。这里采用独立 HikariDataSource Bean，
@@ -39,7 +39,8 @@ import org.springframework.context.annotation.Configuration;
                 + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}') "
                 + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.command-worker-leases.store:memory}') "
                 + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-action-submissions.store:memory}') "
-                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.artifact-body-read-grants.store:memory}'))"
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.artifact-body-read-grants.store:memory}') "
+                + "|| '${datasmart.agent-runtime.async-task-final-state-callback-worker.enabled:false}'.equalsIgnoreCase('true'))"
 )
 public class AgentRuntimeJdbcPersistenceConfiguration {
 
@@ -47,7 +48,7 @@ public class AgentRuntimeJdbcPersistenceConfiguration {
      * 创建 Agent Runtime 专用 JDBC 连接池。
      *
      * <p>当前连接池主要服务工具执行审计仓储、工具事件 outbox、异步命令 outbox、恢复事实索引、
-     * command worker lease 和 artifact 正文读取 grant fact。
+     * command worker lease、artifact 正文读取 grant fact 和最终态 callback durable job/history。
      * 这些能力都属于 agent-runtime 控制面事实库，不复用业务模块自己的 DataSource，
      * 可以避免 task-management、datasource-management 的连接池参数或事务策略反向影响 Agent Runtime。
      * 生产环境如果要区分审计写入库、查询只读库和 outbox 投递库，可以在这里继续拆分多个 DataSource。</p>

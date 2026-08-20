@@ -295,7 +295,7 @@ class AgentRunConfirmedExecutionServiceTest {
      * public result, and never approve a tool, execute a tool, issue a new AUTOPILOT grant, or call Python.
      */
     @Test
-    void shouldReplayDurableConfirmationReceiptForSameIdempotencyKeyWithoutRepeatingSideEffects() {
+    void shouldReplayDurableConfirmationReceiptForSameIdempotencyKeyWithoutRepeatingSideEffects() throws Exception {
         stubIdempotentConfirmationTool();
         when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
                 .thenReturn(AgentPostConfirmContinuationView.disabled());
@@ -306,7 +306,12 @@ class AgentRunConfirmedExecutionServiceTest {
 
         AgentRunConfirmedExecutionResponse replay = confirmWithRequest(request, "trace-confirm-retry");
 
-        assertEquals(first, replay);
+        /*
+         * receipt 只保存可公开回放的 JSON 形状。planArguments、governanceHints 和 approvalComment
+         * 是服务器内部字段，第一次对象在 JVM 内仍可能有值，但两次 HTTP 序列化后的合同必须完全一致。
+         */
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        assertEquals(mapper.writeValueAsString(first), mapper.writeValueAsString(replay));
         assertNotNull(replay.autopilotSnapshot());
         assertEquals("AUTOPILOT", replay.autopilotSnapshot().executionMode());
         assertEquals("run-confirm", replay.autopilotSnapshot().rootRunId());

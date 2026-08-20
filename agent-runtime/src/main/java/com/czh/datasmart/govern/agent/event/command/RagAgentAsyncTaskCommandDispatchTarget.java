@@ -154,6 +154,12 @@ public class RagAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
         putText(controlFacts, "traceId", record.traceId());
         putText(controlFacts, "source", "JAVA_AGENT_RUNTIME_COMMAND_OUTBOX");
         putText(controlFacts, "toolCode", RAG_TOOL_CODE);
+        /*
+         * 普通知识/案例检索按 internal 处理。这个值由 Java 控制面写入 controlFacts，不能从模型产生的
+         * arguments 或顶层 payload 复制，因此调用方即使自报 public 也无法降低外部 Embedding/Reranker
+         * 门禁。包含故障日志的 Recovery 检索走专用适配器，并使用更保守的 restricted。
+         */
+        putText(controlFacts, "sensitivityLevel", "internal");
         putText(controlFacts, "queryRef", resolveQueryRef(payload, inlineArguments));
         putText(controlFacts, "answerArtifactReference",
                 firstValue(payload, "answerArtifactReference", "answer_artifact_reference", "artifactReference"));

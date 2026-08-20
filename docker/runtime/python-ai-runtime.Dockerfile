@@ -2,7 +2,7 @@
 
 # Python AI Runtime 多阶段镜像。
 #
-# builder 阶段负责创建虚拟环境并安装 API、LangGraph、RAG、Kafka、Redis、PostgreSQL/pgvector 等可选能力；
+# builder 阶段负责创建虚拟环境并安装 API、LangGraph、RAG、GraphRAG、Kafka、Redis、PostgreSQL/pgvector 等可选能力；
 # runtime 阶段只复制虚拟环境和运行包，不携带编译缓存、pip 缓存或仓库测试文件。
 # 默认使用 DaoCloud 国内镜像站，企业部署可以通过 PYTHON_IMAGE build arg 切换私有基础镜像。
 
@@ -10,7 +10,7 @@ ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm
 
 FROM ${PYTHON_IMAGE} AS builder
 
-ARG PYTHON_RUNTIME_EXTRAS=api,rag,kafka,redis,postgresql,mcp
+ARG PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis,postgresql,mcp
 # Python 包下载与 Docker 基础镜像是两条链路：基础镜像走 DaoCloud，pip 默认走可覆盖的国内 PyPI 镜像。
 # 企业环境可以在 Compose/build pipeline 中把该参数替换为内网制品库，不需要修改 Dockerfile。
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
@@ -54,6 +54,17 @@ if requirements:
     subprocess.check_call([
         "pip", "install", "--retries", "10", "--timeout", "120", *requirements,
     ])
+
+# 构建期就验证“声明了可选能力，镜像确实包含对应 Driver”。过去依赖层被 Docker 缓存复用时，
+# Compose 虽然传入了 graph extra，运行容器仍可能缺少 neo4j，直到真实摄取才暴露问题；
+# 这里让镜像构建直接失败，避免把缺依赖伪装成运行时 Provider 故障。
+if "graph" in {item.strip() for item in os.environ["PYTHON_RUNTIME_EXTRAS"].split(",") if item.strip()}:
+    try:
+        import importlib.util
+        if importlib.util.find_spec("neo4j") is None:
+            raise SystemExit("PYTHON_RUNTIME_EXTRAS contains graph but neo4j is not installed")
+    except ModuleNotFoundError as exc:
+        raise SystemExit("PYTHON_RUNTIME_EXTRAS contains graph but neo4j is not installed") from exc
 PY
 
 # 业务包在轻量层中安装。`--no-deps` 是安全的，因为上一层已经从同一份 pyproject 结构化安装了全部选中依赖；

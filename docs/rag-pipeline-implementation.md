@@ -2,6 +2,77 @@
 
 本文记录 Python Runtime 当前 RAG（Retrieval-Augmented Generation，检索增强生成）能力的实现原理、代码边界和后续演进方向。它不是简单地“调用某个框架的 retriever API”，而是把 RAG 的核心阶段拆成可解释、可测试、可替换的工作单元，方便后续接入 LangGraph、多 Agent、pgvector、Neo4j GraphRAG 或企业搜索服务。
 
+## 2026-08-20 Neo4j Provider 运行状态
+
+GraphRAG 的代码适配器已经接入 `api/app.py` 的默认 RAG 管线，Agent 在 `retrievalMode=auto` 下可以把
+普通 Hybrid RAG、GraphRAG 或 `hybrid_graph` 联合检索作为模型决策结果。此前本地运行容器仍处于旧状态：
+Compose 的 Provider 值为 `disabled`，旧镜像没有安装 Neo4j Python Driver，因此模型选择图路径时会记录
+`MODEL_CAPABILITY_FALLBACK` 并回退普通 RAG。
+
+本轮已完成运行时修正并在本机 Docker 验证：
+
+- `docker-compose.application.yml` 和 `.env.application.example` 的完整 Compose 默认启用
+  `DATASMART_GRAPH_RAG_PROVIDER=neo4j`，生产环境仍可显式设为 `disabled`；
+- Python Runtime 构建参数包含 `graph` extra，镜像实际安装 `neo4j` Driver；
+- `DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA=true` 启动时幂等创建标准实体约束和别名索引；
+- `GET /agent/rag/diagnostics` 已返回 `graphRag.provider=neo4j`、`available=true`、`enabled=true`；
+- Neo4j 容器健康检查通过；结构初始化完成后，受控摄取样本已写入 `3` 个实体和 `2` 条关系。
+
+最后一项是有意保留的事实边界：Provider 已连接不等于所有业务图数据都已入库。当前只摄取了一份合成
+组织关系事实；没有真实实体、来源、时间和关系证据时，GraphRAG 会按 `ALIAS_NOT_FOUND` 或
+`NO_CURRENT_PATH` 安全拒答，普通文档相似度不会掩盖关系证据缺失。
+
+## 2026-08-20 受控图数据摄取：结构初始化与事实物化的区别
+
+这里要区分两个容易混淆的动作：
+
+1. **数据库结构初始化**：`DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA=true` 只创建 `GraphEntity.standard_id`
+   唯一约束和别名索引。它不会从 Markdown、DOCX、XLSX 或日志中自动猜关系，也不会产生任何业务实体。
+2. **图事实物化/摄取**：`scripts/rag-graph-ingest.py` 读取已授权、已审批的 JSON 图事实包，把文档中的
+   显式 `graphEntities` 和 `graphRelations` 校验后幂等写入 Neo4j。每条关系必须保留来源文档 ID、原始
+   source URI、source chunk、断言时间、生效/失效时间、可信度、状态和 tenant/application/project 范围。
+
+因此，图数据可以依据文档内容初始化，但不是“把所有文档交给模型后直接写库”。推荐生产链路是：
+
+```text
+已授权文档 -> 规则或模型生成候选事实 -> 人工/治理流程审批 -> 全量来源与范围校验
+-> Neo4j 幂等摄取 -> GraphRAG 有限跳查询 -> 返回完整引用链
+```
+
+模型可以参与“从文档提出候选实体和关系”，但不能绕过 `APPROVED`、`sourceStatus=COMPLETE`、稳定
+实体 ID、来源一致性、范围继承和当前关系冲突检查。当前摄取器只接受 `REPORTS_TO`，因为这是已经
+接入查询核心并有冲突拒答语义的关系；血缘、字段映射、任务依赖等关系应在补齐对应查询和黄金集后
+分别扩展，不应先把未经定义的关系写入生产图。
+
+本地合成验证命令：
+
+```powershell
+# 默认只校验，不连接 Neo4j。
+python scripts/rag-graph-ingest.py
+
+# 明确确认后才写入当前 Compose Neo4j；重复执行不会增加重复节点或关系。
+python scripts/rag-graph-ingest.py --ingest --confirm-controlled-graph-facts
+```
+
+真实数据同步业务图谱使用另一条明确的快照合同：
+
+```powershell
+python scripts/rag-business-graph-build.py `
+  --snapshot evaluation/rag/graph/business-sync-snapshot.json `
+  --output evaluation/rag/graph/business-sync-facts.json
+```
+
+快照由控制面导出低敏的应用、项目、数据源、Schema、表、字段、约束、任务版本、执行、日志、错误码、
+字段映射、Runbook、事故和恢复动作；构建器生成 `PROPOSED` 事实和稳定 fingerprint，不能直接写 Neo4j。
+随后由 permission-admin 完成双主体审批并通过 Kafka/outbox 发布，Python consumer 回查审批、范围、数量和
+fingerprint 后才调用受控摄取器。业务图中的 `EXECUTION_HAS_LOG`、`LOG_MATCHES_ERROR`、
+`FIELD_HAS_CONSTRAINT` 和 `TASK_HAS_VERSION` 关系使“日志错误 -> 约束/映射/成功版本 -> Runbook/修复动作”
+可以在同一应用范围内回溯；没有审批或来源不完整时仍 fail-closed。
+
+该流程目前验证了 3 个实体、2 条关系、两跳“小张 -> 李四 -> 王五”以及重复摄取后的 `3/2`
+计数稳定。后续剩余工作是让组织目录、数据血缘和任务元数据等真实业务来源生成同一格式的已审批事实，
+并为每种关系补充对应的冲突、时间和跨范围黄金用例；这不是数据库启动失败，而是业务事实尚未覆盖的范围。
+
 ## 1. RAG 在项目中的定位
 
 DataSmart 的 AI 层现在同时存在两类“知识”：
@@ -54,8 +125,8 @@ LangGraph durable checkpoint 已接入：
 
 一次 RAG 问答会经过以下阶段：
 
-1. `query validation`：规范化租户、项目、workspace、topK、候选窗口和上下文预算，防止外部请求无限扩大召回或 prompt 长度。
-2. `scope filter`：在任何排序前先做 `tenantId/projectId/workspaceKey` 过滤，避免跨租户文档先参与向量排序再过滤造成泄漏风险。
+1. `query validation`：规范化租户、应用、项目、topK、候选窗口和上下文预算，防止外部请求无限扩大召回或 prompt 长度。
+2. `scope filter`：在任何排序前先做 `tenantId/applicationId/projectId` 过滤，避免跨租户或跨应用文档先参与向量排序再过滤造成泄漏风险。
 3. `chunking`：把文档切成 chunk，保留少量 overlap，让答案所需信息不容易被切在边界外。
 4. `lexical score`：使用轻量 BM25 风格词项分，标题和 tag 命中权重大于正文命中。
 5. `optional vector score`：如果配置了 embedding provider，则计算 query/chunk 的余弦相似度。
@@ -140,7 +211,8 @@ MASTER_ORCHESTRATOR
 
 尚未完成但已预留接口：
 
-- Neo4j GraphRAG，用于血缘、表关系、业务口径和资产图谱推理。
+- Neo4j GraphRAG 已提供可选分支，用于血缘、表关系、业务口径和资产图谱推理；完整 Compose 默认启用，
+  单模块开发仍可默认关闭，启用后始终受标准实体 ID/别名、范围、时间有效性、最多三跳、冲突拒答和完整引用链约束。
 - MinIO 文档解析、增量索引、删除重建和索引版本管理。
 - 历史 188/308 基线已完成一次真实 BGE 全量评测，以及 188 文档/313 chunk 的本机 pgvector 摄取和
   DOCX/XLSX 原始 URI 查询 smoke；这些结果不代表当前 356/752 语料。新指纹上的 BGE、pgvector 基准、
@@ -221,8 +293,89 @@ chunk 身份和替换/删除条件，跨租户同名 documentId 不会碰撞。R
 确定性哈希 Embedding 只保留给学习、单元测试和 smoke；生产 pgvector 装配检测到该 Provider 时会
 fail-closed，不能把可重复伪向量描述为语义召回。
 
+## 2026-08-20 补充：Agent 自主检索路径与候选窗口保护
+
+RAG 查询现在支持 `retrievalMode=auto`。这是面向真实 Agent 调用方的默认值，前端和 HTTP 调用方不需要在
+部署时选择某一种 RAG。Runtime 会把用户问题交给受治理的检索路由模型，只要求模型返回严格 JSON，并在响应的
+`retrievalSummary` 中记录低敏的 `decisionMode`、`decisionSource`、`decisionConfidence` 和公开原因：
+
+- `hybrid`：普通文档、手册、日志、任务案例和运维资料，内部继续组合词法召回与向量召回；
+- `graph`：组织关系、血缘、父子依赖等需要有限跳数关系遍历的问题；
+- `hybrid_graph`：既需要关系链推理，又需要普通文档原文依据的问题。
+
+模型只做路径选择，不直接读取文档、不执行图数据库写操作，也不能改变租户、应用、项目、敏感级别或
+工具权限。模型调用失败、限流、预算阻断或返回非法 JSON 时使用规则式保守兜底；模型选择 GraphRAG 但当前实例
+没有装配 GraphRAG Provider 时，执行前会收敛到 `hybrid` 并记录 `MODEL_CAPABILITY_FALLBACK`，不会把不可用图
+能力伪装成成功。GraphRAG 发生关系冲突、别名歧义、来源不完整或超过最多三跳时保持拒答，不用普通文档相似度
+猜一个关系答案。
+
+本轮还修复了 BGE Reranker 前的候选丢失问题。长 DOCX、XLSX 和日志经常产生很多重复 chunk；目标资料虽然已经
+被词法/向量召回，却可能在 16 条远端窗口前被同一份长文档挤掉。`knowledge_base.py` 与
+`reranker_provider.py` 现在会在已通过范围和来源过滤的候选中，为职责分数达到阈值且有真实召回信号的资料各保留
+一个文档代表，再进行多 facet 保留和文档轮询。该保护不重新搜索、不扩大权限、不替代 Reranker 或 evidence gate。
+错误码目录、管理员手册和自治恢复 API 的自然语言职责提示也已补齐。
+
+新增回归覆盖：模型选择联合模式、非法 JSON 兜底、GraphRAG 能力不可用时的约束、联合 `C*`/`G*` 引用、单职责
+目标进入真实远端窗口。当前本机后端聚焦 RAG 回归为 `127 passed`；这证明代码合同已通过，但不等于真实模型质量
+门禁已经通过。最近可用的 752 条全量 BGE 报告仍低于 Recall、nDCG、引用和单用例门禁，后续必须在 Secret 通过
+环境变量注入后重新运行全量 `siliconflow` 评测。
+
 PostgreSQL 连接使用 `search_path=ai_memory`，而 pgvector 扩展安装在 `public`。因此建表类型固定为
 `public.vector`，距离表达式固定为 `OPERATOR(public.<=>)`；该写法已经过真实向量写入与查询验证，避免
 依赖部署环境的隐式 search path。数据库向量分数会被外层混合检索直接复用；1024 维 `BAAI/bge-m3`
 使用部分表达式 HNSW 索引，其他模型/维度仍走精确排序，必须另行建立匹配索引并做容量验收。合成语料摄取只允许本地、开发、测试或学习模式，生产和预发布环境
 即使提供确认参数也会拒绝写入。
+
+## 2026-08-18 补充：查询意图、拒答锚点与互补证据复核
+
+本轮没有把黄金集中的 `documentId` 写进检索逻辑，而是在 `text.py` 维护可审计的“查询表达 -> 资料职责”
+先验。它只使用 Manifest 中已经存在的 `category`、`sourceType`、`contentFormat`、标题和标签做次级排序，
+最终仍必须经过范围过滤、词法/向量召回、Reranker 和 evidence gate。当前先验覆盖成功任务参数、运维流程、
+字段映射、Worker/Kafka 日志、API 与 WebSocket、限流、Schema 漂移、Recovery、Checkpoint、失败分片 replay
+和 RAG 评测等职责，目的是在“同一词出现在很多文档类型”时减少职责串线。
+
+多证据查询现在分两段处理：
+
+1. 第一段以有限 facet 做有界集合覆盖。每个 facet 查看所有已通过上游门禁的 chunk，同一 DOCX/XLSX 的多个
+   chunk 可以共同证明该文档覆盖了多个主题，但最终只保留一个代表 chunk。如果某个 facet 存在
+   `intentScore >= 0.85` 的明确 category 候选，则只允许达到同一职责门槛的资料覆盖该 facet；没有职责候选时
+   才退回词法覆盖，避免通用案例凭整句复述吞掉接口、任务案例和恢复台账等独立职责。
+2. 所有 facet 已有证据后，第二段才在 `topK` 上限内补充高意图、尚未出现的 `category`。候选不能重新绕过
+   scope、Reranker 或 evidence gate；没有职责意图或 facet 信号的候选不会为了凑满 `topK` 被加入。没有
+   `category` 的旧资料退化为文档自身去重键，不会把所有 `document` 或 `incident` 粗暴合并。
+
+facet 职责评分还保留一个只用于消歧的整句上下文。facet 自身决定激活哪一种职责；整句仅在已激活的 Recovery
+职责内部区分“Checkpoint/安全位点的 replay 案例”和“从接口标识追踪到最终验证的 Recovery 事件流水”。因此
+上下文不会把整句其他主题重新灌入当前 facet，也不会绕过词法、范围、来源状态或 Reranker 门禁。
+
+拒答保护也做了一个重要修正。中文 n-gram 先删除固定治理泛词，再提取未知实体锚点，避免“火星冷链调度规则的
+当前阈值”被切出“则的”之类跨词碎片，从而误把通用文档当作答案。多个独立的两字业务词（例如“授权、决策、最小”）
+现在可以共同构成 facet 强证据；单个泛化两字词仍不能单独放行。Checkpoint 职责先验仅由“Checkpoint 事故、
+检查点事故、位点事故”这类明确事故表达触发，普通“CDC 检查点”不会自动补入无关 Recovery 资料。
+
+本轮新增中文回归覆盖恢复手册/字段案例/Worker 日志、API 合同/Recovery 事件/状态快照、Kafka 任务案例/成功参数、
+限流事故/API 案例/连接器清单、Checkpoint 事故/失败分片 replay/Recovery 决策、全量执行接口/任务案例/恢复台账，
+以及“接口追踪到最终验证”“Checkpoint replay”“告警/连接器/可观测性职责”“部署/灾备总流程”语境。当前算法相关
+管线测试为 `45 passed`；五个运行时 RAG/Embedding/Persistence 测试与评测资产合同合计 `103 passed`，
+Python Runtime 全测试目录本轮为 `1263 passed, 1 skipped`。
+
+已复跑的离线子集（数据集仍为当前 356 份文档；报告只保存低敏 ID、URI、分数和指标）：
+
+| 子集 | 结果 | 说明 |
+| --- | --- | --- |
+| `multi_document`（12 条） | `12/12`，Recall/MRR=`1.0/1.0`，nDCG=`0.889327`，引用精确率/召回率=`1.0/1.0` | 互补证据与 URI 完整 |
+| `cross-format-multi-global-*`（12 条） | `12/12`，Recall/MRR=`1.0/1.0`，nDCG=`0.876666`，引用精确率/召回率=`1.0/1.0` | 职责门禁与生命周期上下文通过 |
+| 代表性跨格式用例（5 条） | `5/5`，Recall/MRR=`1.0/1.0`，nDCG=`0.866204`，引用精确率/召回率=`1.0/1.0` | DOCX/XLSX/JSONL/LOG/SQL 联合引用通过 |
+| `no_answer`（12 条） | `12/12`，拒答 Precision/Recall/F1=`1.0/1.0/1.0` | 未知实体不再被通用 n-gram 放行 |
+| `stale_conflict`（12 条） | `12/12`，过期抑制=`1.0` | 现行资料优先，引用无多余历史资料 |
+| `history_lookup`（16 条） | `16/16`，Recall/MRR/nDCG/引用指标均为 `1.0` | 只在明确历史检索范围读取 |
+| `cross_scope_refusal`（28 条） | `28/28`，范围泄漏=`0`，拒答 F1=`1.0` | 私有范围硬隔离仍成立 |
+| `exact_error_code`（80 条） | `80/80`，Recall/MRR/nDCG/引用指标均为 `1.0` | 修复前 `78/80` 仅保留为历史对照 |
+
+这些子集通过不等于当前 RAG 已完成生产验收。2026-08-18 已在同一当前数据集指纹上完成真实在线
+Embedding + Reranker smoke：`siliconflow-bge-m3` 报告标记模型为 `BAAI/bge-m3` 和
+`BAAI/bge-reranker-v2-m3`，20 条跨格式语义用例 `20/20`，Recall/MRR/nDCG、引用精确率/召回率和单用例
+通过率均为 `1.0`，范围泄漏为 `0`，p50/p95 为 `3760/17363 ms`。因此“只做离线、尚未调用模型”已经不再是
+当前事实；但该报告仍是 20 条 smoke，不代表 752 条全量、pgvector 大规模吞吐或生产稳定性。Embedding 缓存
+保存在仓库外临时目录，密钥只在当前评测进程环境中存在。PostgreSQL/pgvector 全量、并发/吞吐、冷暖缓存、
+429/5xx/超时故障注入和前后端真实 E2E 仍是剩余事项。

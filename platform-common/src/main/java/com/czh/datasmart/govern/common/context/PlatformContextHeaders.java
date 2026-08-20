@@ -127,6 +127,14 @@ public final class PlatformContextHeaders {
     public static final String WORKSPACE_RISK_LEVEL = "X-DataSmart-Workspace-Risk-Level";
 
     /**
+     * Gateway/Agent Runtime 可信声明的 RAG 查询正文分级。
+     *
+     * <p>请求体中的 sensitivityLevel 只是调用方自报值，不能降低外部模型外发门禁；只有该 Header
+     * 经过 gateway HMAC 或 Agent Runtime 内部服务令牌保护后，Python Runtime 才会采用它。</p>
+     */
+    public static final String RAG_SENSITIVITY_LEVEL = "X-DataSmart-Rag-Sensitivity-Level";
+
+    /**
      * 工具预算策略版本。
      *
      * <p>会话级 READY Skill cache 必须把预算策略版本纳入 key。原因是同一个租户、角色和项目下，

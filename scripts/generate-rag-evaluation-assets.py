@@ -164,7 +164,8 @@ CURRENT_DOCUMENTS: tuple[DocumentSpec, ...] = (
         summary="检索必须先按租户、项目和工作区过滤，再执行词法、向量和重排步骤。",
         actions=("核对请求范围三元组", "确认候选集只含允许范围", "记录被范围过滤的候选数量"),
         exact_question="精确码 RAG-ISO-401 的处理原则是什么？",
-        semantic_question="知识检索怎样避免先排序后发现跨空间的资料？",
+        # 语义题使用业务口吻，避免把检索实现字段泄漏给被测系统。
+        semantic_question="查资料时，怎样保证不会把别的团队内容混进当前答复？",
     ),
     DocumentSpec(
         slug="architecture-event-bridge",
@@ -176,7 +177,7 @@ CURRENT_DOCUMENTS: tuple[DocumentSpec, ...] = (
         summary="业务服务与 AI Runtime 通过可追溯的异步事件桥接，回执以稳定任务标识关联。",
         actions=("校验事件版本", "保留幂等键", "将失败事件转入受控重试队列"),
         exact_question="精确码 ARC-EVT-212 说明的桥接约束是什么？",
-        semantic_question="服务和智能运行时之间怎样避免把回执接错任务？",
+        semantic_question="一项工作结束后，处理结果怎样准确回到最初发起的那件事上？",
     ),
     DocumentSpec(
         slug="architecture-citation-evidence",
@@ -188,7 +189,7 @@ CURRENT_DOCUMENTS: tuple[DocumentSpec, ...] = (
         summary="答案只能依据已检索的片段生成，并返回可追溯 sourceUri 的引用记录。",
         actions=("保留文档标识与 sourceUri", "压缩上下文但不丢失引用", "无证据时拒绝生成"),
         exact_question="精确码 RAG-CIT-118 对引用链有什么要求？",
-        semantic_question="如何让治理问答的结论能回到原始证据？",
+        semantic_question="给出结论时，怎样让人能追查它依据了哪份材料，并在找不到材料时停下来？",
     ),
     DocumentSpec(
         slug="product-quality-lifecycle",
@@ -222,7 +223,7 @@ CURRENT_DOCUMENTS: tuple[DocumentSpec, ...] = (
         summary="索引重建前先冻结写入批次，验证范围过滤和文档哈希，再以小批量切换新索引。",
         actions=("确认写入批次静止", "核验内容哈希", "抽样查询并检查引用范围"),
         exact_question="精确码 OPS-RAG-503 的索引重建第一组检查是什么？",
-        semantic_question="重建知识索引时，怎样避免换入未经核验的资料？",
+        semantic_question="准备启用一批新资料时，先怎样把关，才不会把有问题的内容带进来？",
     ),
     DocumentSpec(
         slug="runbook-kafka-backlog",
@@ -290,7 +291,7 @@ CURRENT_DOCUMENTS: tuple[DocumentSpec, ...] = (
         summary="订单主题合成案例按主键和变更序列去重，只有目标端确认后才推进检查点。",
         actions=("检查主键去重", "确认目标端提交", "推进一致性检查点"),
         exact_question="精确码 SYN-ORD-602 的检查点推进条件是什么？",
-        semantic_question="订单增量任务何时才可以移动已处理位置？",
+        semantic_question="订单变更已经写到接收系统后，什么时候才可记录处理进度？",
     ),
     DocumentSpec(
         slug="sync-batch-customer",
@@ -358,7 +359,7 @@ CURRENT_DOCUMENTS: tuple[DocumentSpec, ...] = (
         summary="访问决策同时校验角色、租户、项目、工作区和动作；模型输出不能替代授权事实。",
         actions=("校验角色与动作", "校验完整范围", "缺少事实时拒绝执行"),
         exact_question="精确码 GOV-RBAC-109 的授权决策要同时校验哪些维度？",
-        semantic_question="为什么语言模型说可以访问不能当作权限依据？",
+        semantic_question="有人声称自己能操作某项数据时，系统还要核实哪些实际许可才可放行？",
     ),
     DocumentSpec(
         slug="governance-classification",
@@ -444,6 +445,183 @@ ALL_DOCUMENT_SPECS = CURRENT_DOCUMENTS + HISTORY_DOCUMENTS
 SCOPE_BY_KEY = {scope.key: scope for scope in SCOPES}
 SPEC_BY_SLUG = {spec.slug: spec for spec in ALL_DOCUMENT_SPECS}
 
+# 这六个主题覆盖跨范围检索、事件关联、可追溯回答、资料切换、增量进度和访问放行。
+# 题干只使用人工审阅过的业务口吻，范围由黄金记录的结构化 scope 提供。
+SEMANTIC_PARAPHRASE_SPEC_SLUGS = (
+    "architecture-rag-scope-filter",
+    "architecture-event-bridge",
+    "architecture-citation-evidence",
+    "runbook-rag-index-rebuild",
+    "sync-cdc-orders",
+    "governance-rbac-least-privilege",
+)
+
+# 防止语义题把实现分类词重新写进题干。通用字段与文档元数据会在断言中一并检查。
+SEMANTIC_PARAPHRASE_IMPLEMENTATION_TERMS = {
+    "architecture-rag-scope-filter": ("RAG", "检索", "排序", "向量", "租户", "项目", "工作区", "候选"),
+    "architecture-event-bridge": ("服务", "智能运行时", "异步", "事件", "回执", "任务标识", "Kafka", "幂等"),
+    "architecture-citation-evidence": ("RAG", "管线", "sourceUri", "片段", "引用", "证据", "拒绝生成"),
+    "runbook-rag-index-rebuild": ("RAG", "索引", "重建", "哈希", "范围过滤", "写入批次", "小批量"),
+    "sync-cdc-orders": ("CDC", "同步", "目标端", "检查点", "主键", "变更序列", "提交"),
+    "governance-rbac-least-privilege": ("RBAC", "角色", "租户", "项目", "工作区", "动作", "模型", "授权事实", "权限"),
+}
+
+SEMANTIC_PARAPHRASE_SHARED_FORBIDDEN_TERMS = (
+    "精确码",
+    "锚点",
+    "caseId",
+    "documentId",
+    "sourceUri",
+    "tenantId",
+    "projectId",
+    "workspaceKey",
+    "租户",
+    "项目",
+    "工作区",
+)
+
+# 这是运行时意图提示表中归一化长度不少于 8 的短语镜像。它是评测资产的静态审计基线，
+# 不在生成器运行时导入 text.py，避免生产排序提示反向耦合到黄金题目。运行时提示表变更时，
+# 必须人工审阅并同步这份列表和 OOD 题干。
+CROSS_FORMAT_INTENT_HINT_FORBIDDEN_PHRASES = (
+    "Agent、任务和数据同步接口",
+    "Agent 规划接口",
+    "ai runtime",
+    "CDC 任务怎样配置",
+    "checkpoint",
+    "Checkpoint 事故",
+    "Checkpoint 漂移",
+    "citationPrecision",
+    "correlationId",
+    "distinct_count",
+    "Embedding",
+    "null_ratio",
+    "pgvector",
+    "pgvector 降级",
+    "Provider degraded",
+    "RAG 与 Agent 评测",
+    "Recovery 事件",
+    "Recovery 决策",
+    "Recovery 接口",
+    "Recovery 每轮",
+    "Reranker",
+    "REST 与 WebSocket",
+    "schema drift",
+    "Schema 变更策略",
+    "Schema 漂移",
+    "state snapshot",
+    "ToolPlan",
+    "WebSocket 事件",
+    "WebSocket 如何展示",
+    "Worker 执行日志",
+    "Worker 日志",
+    "不能只看 Recall",
+    "不能继续自动循环",
+    "事故证据与修复动作台账",
+    "产品的六类 Agent",
+    "任务与恢复持久化",
+    "任务失败后快速参考",
+    "任务执行与 Recovery",
+    "优先执行哪些只读",
+    "修复动作和最终验证",
+    "六 Specialist",
+    "六 Specialist 自治恢复 E2E",
+    "分片 replay",
+    "告警会触发 recovery",
+    "命令定位同步异常",
+    "哪些告警会触发 recovery",
+    "多 Agent 协作",
+    "失败对象 replay",
+    "字段非空失败对应",
+    "定时任务在非工作时间",
+    "引用、拒答和治理",
+    "成功任务的配置版本",
+    "成功同步任务的配置",
+    "执行日志中的非空",
+    "日志、指标、trace",
+    "日志、指标和 trace",
+    "日志指标 trace",
+    "时间线、自动修复",
+    "明确的权限或 DDL 错误",
+    "最近成功任务的配置",
+    "服务和智能运行时",
+    "自动修复和验证结果",
+    "触发 recovery",
+    "跨 agent 与 worker",
+    "需求描述创建同步任务",
+    "非空约束失败发生在哪个字段",
+)
+
+# 每份跨格式资料使用与精确题不同的业务问法。键集合由生成期校验，防止新增资料只得到
+# 直接命中题而漏掉 OOD 覆盖。
+CROSS_FORMAT_SEMANTIC_QUESTIONS = {
+    "manual-user-guide": "新人要把一句业务需求变成首次可执行工作时，需要经历哪些确认？",
+    "manual-administrator-guide": "负责平台设置的人，怎样安排成员职责、同意规则和可见资料？",
+    "manual-deployment-guide": "新环境上线前，基础服务的健康检查先后怎样安排？",
+    "manual-operations-guide": "一次作业出问题后，值班人员该按什么线索逐步排查？",
+    "record-operations-incident": "一次字段必填出错从发现到修好再确认，过程是怎样的？",
+    "report-platform-test": "平台交付前，协作、合规与后台执行要做哪些验收？",
+    "product-feature-specification": "这套平台怎样把需求、资料查找和数据处理串成一个闭环？",
+    "reference-api-websocket": "前台请求、后台作业和数据处理怎样确认属于同一次事情？",
+    "manual-schema-recovery": "字段不满足要求时，哪些调整可由系统代劳，哪些必须交给人工？",
+    "manual-security-approval": "第一次同意自动处理时，应把可做的范围限制到什么程度？",
+    "reference-authentication-api": "一次受控操作怎样确认是谁发起、谁同意以及服务代表谁？",
+    "reference-agent-api": "一个复杂需求怎样被拆成步骤、依据和不同专业角色共同完成？",
+    "reference-task-api": "日常作业怎样留版本、按计划启动并回看历史？",
+    "reference-data-sync-api": "批量处理从开始检查到分段完成，怎样把结果回传给发起方？",
+    "reference-recovery-api": "系统准备自助纠错时，怎样先给人看方案并在越界前停下？",
+    "reference-websocket-events": "使用者怎样实时看到一件工作从提出到结束的每一步？",
+    "manual-observability": "一次跨团队作业异常，怎样用运行线索找出问题位置？",
+    "manual-kafka-operations": "消息堆着不动、重复处理或失败队列变大时，先从哪里下手？",
+    "manual-postgresql-pgvector": "资料匹配变慢或返回结果对不上时，该从哪些存放设置查起？",
+    "manual-model-provider": "外部智能服务不稳定、请求被限制或答复不全时，怎样稳妥继续？",
+    "manual-backup-disaster-recovery": "严重故障后，业务资料和服务应按什么顺序恢复？",
+    "manual-upgrade-rollback": "升级应用或底层结构时，怎样保证出现问题能退回稳定版本？",
+    "postmortem-schema-drift": "上游字段变了导致作业失败后，怎样分清根因、可自动处理部分和长期措施？",
+    "postmortem-foreign-key": "父子数据写入顺序不对时，哪些改动可自动调整而哪些约束不能碰？",
+    "postmortem-rate-limit": "接收端忙不过来时，为什么只能收缩处理速度并谨慎延长等待？",
+    "postmortem-checkpoint": "断点位置不可靠时，怎样决定能否从某处重新开始而不重复影响结果？",
+    "postmortem-kafka-backlog": "消息越积越多且失败队列增长时，根因和恢复步骤是什么？",
+    "report-e2e-test": "多种专业职责协同处理时，验收需要覆盖哪些顺利和受阻的情形？",
+    "report-performance-test": "平台在高负荷下，协作、资料查询和处理环节的速度与容量应怎样比较？",
+    "report-rag-agent-evaluation": "判断智能决策是否靠谱，除了命中结果外还应看哪些质量信号？",
+    "workbook-success-task-parameters": "上一回顺利完成的作业，采用了多大的批次、并行度和等待时间？",
+    "workbook-field-mapping-cases": "地区字段没有值时，怎样补充来源和默认内容才合规？",
+    "workbook-schedule-retry-cases": "夜间例行工作出错后，最多尝试几次、每次间隔怎样设置？",
+    "workbook-test-result-matrix": "测试汇总表怎样算合格比例并决定是否可以放行？",
+    "workbook-incident-repair-ledger": "一次必填项报错需要保留哪些依据、处理动作和确认结果？",
+    "workbook-full-load-task-cases": "第一次搬运大量数据并切换到新端时，哪些设置与核验不能少？",
+    "workbook-incremental-task-cases": "持续搬运新增变化时，怎样选取读取位置、回看时段和进度标记？",
+    "workbook-cdc-task-cases": "持续接收变化记录时，位置、保活和字段变化该怎样安排？",
+    "workbook-file-task-cases": "从表格文件导入时，乱码、标题行、坏记录和重复上传分别怎么处理？",
+    "workbook-api-task-cases": "从外部服务取数时遇到翻页、限流或字段变化，应怎样恢复？",
+    "workbook-kafka-task-cases": "持续接收消息时，如何安排并行读取、位置记录、乱序和失败处理？",
+    "workbook-object-storage-task-cases": "从文件仓库取数据时，如何避免重复、覆盖或漏掉分区？",
+    "workbook-schema-evolution-task-cases": "字段结构变动时，哪些情况可直接接纳，哪些必须暂停让人决定？",
+    "workbook-quality-task-cases": "发现不干净的数据时，怎样隔离并决定这次工作继续还是停住？",
+    "workbook-recovery-replay-task-cases": "在已获同意的范围内，哪些问题可自行修正，哪些失败记录可重新处理？",
+    "quick-reference": "工作刚出错时，值班同学最先应该查看什么？",
+    "operator-faq": "遇到清楚的越权或结构变更问题时，为什么系统不该继续自己尝试？",
+    "connector-capabilities": "选定一种连接方式时，当前版本能承受多大的单次处理量？",
+    "agent-state-snapshot": "一件事情经过自动处理后，下一步会走向哪个收尾环节？",
+    "recovery-events": "自动纠正之后，系统接着怎样重新处理受影响的内容？",
+    "successful-runs": "最近一次顺利结束的工作用了哪个配置，留下了多少问题数据？",
+    "worker-execution": "后台处理因某个必填项报错时，究竟是哪一列出了问题？",
+    "persistence-snapshot": "保存下来的工作记录怎样串起执行过程、补救方案和依据？",
+    "runbook-command-reference": "值班人员应先运行哪些只读操作来找出处理异常？",
+    "error-code-catalog": "哪些故障可以由系统处理，哪些必须交由人接手？",
+    "api-contract-snapshot": "一次作业的运行和纠错过程，用哪些固定字段才不会串线？",
+    "task-config-versions": "当前配置和上次顺利完成时相比，有哪些改动？",
+    "task-case-library": "以往作业记录里包含哪些处理方式和补救策略？",
+    "audit-events": "审计记录怎样区分提出请求、作出同意和真正执行的主体？",
+    "recovery-decision-trace": "系统每次尝试补救时，怎样证明情况有新变化而不是原地打转？",
+    "connector-inventory": "连接方式清单里，哪些版本支持持续变化读取和从中断处继续？",
+    "field-profile-statistics": "字段统计如何帮助判断地区字段的补值和必填问题能否安全处理？",
+    "alert-history": "发生不同严重程度的异常时，哪些需要自动处理，哪些只提醒值班人员？",
+    "kafka-consumer-lag": "消息处理变慢时，哪个消费组和分区堆积最严重？",
+    "database-recovery-ledger": "保存的台账如何把补救过程、依据、动作和最后确认连起来？",
+}
+
 
 def document_id(scope: ScopeSpec, spec: DocumentSpec) -> str:
     """返回稳定且可读的文档 ID。
@@ -474,6 +652,120 @@ def source_type_plural(source_type: str) -> str:
     """统一黄金样本的来源类型过滤字段，保持 JSON 消费端处理简单。"""
 
     return source_type
+
+
+def normalize_question_for_assertion(question: str) -> str:
+    """去除空白和末尾标点，防止只靠改排版伪装成改写。"""
+
+    return "".join(question.casefold().split()).rstrip("？?！!。")
+
+
+def semantic_paraphrase_question(scope: ScopeSpec, spec: DocumentSpec) -> str:
+    """返回实际写入黄金集的 OOD 语义题，并在生成期阻止评测提示泄漏。
+
+    这里的最小断言只验证可机械判断的边界：题干不是精确题原句、不含稳定标识或实现分类词，
+    并且保持为完整中文问句。业务意图与自然度由本文件中的人工审阅模板保证。
+    """
+
+    question = spec.semantic_question
+    if not question:
+        raise ValueError(f"语义改写主题缺少题干：{spec.slug}")
+
+    normalized_question = normalize_question_for_assertion(question)
+    normalized_exact_question = normalize_question_for_assertion(spec.exact_question)
+    if (
+        normalized_question == normalized_exact_question
+        or normalized_exact_question in normalized_question
+        or normalized_question in normalized_exact_question
+    ):
+        raise ValueError(f"语义改写照抄了精确题模板：{spec.slug}")
+    if len(normalized_question) < 12 or not question.endswith("？"):
+        raise ValueError(f"语义改写不是完整自然问句：{spec.slug}")
+
+    forbidden_terms = {
+        *SEMANTIC_PARAPHRASE_SHARED_FORBIDDEN_TERMS,
+        *SEMANTIC_PARAPHRASE_IMPLEMENTATION_TERMS[spec.slug],
+        spec.code,
+        spec.slug,
+        spec.category,
+        spec.source_type,
+        spec.title,
+        spec.summary,
+        scope.key,
+        scope.label,
+        scope.tenant_id,
+        scope.project_id,
+        scope.workspace_key,
+        *spec.tags,
+    }
+    leaked_terms = sorted(
+        term
+        for term in forbidden_terms
+        if term and normalize_question_for_assertion(term) in normalized_question
+    )
+    if leaked_terms:
+        raise ValueError(f"语义改写泄漏实现分类词：{spec.slug} -> {leaked_terms}")
+    return question
+
+
+def cross_format_ood_question(
+    scope: ScopeSpec,
+    documents: Iterable[dict[str, Any]],
+    question: str,
+    *,
+    case_id: str,
+) -> str:
+    """校验跨格式语义题不复用运行时提示、资料元数据或精确题原句。
+
+    该检查故意比 near-literal 审计更严格：只要题干含有任一静态镜像短语就失败，而不是等到
+    短语占题干 30% 以上才失败。这样评测数据不会为运行时排序提示提供可直接命中的线索。
+    """
+
+    normalized_question = normalize_question_for_assertion(question)
+    if len(normalized_question) < 12 or not question.endswith("？"):
+        raise ValueError(f"跨格式语义题不是完整自然问句：{case_id}")
+
+    forbidden_terms = {
+        *CROSS_FORMAT_INTENT_HINT_FORBIDDEN_PHRASES,
+        *SEMANTIC_PARAPHRASE_SHARED_FORBIDDEN_TERMS,
+        scope.key,
+        scope.label,
+        scope.tenant_id,
+        scope.project_id,
+        scope.workspace_key,
+    }
+    for document in documents:
+        normalized_exact_question = normalize_question_for_assertion(str(document["exactQuestion"]))
+        if (
+            normalized_question == normalized_exact_question
+            or normalized_exact_question in normalized_question
+            or normalized_question in normalized_exact_question
+        ):
+            raise ValueError(f"跨格式语义题照抄了精确题模板：{case_id}")
+        forbidden_terms.update(
+            str(document[field])
+            for field in (
+                "slug",
+                "category",
+                "title",
+                "artifactCode",
+                "documentId",
+                "sourceUri",
+                "path",
+                "sourceType",
+                "contentFormat",
+            )
+            if document.get(field)
+        )
+
+    leaked_terms = sorted(
+        term
+        for term in forbidden_terms
+        if term and normalize_question_for_assertion(term) in normalized_question
+    )
+    if leaked_terms:
+        raise ValueError(f"跨格式语义题泄漏提示或资料标识：{case_id} -> {leaked_terms}")
+    return question
 
 
 def render_document(scope: ScopeSpec, spec: DocumentSpec) -> str:
@@ -878,24 +1170,15 @@ def build_golden_cases() -> list[dict[str, Any]]:
                 )
             )
 
-    # 每个范围选取六个主题做自然语言改写，问题中不提供精确码也不提供文档 ID。
-    # 语义改写固定挑六个跨层主题。其他带有自然语言描述的文档仍由精确查询覆盖；固定
-    # 选择避免模板增减时让基准数量在未审阅的情况下悄悄变化。
-    semantic_spec_slugs = (
-        "architecture-rag-scope-filter",
-        "architecture-event-bridge",
-        "architecture-citation-evidence",
-        "runbook-rag-index-rebuild",
-        "sync-cdc-orders",
-        "governance-rbac-least-privilege",
-    )
-    semantic_specs = tuple(SPEC_BY_SLUG[slug] for slug in semantic_spec_slugs)
+    # 每个范围选取六个主题做自然语言改写。题干不携带精确码、文档 ID 或范围标签，避免
+    # 被测系统从实现分类词反推答案；租户与项目边界仍完全由结构化 scope 参与评测。
+    semantic_specs = tuple(SPEC_BY_SLUG[slug] for slug in SEMANTIC_PARAPHRASE_SPEC_SLUGS)
     for scope in SCOPES:
         for spec in semantic_specs:
             cases.append(
                 case(
                     case_id=f"semantic-{scope.key}-{spec.slug}",
-                    question=f"针对 {scope.label}，{spec.semantic_question}",
+                    question=semantic_paraphrase_question(scope, spec),
                     scope=scope,
                     retrieval_mode="hybrid",
                     top_k=4,
@@ -1085,20 +1368,28 @@ def build_golden_cases() -> list[dict[str, Any]]:
                 )
             )
 
-    # 每份异构资料都必须有不包含精确码、文件名或独立锚点的自然问法。这样新增文档不会只依靠
-    # 人工编码命中，而会进入中文语义召回、重排和引用质量回归。
+    # 每份异构资料都必须有不包含精确码、文件名、范围标签或运行时提示短语的自然问法。这样
+    # 新增文档不会只依靠人工编码或意图先验命中，而会进入中文语义召回、重排和引用质量回归。
     semantic_slugs = tuple(sorted(
         slug
         for scope_key, slug in multiformat_index
         if scope_key == "global"
     ))
+    if set(semantic_slugs) != set(CROSS_FORMAT_SEMANTIC_QUESTIONS):
+        raise ValueError("跨格式 OOD 题干未与异构资料目录一一对应")
     for scope in SCOPES:
         for slug in semantic_slugs:
             document = multiformat_index[(scope.key, slug)]
+            case_id = f"cross-format-semantic-{scope.key}-{slug}"
             cases.append(
                 case(
-                    case_id=f"cross-format-semantic-{scope.key}-{slug}",
-                    question=f"针对 {scope.label}，{document['exactQuestion']}",
+                    case_id=case_id,
+                    question=cross_format_ood_question(
+                        scope,
+                        (document,),
+                        CROSS_FORMAT_SEMANTIC_QUESTIONS[slug],
+                        case_id=case_id,
+                    ),
                     scope=scope,
                     retrieval_mode="hybrid",
                     top_k=5,
@@ -1122,51 +1413,51 @@ def build_golden_cases() -> list[dict[str, Any]]:
     multiformat_groups = (
         (
             ("workbook-success-task-parameters", "successful-runs"),
-            "请还原最近成功任务的配置版本、批量、并发、超时和最终运行结果。",
+            "请说明近期一次顺利结束的作业用了哪些资源设置，并给出结果概况？",
         ),
         (
             ("manual-schema-recovery", "workbook-field-mapping-cases", "worker-execution"),
-            "region_code 非空失败的根因、允许的映射修复和日志验证是什么？",
+            "一条地区字段缺失的故障该如何定位、调整并确认已经恢复？",
         ),
         (
             ("manual-operations-guide", "connector-capabilities", "record-operations-incident"),
-            "请结合运维流程、连接器容量和历史记录给出本次排查顺序。",
+            "一次例行数据工作异常后，如何结合操作经验、承载能力和以往记录安排排查？",
         ),
         (
             ("reference-api-websocket", "agent-state-snapshot", "recovery-events"),
-            "怎样从接口标识追踪到 Recovery 修复、分片 replay 和最终验证？",
+            "从外部请求到最终收尾，怎样把过程中的状态变化串成可追溯链路？",
         ),
         (
             ("reference-authentication-api", "manual-security-approval", "audit-events"),
-            "认证、双主体审批和修复审计如何证明一次调用没有越权？",
+            "受控操作怎样同时证明发起、同意和实际执行的人都没有越界？",
         ),
         (
             ("reference-task-api", "workbook-schedule-retry-cases", "task-case-library"),
-            "定时任务在非工作时间失败后如何进入有界自治恢复并保留任务案例？",
+            "夜间安排的工作出错后，系统怎样在有限尝试内处理并保留可复用的经验？",
         ),
         (
             ("reference-data-sync-api", "workbook-full-load-task-cases", "database-recovery-ledger"),
-            "全量任务怎样从执行接口关联到失败对象、恢复台账和最终验证？",
+            "批量搬运出问题时，怎样把发起动作、受影响内容、补救记录和收尾确认对上？",
         ),
         (
             ("manual-kafka-operations", "workbook-kafka-task-cases", "kafka-consumer-lag"),
-            "Kafka 同步积压时如何结合任务参数、消费者日志和 DLT 规则处置？",
+            "消息处理堵塞时，怎样同时考虑配置、消费端现象和失败处置？",
         ),
         (
             ("manual-postgresql-pgvector", "report-rag-agent-evaluation", "field-profile-statistics"),
-            "RAG 检索异常时怎样同时核对 pgvector、评测指标和字段画像证据？",
+            "资料匹配结果异常时，怎样结合底层存放情况、质量表现和字段统计定位问题？",
         ),
         (
             ("postmortem-schema-drift", "workbook-schema-evolution-task-cases", "task-config-versions"),
-            "Schema 漂移发生后，如何从事故根因、字段演进案例和配置差异确定修复边界？",
+            "字段结构变了之后，怎样结合事故经过、兼容方案和配置改动划清可处理边界？",
         ),
         (
             ("postmortem-rate-limit", "workbook-api-task-cases", "connector-inventory"),
-            "API 目标限流时怎样依据历史事故、任务参数和连接器容量降低压力？",
+            "接收方承受不住时，怎样依据既往情况、当前设置和能力上限降低压力？",
         ),
         (
             ("postmortem-checkpoint", "workbook-recovery-replay-task-cases", "recovery-decision-trace"),
-            "Checkpoint 漂移后怎样证明安全位点、修复决策和失败对象 replay 一致？",
+            "处理位置出现偏差时，怎样确认可安全恢复、补救步骤和受影响记录是一致的？",
         ),
     )
     for scope in SCOPES:
@@ -1179,10 +1470,16 @@ def build_golden_cases() -> list[dict[str, Any]]:
                     for document_id in multiformat_siblings(scope, slug, multiformat_index)
                 }
             )
+            case_id = f"cross-format-multi-{scope.key}-{group_index}"
             cases.append(
                 case(
-                    case_id=f"cross-format-multi-{scope.key}-{group_index}",
-                    question=f"在 {scope.label}，{question_text}",
+                    case_id=case_id,
+                    question=cross_format_ood_question(
+                        scope,
+                        documents,
+                        question_text,
+                        case_id=case_id,
+                    ),
                     scope=scope,
                     retrieval_mode="hybrid",
                     top_k=max(6, len(documents) + 3),

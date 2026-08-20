@@ -154,3 +154,15 @@ datasmart:
       max-attempts: 10
       # SENDING 状态超时时间。服务在发送过程中崩溃后，投递器会把超时 SENDING 恢复为 FAILED。
       sending-timeout: 5m
+    graph-fact-events:
+      # 图事实审批事件与普通权限策略事件共用 permission_event_outbox，但单独控制开关和 Topic。
+      # 未配置 Kafka 时可以保持关闭，只验证审批事实入库和 dry-run；生产接入 Neo4j worker 时再打开。
+      enabled: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_ENABLED:false}
+      topic: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_TOPIC:datasmart.graph.facts.approved.v1}
+      dispatcher-enabled: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCHER_ENABLED:false}
+      dispatch-batch-size: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCH_BATCH_SIZE:50}
+      dispatch-fixed-delay-ms: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCH_FIXED_DELAY_MS:5000}
+      send-timeout: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_SEND_TIMEOUT:3s}
+      retry-delay: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_RETRY_DELAY:30s}
+      max-attempts: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_MAX_ATTEMPTS:10}
+      sending-timeout: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_SENDING_TIMEOUT:5m}

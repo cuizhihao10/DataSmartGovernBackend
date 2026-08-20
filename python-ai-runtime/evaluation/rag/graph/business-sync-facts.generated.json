@@ -1,0 +1,1407 @@
+{
+  "schemaVersion": "datasmart.graph-facts.v1",
+  "documents": [
+    {
+      "documentId": "business-graph:business-sync-demo-20260820",
+      "title": "DataSmart 业务图谱快照 business-sync-demo-20260820",
+      "content": "由数据同步控制面生成的低敏业务事实快照，具体引用通过 sourceChunkId 回查。",
+      "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+      "tenantId": "tenant-demo",
+      "applicationId": "app-flashsync",
+      "projectId": "project-orders",
+      "sourceType": "metadata",
+      "tags": [
+        "business-graph",
+        "data-sync",
+        "proposed"
+      ],
+      "sensitivityLevel": "internal",
+      "metadata": {
+        "sourceStatus": "COMPLETE",
+        "graphIngestionApproval": {
+          "status": "PROPOSED",
+          "approvalId": ""
+        },
+        "graphBuild": {
+          "schemaVersion": "datasmart.business-graph-snapshot.v1",
+          "snapshotId": "business-sync-demo-20260820",
+          "sourceRecordRef": "business-sync-demo-20260820",
+          "generatedAt": "2026-08-20T17:26:57.183826+00:00",
+          "entityCount": 16,
+          "edgeCount": 22,
+          "skippedRelationCount": 0,
+          "warnings": []
+        },
+        "graphEntities": [
+          {
+            "standardId": "application:app-flashsync",
+            "canonicalName": "FlashSync",
+            "aliases": [
+              "FlashSync",
+              "app-flashsync"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "APPLICATION",
+              "sourceSection": "applications",
+              "sourceRecordId": "app-flashsync",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "project:project-orders",
+            "canonicalName": "订单同步项目",
+            "aliases": [
+              "订单同步项目",
+              "project-orders"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "PROJECT",
+              "sourceSection": "projects",
+              "sourceRecordId": "project-orders",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "datasource:source-erp",
+            "canonicalName": "ERP 源库",
+            "aliases": [
+              "ERP 源库",
+              "source-erp"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "DATASOURCE",
+              "sourceSection": "dataSources",
+              "sourceRecordId": "source-erp",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "datasource:target-warehouse",
+            "canonicalName": "数仓目标",
+            "aliases": [
+              "数仓目标",
+              "target-warehouse"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "DATASOURCE",
+              "sourceSection": "dataSources",
+              "sourceRecordId": "target-warehouse",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "connector:connector-postgresql",
+            "canonicalName": "PostgreSQL Connector",
+            "aliases": [
+              "PostgreSQL Connector",
+              "connector-postgresql"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "CONNECTOR",
+              "sourceSection": "connectors",
+              "sourceRecordId": "connector-postgresql",
+              "status": null,
+              "version": "42.7"
+            }
+          },
+          {
+            "standardId": "schema:erp-public",
+            "canonicalName": "public",
+            "aliases": [
+              "public",
+              "erp-public"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "SCHEMA",
+              "sourceSection": "schemas",
+              "sourceRecordId": "erp-public",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "table:erp-orders",
+            "canonicalName": "orders",
+            "aliases": [
+              "orders",
+              "erp-orders"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "TABLE",
+              "sourceSection": "tables",
+              "sourceRecordId": "erp-orders",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "field:erp-orders-customer-id",
+            "canonicalName": "customer_id",
+            "aliases": [
+              "customer_id",
+              "erp-orders-customer-id"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "FIELD",
+              "sourceSection": "fields",
+              "sourceRecordId": "erp-orders-customer-id",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "task:task-orders-sync",
+            "canonicalName": "订单同步",
+            "aliases": [
+              "订单同步",
+              "task-orders-sync"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "TASK",
+              "sourceSection": "tasks",
+              "sourceRecordId": "task-orders-sync",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "task_version:task-orders-sync-v7",
+            "canonicalName": "订单同步成功配置 v7",
+            "aliases": [
+              "订单同步成功配置 v7",
+              "task-orders-sync-v7"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "TASK_VERSION",
+              "sourceSection": "taskVersions",
+              "sourceRecordId": "task-orders-sync-v7",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "execution:execution-orders-20260820",
+            "canonicalName": "订单同步执行 2026-08-20",
+            "aliases": [
+              "订单同步执行 2026-08-20",
+              "execution-orders-20260820"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "EXECUTION",
+              "sourceSection": "executions",
+              "sourceRecordId": "execution-orders-20260820",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "error:error-field-mapping-001",
+            "canonicalName": "字段映射错误",
+            "aliases": [
+              "字段映射错误",
+              "error-field-mapping-001",
+              "FIELD_MAPPING_INVALID"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "ERROR",
+              "sourceSection": "errors",
+              "sourceRecordId": "error-field-mapping-001",
+              "status": "active",
+              "version": null
+            }
+          },
+          {
+            "standardId": "log_event:log-orders-execution-20260820",
+            "canonicalName": "订单同步执行错误日志",
+            "aliases": [
+              "订单同步执行错误日志",
+              "log-orders-execution-20260820",
+              "FIELD_MAPPING_INVALID"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "LOG_EVENT",
+              "sourceSection": "logs",
+              "sourceRecordId": "log-orders-execution-20260820",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "runbook:runbook-field-mapping",
+            "canonicalName": "字段映射错误处理手册",
+            "aliases": [
+              "字段映射错误处理手册",
+              "runbook-field-mapping"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "RUNBOOK",
+              "sourceSection": "runbooks",
+              "sourceRecordId": "runbook-field-mapping",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "recovery_action:REFRESH_METADATA",
+            "canonicalName": "刷新元数据",
+            "aliases": [
+              "刷新元数据",
+              "REFRESH_METADATA"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "RECOVERY_ACTION",
+              "sourceSection": "actions",
+              "sourceRecordId": "REFRESH_METADATA",
+              "status": null,
+              "version": null
+            }
+          },
+          {
+            "standardId": "constraint:constraint-orders-customer-not-null",
+            "canonicalName": "customer_id NOT NULL",
+            "aliases": [
+              "customer_id NOT NULL",
+              "constraint-orders-customer-not-null"
+            ],
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal",
+            "metadata": {
+              "entityType": "CONSTRAINT",
+              "sourceSection": "constraints",
+              "sourceRecordId": "constraint-orders-customer-not-null",
+              "status": null,
+              "version": null
+            }
+          }
+        ],
+        "graphRelations": [
+          {
+            "sourceEntityId": "application:app-flashsync",
+            "targetEntityId": "project:project-orders",
+            "relation": "APPLICATION_CONTAINS_PROJECT",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "projects:project-orders",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "project:project-orders",
+            "targetEntityId": "datasource:source-erp",
+            "relation": "PROJECT_OWNS_RESOURCE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "dataSources:source-erp",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "project:project-orders",
+            "targetEntityId": "datasource:target-warehouse",
+            "relation": "PROJECT_OWNS_RESOURCE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "dataSources:target-warehouse",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "project:project-orders",
+            "targetEntityId": "task:task-orders-sync",
+            "relation": "PROJECT_OWNS_RESOURCE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "tasks:task-orders-sync",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "project:project-orders",
+            "targetEntityId": "runbook:runbook-field-mapping",
+            "relation": "PROJECT_OWNS_RESOURCE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "runbooks:runbook-field-mapping",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "datasource:source-erp",
+            "targetEntityId": "schema:erp-public",
+            "relation": "DATASOURCE_CONTAINS",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "schemas:erp-public",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "schema:erp-public",
+            "targetEntityId": "table:erp-orders",
+            "relation": "SCHEMA_CONTAINS_TABLE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "tables:erp-orders",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "table:erp-orders",
+            "targetEntityId": "field:erp-orders-customer-id",
+            "relation": "TABLE_HAS_FIELD",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "fields:erp-orders-customer-id",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "task:task-orders-sync",
+            "targetEntityId": "datasource:source-erp",
+            "relation": "TASK_USES_DATASOURCE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "tasks:task-orders-sync",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "task:task-orders-sync",
+            "targetEntityId": "datasource:target-warehouse",
+            "relation": "TASK_USES_DATASOURCE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "tasks:task-orders-sync",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "task:task-orders-sync",
+            "targetEntityId": "table:erp-orders",
+            "relation": "TASK_SYNCS_TABLE",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "tasks:task-orders-sync",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "task:task-orders-sync",
+            "targetEntityId": "task_version:task-orders-sync-v7",
+            "relation": "TASK_HAS_SUCCESSFUL_VERSION",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "tasks:task-orders-sync",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "task:task-orders-sync",
+            "targetEntityId": "task_version:task-orders-sync-v7",
+            "relation": "TASK_HAS_VERSION",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "taskVersions:task-orders-sync-v7",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "field:erp-orders-customer-id",
+            "targetEntityId": "field:erp-orders-customer-id",
+            "relation": "FIELD_MAPS_TO",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "mappings:mapping-orders-customer-id",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "task:task-orders-sync",
+            "targetEntityId": "execution:execution-orders-20260820",
+            "relation": "TASK_HAS_EXECUTION",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "executions:execution-orders-20260820",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "execution:execution-orders-20260820",
+            "targetEntityId": "error:error-field-mapping-001",
+            "relation": "EXECUTION_FAILED_WITH",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "executions:execution-orders-20260820",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "execution:execution-orders-20260820",
+            "targetEntityId": "log_event:log-orders-execution-20260820",
+            "relation": "EXECUTION_HAS_LOG",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "executions:execution-orders-20260820",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "execution:execution-orders-20260820",
+            "targetEntityId": "log_event:log-orders-execution-20260820",
+            "relation": "EXECUTION_HAS_LOG",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "logs:log-orders-execution-20260820",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "log_event:log-orders-execution-20260820",
+            "targetEntityId": "error:error-field-mapping-001",
+            "relation": "LOG_MATCHES_ERROR",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "logs:log-orders-execution-20260820",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "field:erp-orders-customer-id",
+            "targetEntityId": "constraint:constraint-orders-customer-not-null",
+            "relation": "FIELD_HAS_CONSTRAINT",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "fields:erp-orders-customer-id",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "field:erp-orders-customer-id",
+            "targetEntityId": "constraint:constraint-orders-customer-not-null",
+            "relation": "FIELD_HAS_CONSTRAINT",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "constraints:constraint-orders-customer-not-null",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          },
+          {
+            "sourceEntityId": "runbook:runbook-field-mapping",
+            "targetEntityId": "recovery_action:REFRESH_METADATA",
+            "relation": "RUNBOOK_RECOMMENDS_ACTION",
+            "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+            "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+            "sourceChunkId": "runbooks:runbook-field-mapping",
+            "assertedAt": "2026-08-20T12:00:00Z",
+            "effectiveAt": "2026-08-20T12:00:00Z",
+            "expiresAt": null,
+            "confidence": 0.9,
+            "status": "active",
+            "tenantId": "tenant-demo",
+            "applicationId": "app-flashsync",
+            "projectId": "project-orders",
+            "sensitivityLevel": "internal"
+          }
+        ]
+      },
+      "graphEntities": [
+        {
+          "standardId": "application:app-flashsync",
+          "canonicalName": "FlashSync",
+          "aliases": [
+            "FlashSync",
+            "app-flashsync"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "APPLICATION",
+            "sourceSection": "applications",
+            "sourceRecordId": "app-flashsync",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "project:project-orders",
+          "canonicalName": "订单同步项目",
+          "aliases": [
+            "订单同步项目",
+            "project-orders"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "PROJECT",
+            "sourceSection": "projects",
+            "sourceRecordId": "project-orders",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "datasource:source-erp",
+          "canonicalName": "ERP 源库",
+          "aliases": [
+            "ERP 源库",
+            "source-erp"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "DATASOURCE",
+            "sourceSection": "dataSources",
+            "sourceRecordId": "source-erp",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "datasource:target-warehouse",
+          "canonicalName": "数仓目标",
+          "aliases": [
+            "数仓目标",
+            "target-warehouse"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "DATASOURCE",
+            "sourceSection": "dataSources",
+            "sourceRecordId": "target-warehouse",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "connector:connector-postgresql",
+          "canonicalName": "PostgreSQL Connector",
+          "aliases": [
+            "PostgreSQL Connector",
+            "connector-postgresql"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "CONNECTOR",
+            "sourceSection": "connectors",
+            "sourceRecordId": "connector-postgresql",
+            "status": null,
+            "version": "42.7"
+          }
+        },
+        {
+          "standardId": "schema:erp-public",
+          "canonicalName": "public",
+          "aliases": [
+            "public",
+            "erp-public"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "SCHEMA",
+            "sourceSection": "schemas",
+            "sourceRecordId": "erp-public",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "table:erp-orders",
+          "canonicalName": "orders",
+          "aliases": [
+            "orders",
+            "erp-orders"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "TABLE",
+            "sourceSection": "tables",
+            "sourceRecordId": "erp-orders",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "field:erp-orders-customer-id",
+          "canonicalName": "customer_id",
+          "aliases": [
+            "customer_id",
+            "erp-orders-customer-id"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "FIELD",
+            "sourceSection": "fields",
+            "sourceRecordId": "erp-orders-customer-id",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "task:task-orders-sync",
+          "canonicalName": "订单同步",
+          "aliases": [
+            "订单同步",
+            "task-orders-sync"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "TASK",
+            "sourceSection": "tasks",
+            "sourceRecordId": "task-orders-sync",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "task_version:task-orders-sync-v7",
+          "canonicalName": "订单同步成功配置 v7",
+          "aliases": [
+            "订单同步成功配置 v7",
+            "task-orders-sync-v7"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "TASK_VERSION",
+            "sourceSection": "taskVersions",
+            "sourceRecordId": "task-orders-sync-v7",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "execution:execution-orders-20260820",
+          "canonicalName": "订单同步执行 2026-08-20",
+          "aliases": [
+            "订单同步执行 2026-08-20",
+            "execution-orders-20260820"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "EXECUTION",
+            "sourceSection": "executions",
+            "sourceRecordId": "execution-orders-20260820",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "error:error-field-mapping-001",
+          "canonicalName": "字段映射错误",
+          "aliases": [
+            "字段映射错误",
+            "error-field-mapping-001",
+            "FIELD_MAPPING_INVALID"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "ERROR",
+            "sourceSection": "errors",
+            "sourceRecordId": "error-field-mapping-001",
+            "status": "active",
+            "version": null
+          }
+        },
+        {
+          "standardId": "log_event:log-orders-execution-20260820",
+          "canonicalName": "订单同步执行错误日志",
+          "aliases": [
+            "订单同步执行错误日志",
+            "log-orders-execution-20260820",
+            "FIELD_MAPPING_INVALID"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "LOG_EVENT",
+            "sourceSection": "logs",
+            "sourceRecordId": "log-orders-execution-20260820",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "runbook:runbook-field-mapping",
+          "canonicalName": "字段映射错误处理手册",
+          "aliases": [
+            "字段映射错误处理手册",
+            "runbook-field-mapping"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "RUNBOOK",
+            "sourceSection": "runbooks",
+            "sourceRecordId": "runbook-field-mapping",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "recovery_action:REFRESH_METADATA",
+          "canonicalName": "刷新元数据",
+          "aliases": [
+            "刷新元数据",
+            "REFRESH_METADATA"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "RECOVERY_ACTION",
+            "sourceSection": "actions",
+            "sourceRecordId": "REFRESH_METADATA",
+            "status": null,
+            "version": null
+          }
+        },
+        {
+          "standardId": "constraint:constraint-orders-customer-not-null",
+          "canonicalName": "customer_id NOT NULL",
+          "aliases": [
+            "customer_id NOT NULL",
+            "constraint-orders-customer-not-null"
+          ],
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal",
+          "metadata": {
+            "entityType": "CONSTRAINT",
+            "sourceSection": "constraints",
+            "sourceRecordId": "constraint-orders-customer-not-null",
+            "status": null,
+            "version": null
+          }
+        }
+      ],
+      "graphRelations": [
+        {
+          "sourceEntityId": "application:app-flashsync",
+          "targetEntityId": "project:project-orders",
+          "relation": "APPLICATION_CONTAINS_PROJECT",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "projects:project-orders",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "project:project-orders",
+          "targetEntityId": "datasource:source-erp",
+          "relation": "PROJECT_OWNS_RESOURCE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "dataSources:source-erp",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "project:project-orders",
+          "targetEntityId": "datasource:target-warehouse",
+          "relation": "PROJECT_OWNS_RESOURCE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "dataSources:target-warehouse",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "project:project-orders",
+          "targetEntityId": "task:task-orders-sync",
+          "relation": "PROJECT_OWNS_RESOURCE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "tasks:task-orders-sync",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "project:project-orders",
+          "targetEntityId": "runbook:runbook-field-mapping",
+          "relation": "PROJECT_OWNS_RESOURCE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "runbooks:runbook-field-mapping",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "datasource:source-erp",
+          "targetEntityId": "schema:erp-public",
+          "relation": "DATASOURCE_CONTAINS",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "schemas:erp-public",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "schema:erp-public",
+          "targetEntityId": "table:erp-orders",
+          "relation": "SCHEMA_CONTAINS_TABLE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "tables:erp-orders",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "table:erp-orders",
+          "targetEntityId": "field:erp-orders-customer-id",
+          "relation": "TABLE_HAS_FIELD",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "fields:erp-orders-customer-id",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "task:task-orders-sync",
+          "targetEntityId": "datasource:source-erp",
+          "relation": "TASK_USES_DATASOURCE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "tasks:task-orders-sync",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "task:task-orders-sync",
+          "targetEntityId": "datasource:target-warehouse",
+          "relation": "TASK_USES_DATASOURCE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "tasks:task-orders-sync",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "task:task-orders-sync",
+          "targetEntityId": "table:erp-orders",
+          "relation": "TASK_SYNCS_TABLE",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "tasks:task-orders-sync",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "task:task-orders-sync",
+          "targetEntityId": "task_version:task-orders-sync-v7",
+          "relation": "TASK_HAS_SUCCESSFUL_VERSION",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "tasks:task-orders-sync",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "task:task-orders-sync",
+          "targetEntityId": "task_version:task-orders-sync-v7",
+          "relation": "TASK_HAS_VERSION",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "taskVersions:task-orders-sync-v7",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "field:erp-orders-customer-id",
+          "targetEntityId": "field:erp-orders-customer-id",
+          "relation": "FIELD_MAPS_TO",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "mappings:mapping-orders-customer-id",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "task:task-orders-sync",
+          "targetEntityId": "execution:execution-orders-20260820",
+          "relation": "TASK_HAS_EXECUTION",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "executions:execution-orders-20260820",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "execution:execution-orders-20260820",
+          "targetEntityId": "error:error-field-mapping-001",
+          "relation": "EXECUTION_FAILED_WITH",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "executions:execution-orders-20260820",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "execution:execution-orders-20260820",
+          "targetEntityId": "log_event:log-orders-execution-20260820",
+          "relation": "EXECUTION_HAS_LOG",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "executions:execution-orders-20260820",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "execution:execution-orders-20260820",
+          "targetEntityId": "log_event:log-orders-execution-20260820",
+          "relation": "EXECUTION_HAS_LOG",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "logs:log-orders-execution-20260820",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "log_event:log-orders-execution-20260820",
+          "targetEntityId": "error:error-field-mapping-001",
+          "relation": "LOG_MATCHES_ERROR",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "logs:log-orders-execution-20260820",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "field:erp-orders-customer-id",
+          "targetEntityId": "constraint:constraint-orders-customer-not-null",
+          "relation": "FIELD_HAS_CONSTRAINT",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "fields:erp-orders-customer-id",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "field:erp-orders-customer-id",
+          "targetEntityId": "constraint:constraint-orders-customer-not-null",
+          "relation": "FIELD_HAS_CONSTRAINT",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "constraints:constraint-orders-customer-not-null",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        },
+        {
+          "sourceEntityId": "runbook:runbook-field-mapping",
+          "targetEntityId": "recovery_action:REFRESH_METADATA",
+          "relation": "RUNBOOK_RECOMMENDS_ACTION",
+          "sourceDocumentId": "business-graph:business-sync-demo-20260820",
+          "sourceUri": "synthetic://datasmart-govern/business-sync/snapshot/20260820",
+          "sourceChunkId": "runbooks:runbook-field-mapping",
+          "assertedAt": "2026-08-20T12:00:00Z",
+          "effectiveAt": "2026-08-20T12:00:00Z",
+          "expiresAt": null,
+          "confidence": 0.9,
+          "status": "active",
+          "tenantId": "tenant-demo",
+          "applicationId": "app-flashsync",
+          "projectId": "project-orders",
+          "sensitivityLevel": "internal"
+        }
+      ],
+      "enabled": true
+    }
+  ]
+}
