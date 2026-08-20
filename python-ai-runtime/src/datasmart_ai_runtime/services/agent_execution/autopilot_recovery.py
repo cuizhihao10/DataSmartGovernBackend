@@ -913,6 +913,11 @@ class AutopilotRecoveryCoordinator:
         """
 
         retrieval_mode, source_types = _retrieval_contract(strategy)
+        # Recovery 模型选择 RAG 只代表“需要知识证据”，不代表替它决定 hybrid。
+        # 把路径继续交给 RAG 专用模型，才能在故障恢复与普通问答中使用同一套自主决策合同；
+        # EXACT_SEARCH/WIKI/GIT_HISTORY 仍保持已有的显式受控策略。
+        if _code(strategy, "RAG") == "RAG":
+            retrieval_mode = "auto"
         failure = specialist_output.get("failure")
         failure_code = (
             str(failure.get("failureCode") or "").strip().upper()
@@ -929,6 +934,7 @@ class AutopilotRecoveryCoordinator:
         return self._rag_pipeline.answer(
             RagQuery(
                 tenant_id=request.tenant_id,
+                application_id=request.application_id,
                 project_id=request.project_id,
                 actor_id=request.actor_id,
                 workspace_key=request.workspace_key,

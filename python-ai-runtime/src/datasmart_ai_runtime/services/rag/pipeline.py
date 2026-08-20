@@ -1961,6 +1961,7 @@ def _validate_query(query: RagQuery) -> RagQuery:
         raise ValueError("RAG question 不能为空。")
     return RagQuery(
         tenant_id=str(query.tenant_id or "*").strip() or "*",
+        application_id=str(query.application_id or "*").strip() or "*",
         project_id=str(query.project_id or "*").strip() or "*",
         actor_id=str(query.actor_id or "anonymous").strip() or "anonymous",
         question=question[:4000],

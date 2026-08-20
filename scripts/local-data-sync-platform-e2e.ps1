@@ -62,9 +62,11 @@ param(
     [switch]$SkipTaskReceiptProbe,
     [switch]$IncludeOfflineModeClosureE2E,
     [switch]$IncludeTaskSchedulerWorkerLoopE2E,
+    [switch]$IncludeAgentGraphRecoveryE2E,
     [switch]$Strict,
 
     [string]$GatewayBaseUrl = "http://localhost:8080",
+    [string]$AgentRuntimeBaseUrl = "http://localhost:8090",
     [string]$DatasourceManagementBaseUrl = "http://localhost:8082",
     [string]$DataSyncBaseUrl = "http://localhost:8086",
     [string]$TaskManagementBaseUrl = "http://localhost:8081",
@@ -79,8 +81,8 @@ param(
     [string]$ServiceAccessToken = "",
 
     [long]$TenantId = 10,
+    [long]$ApplicationId = 10001,
     [long]$ProjectId = 101,
-    [long]$WorkspaceId = 301,
     [long]$ActorId = 1001,
     [string]$ActorRole = "PROJECT_OWNER",
 
@@ -788,6 +790,10 @@ function New-ApiHeaders {
         $headers["X-DataSmart-Authorized-Project-Roles"] = "${ProjectId}:$effectiveProjectRole"
     }
 
+    # applicationId 是当前业务图谱和 RAG 查询的产品范围；即使 gateway 已经注入可信上下文，
+    # 本地 E2E 也显式透传它，保证 data-sync、Python Runtime 和图谱构建器看到同一个范围。
+    $headers["X-DataSmart-Application-Id"] = [string]$ApplicationId
+
     return $headers
 }
 
@@ -900,6 +906,187 @@ function Get-PageRecords {
         return @()
     }
     return @($PageData.records)
+}
+
+function Invoke-AgentGraphRecoveryE2E {
+    param(
+        [object]$ApiRoots,
+        [hashtable]$UserHeaders,
+        [hashtable]$WorkerHeaders,
+        [long]$TaskId,
+        [long]$ExecutionId
+    )
+
+    if (-not $IncludeAgentGraphRecoveryE2E) {
+        return
+    }
+
+    <#
+        这里刻意保留两次模型边界：
+        1. /agent/plans 让主 Agent 通过 native tool call 自主决定 SEARCH/SKIP，以及选择 RAG、仓库文本、
+           联网搜索或元数据工具；规则层只开放工具，不在响应后补回 knowledge.rag.query；
+        2. 只有主 Agent 真的选了 knowledge.rag.query，才进入 /agent/rag/query，RAG 内部 auto 再由模型
+           在 hybrid、graph、hybrid_graph 之间选择。RAG 内部不承担“不检索”职责。
+
+        任务失败日志只通过 data-sync 的低敏 diagnosis/logs 合同读取。脚本不会把日志正文、SQL、样本行、
+        token 或 RAG 压缩上下文打印到终端；它只把稳定错误码和数量作为下一次模型调用的证据引用。
+    #>
+    Add-Check -Name "Agent 故障恢复闭环" -Status "PASS" -Detail "开始读取失败日志并交给主 Agent 自主选择检索工具"
+
+    $diagnosisResponse = Invoke-Api `
+        -Name "读取 Agent 故障诊断" `
+        -Method "GET" `
+        -Url "$($ApiRoots.Sync)/sync-tasks/$TaskId/agent-diagnosis?executionId=$ExecutionId" `
+        -Headers $UserHeaders
+    $diagnosis = Get-EnvelopeData -Response $diagnosisResponse -Name "Agent 故障诊断 envelope"
+
+    $logsResponse = Invoke-Api `
+        -Name "读取失败 execution 日志" `
+        -Method "GET" `
+        -Url "$($ApiRoots.Sync)/sync-tasks/$TaskId/executions/$ExecutionId/logs?current=1&size=200" `
+        -Headers $UserHeaders
+    $logsPage = Get-EnvelopeData -Response $logsResponse -Name "execution 日志 envelope"
+    $logs = Get-PageRecords -PageData $logsPage
+    if ($logs.Count -eq 0) {
+        Fail-Step -Name "读取失败 execution 日志" -Detail "诊断阶段没有返回任何结构化日志，无法证明故障检索输入来自真实执行"
+    }
+
+    $errorCodes = @($diagnosis.errors | ForEach-Object { [string]$_.errorCode } | Where-Object { $_ })
+    $rootCauseCodes = @($diagnosis.rootCauseCodes | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    $evidenceCodes = @($errorCodes + $rootCauseCodes | Select-Object -Unique | Select-Object -First 12)
+    if ($evidenceCodes.Count -eq 0) {
+        $evidenceCodes = @("EXECUTION_FAILURE")
+    }
+
+    $agentHeaders = @{}
+    foreach ($entry in $UserHeaders.GetEnumerator()) {
+        $agentHeaders[$entry.Key] = $entry.Value
+    }
+    $agentPlanUrl = "$AgentRuntimeBaseUrl/agent/plans"
+    $ragUrl = "$AgentRuntimeBaseUrl/agent/rag/query"
+    if (-not $UseDirectServiceUrls) {
+        $agentPlanUrl = "$GatewayBaseUrl/api/agent/plans"
+        $ragUrl = "$GatewayBaseUrl/api/agent/rag/query"
+    } else {
+        $internalToken = [string]$env:DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN
+        if ([string]::IsNullOrWhiteSpace($internalToken)) {
+            Fail-Step -Name "Agent Runtime 内部令牌" -Detail "-IncludeAgentGraphRecoveryE2E 需要 DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN，脚本不会接受空令牌"
+        }
+        $agentHeaders["X-DataSmart-Source-Service"] = "agent-runtime"
+        $agentHeaders["X-DataSmart-Internal-Service-Token"] = $internalToken
+        $agentHeaders["X-DataSmart-Tenant-Id"] = [string]$TenantId
+        $agentHeaders["X-DataSmart-Project-Id"] = [string]$ProjectId
+        $agentHeaders["X-DataSmart-Actor-Id"] = [string]$ActorId
+        $agentHeaders["X-DataSmart-Actor-Role"] = $ActorRole
+        $agentHeaders["X-DataSmart-Actor-Type"] = "SERVICE_ACCOUNT"
+        $agentHeaders["X-DataSmart-Application-Id"] = [string]$ApplicationId
+    }
+
+    $objective = "数据同步任务 $TaskId 的 execution $ExecutionId 已失败。请先依据结构化日志错误码判断是否需要检索，"
+    $objective += "再在 knowledge.rag.query、workspace.text.search、web.search.query、datasource.metadata.read 等工具中自主选择，"
+    $objective += "不要因为规则提示而强制调用某个工具。错误分类：" + ($evidenceCodes -join ",")
+    $agentPlanResponse = Invoke-Api `
+        -Name "主 Agent 故障检索决策" `
+        -Method "POST" `
+        -Url $agentPlanUrl `
+        -Headers $agentHeaders `
+        -Body @{
+            tenantId = $TenantId
+            applicationId = $ApplicationId
+            projectId = $ProjectId
+            actorId = $ActorId
+            objective = $objective
+            variables = @{
+                taskId = $TaskId
+                executionId = $ExecutionId
+                applicationId = $ApplicationId
+                failureDiagnosticRef = "datasync://tasks/$TaskId/executions/$ExecutionId/diagnosis"
+                failureLogRef = "datasync://tasks/$TaskId/executions/$ExecutionId/logs"
+                errorCodes = $evidenceCodes
+                logCount = $logs.Count
+            }
+        }
+
+    $plan = $agentPlanResponse.plan
+    if ($null -eq $plan) {
+        Fail-Step -Name "主 Agent 故障检索决策" -Detail "Agent Runtime 响应缺少 plan，无法验证 native tool call 决策"
+    }
+    $planningSummary = $plan.modelInteractionSummary.planning
+    $retrievalDecision = [string]$planningSummary.retrievalDecision
+    if ($retrievalDecision -notin @("SEARCH", "SKIP", "NOT_APPLICABLE", "UNAVAILABLE")) {
+        Fail-Step -Name "主 Agent native 检索决策" -Detail "Agent 响应没有可审计的 SEARCH/SKIP 检索决策摘要"
+    }
+    $toolPlans = @($plan.toolPlans)
+    $ragPlans = @($toolPlans | Where-Object { $_.toolName -eq "knowledge.rag.query" })
+    if ($retrievalDecision -eq "SKIP" -and $ragPlans.Count -gt 0) {
+        Fail-Step -Name "主 Agent RAG 路由一致性" -Detail "模型摘要为 SKIP，但响应仍包含 knowledge.rag.query，说明规则层把 RAG 补回了计划"
+    }
+    Add-Check -Name "主 Agent native 检索决策" -Status "PASS" -Detail ("模型决策={0}，RAG 工具调用数={1}；未强制补回 RAG" -f $retrievalDecision, $ragPlans.Count)
+
+    if ($ragPlans.Count -gt 0) {
+        $ragResponse = Invoke-Api `
+            -Name "执行模型选中的 RAG 工具" `
+            -Method "POST" `
+            -Url $ragUrl `
+            -Headers $agentHeaders `
+            -Body @{
+                tenantId = $TenantId
+                applicationId = $ApplicationId
+                projectId = $ProjectId
+                actorId = $ActorId
+                question = ("任务 {0} execution {1} 的故障错误码为 {2}。请检索可执行 Runbook、历史事故、任务案例和元数据证据。" -f $TaskId, $ExecutionId, ($evidenceCodes -join ","))
+                retrievalMode = "auto"
+                sourceTypes = @("runbook", "incident", "task_case", "metadata")
+                generateAnswer = $false
+                traceId = (New-TraceId "agent-rag")
+                sessionId = "platform-e2e-$script:RunId"
+            }
+        $retrievalSummary = $ragResponse.retrievalSummary
+        $decisionMode = [string]$retrievalSummary.decisionMode
+        $decisionSource = [string]$retrievalSummary.decisionSource
+        if ($decisionMode -notin @("hybrid", "graph", "hybrid_graph") -or $decisionSource -ne "MODEL") {
+            Fail-Step -Name "RAG 内部模型模式选择" -Detail "RAG 已被主 Agent 选中，但内部 auto 没有返回 MODEL 选择的 hybrid/graph/hybrid_graph"
+        }
+        Add-Check -Name "RAG 内部模型模式选择" -Status "PASS" -Detail "主 Agent 已选 RAG，RAG 内部模型选择=$decisionMode"
+    } else {
+        Add-Check -Name "RAG 内部模型模式选择" -Status "PASS" -Detail "主 Agent 未选择 knowledge.rag.query，因此没有进入 RAG 内部，也没有人为补回"
+    }
+
+    $graphOutput = Join-Path ([System.IO.Path]::GetTempPath()) ("datasmart-graph-facts-" + $script:RunId + ".json")
+    $graphScript = Join-Path $script:RepoRoot "scripts/rag-business-graph-build.py"
+    $graphToken = [string]$env:DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN
+    if ([string]::IsNullOrWhiteSpace($graphToken)) {
+        Fail-Step -Name "业务图谱快照内部令牌" -Detail "实时图谱构建需要 DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN，脚本不会接受空令牌"
+    }
+    if (-not (Test-CommandExists -CommandName "python")) {
+        Fail-Step -Name "Python GraphRAG 构建器" -Detail "未发现 python 命令，无法从真实 data-sync 快照构建业务事实包"
+    }
+    $previousGraphToken = $env:DATASMART_GRAPH_SOURCE_TOKEN
+    $env:DATASMART_GRAPH_SOURCE_TOKEN = $graphToken
+    try {
+        $graphBuild = Invoke-NativeCommandSafely -Name "实时业务图谱事实包" -Command {
+            python $graphScript `
+                --source-url $DataSyncBaseUrl `
+                --task-id $TaskId `
+                --execution-id $ExecutionId `
+                --tenant-id $TenantId `
+                --application-id $ApplicationId `
+                --project-id $ProjectId `
+                --actor-id $ActorId `
+                --output $graphOutput
+        }
+    } finally {
+        $env:DATASMART_GRAPH_SOURCE_TOKEN = $previousGraphToken
+    }
+    if ($graphBuild.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $graphOutput)) {
+        Fail-Step -Name "实时业务图谱事实包" -Detail "GraphRAG 构建器未能从 data-sync 实时快照生成事实包，具体响应正文不打印"
+    }
+    $graphFacts = Get-Content -LiteralPath $graphOutput -Raw | ConvertFrom-Json
+    $graphDocument = @($graphFacts.documents) | Select-Object -First 1
+    if ([string]$graphFacts.schemaVersion -ne "datasmart.graph-facts.v1" -or [string]$graphDocument.applicationId -ne [string]$ApplicationId) {
+        Fail-Step -Name "业务图谱 applicationId 范围" -Detail "事实包 schema 或 applicationId 范围不符合当前任务上下文"
+    }
+    Add-Check -Name "实时业务图谱事实包" -Status "PASS" -Detail ("已从真实 data-sync 快照生成 applicationId={0} 的待审批事实包，正文未打印" -f $ApplicationId)
 }
 
 function Assert-DatasourceConnectionTestSuccess {
@@ -1138,6 +1325,9 @@ function Write-ExecutionPlan {
     Write-PlatformPlanStage "Create datasource records through API and test both connections."
     Write-PlatformPlanStage "Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync task definition and run precheck."
     Write-PlatformPlanStage "Create task, run worker loop, retry only failed shard, then replay repaired dirty row."
+    if ($IncludeAgentGraphRecoveryE2E) {
+        Write-PlatformPlanStage "Read bounded failure logs, let the model choose RAG auto mode, build an application-scoped graph snapshot, then continue repair/rerun verification."
+    }
     Write-PlatformPlanStage "Assert PostgreSQL target table reaches 20 complete rows."
     if (-not $UseDirectServiceUrls) {
         Write-PlatformPlanStage "Assert permission-admin authorization audit records exist for this gateway trace prefix."
@@ -1496,7 +1686,6 @@ function Invoke-OfflineModeClosureE2E {
         -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E SCHEDULED_BATCH $script:RunId"
             description = "local platform offline mode scheduled batch E2E"
             sourceDatasourceId = $SourceDatasourceId
@@ -1517,7 +1706,6 @@ function Invoke-OfflineModeClosureE2E {
         -TaskBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E scheduled batch task $script:RunId"
             description = "local scheduled batch offline mode E2E task"
             priority = "HIGH"
@@ -1548,7 +1736,6 @@ function Invoke-OfflineModeClosureE2E {
         -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E CUSTOM_SQL_QUERY $script:RunId"
             description = "local platform offline mode custom SQL E2E"
             sourceDatasourceId = $SourceDatasourceId
@@ -1568,7 +1755,6 @@ function Invoke-OfflineModeClosureE2E {
         -TaskBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E custom SQL task $script:RunId"
             description = "local custom SQL offline mode E2E task"
             priority = "HIGH"
@@ -1601,7 +1787,6 @@ function Invoke-OfflineModeClosureE2E {
         -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E SCHEMA_FULL $script:RunId"
             description = "local platform offline mode schema full E2E"
             sourceDatasourceId = $SourceDatasourceId
@@ -1619,7 +1804,6 @@ function Invoke-OfflineModeClosureE2E {
         -TaskBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E schema full task $script:RunId"
             description = "local schema full offline mode E2E task"
             priority = "HIGH"
@@ -1783,7 +1967,6 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
         -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E scheduler SCHEDULED_FULL $script:RunId"
             description = "local task scheduler to worker loop scheduled full sync E2E"
             sourceDatasourceId = $SourceDatasourceId
@@ -1803,7 +1986,6 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
         -TaskBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E scheduled full task $script:RunId"
             description = "local scheduled full task scheduler E2E"
             priority = "HIGH"
@@ -1830,7 +2012,6 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
         -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E scheduler SCHEDULED_BATCH $script:RunId"
             description = "local task scheduler to worker loop scheduled batch E2E"
             sourceDatasourceId = $SourceDatasourceId
@@ -1851,7 +2032,6 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
         -TaskBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E scheduled batch scheduler task $script:RunId"
             description = "local scheduled batch task scheduler E2E"
             priority = "HIGH"
@@ -2017,7 +2197,6 @@ function Main {
         -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             sourceDatasourceId = $sourceDatasourceId
             targetDatasourceId = $targetDatasourceId
             sourceSchemaName = $MySqlDatabase
@@ -2037,7 +2216,6 @@ function Main {
         -TaskBody @{
             tenantId = $TenantId
             projectId = $ProjectId
-            workspaceId = $WorkspaceId
             name = "E2E platform API task $script:RunId"
             description = "local platform API E2E task"
             priority = "HIGH"
@@ -2092,6 +2270,13 @@ function Main {
     }
     $failedOrdinal = [int]($failedObjects | Select-Object -First 1).objectOrdinal
     Add-Check -Name "失败分片账本" -Status "PASS" -Detail "已发现 FAILED 分片，后续只重试该分片"
+
+    Invoke-AgentGraphRecoveryE2E `
+        -ApiRoots $apiRoots `
+        -UserHeaders $userHeaders `
+        -WorkerHeaders $workerHeaders `
+        -TaskId $taskId `
+        -ExecutionId $firstExecutionId
 
     Repair-FailedShardSourceRows
 

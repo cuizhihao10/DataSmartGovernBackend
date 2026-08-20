@@ -134,7 +134,7 @@ class RagQuery:
     trace_id: str | None = None
     session_id: str | None = None
     sensitivity_level: str = "internal"
-    # `auto` 是面向 Agent 的默认路径：模型先在 hybrid、graph、hybrid_graph 之间做一次受治理选择；
+    # `auto` 是面向 Agent 的默认路径：模型在 hybrid、graph、hybrid_graph 之间做一次受治理选择；
     # 选择 hybrid 后，存储适配器再在内部组合 FTS 与 pgvector。`lexical` 适合精确错误码和标识符，
     # `vector` 用于精确证据较弱时的语义扩展。评测和运维需要稳定复现时，仍可显式指定具体模式。
     retrieval_mode: str = "auto"

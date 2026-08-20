@@ -22,18 +22,25 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCrit
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDiagnosisResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
+import com.czh.datasmart.govern.datasync.controller.support.DataSyncAgentRuntimeTrustedAccessSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncExecutionLog;
+import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import lombok.RequiredArgsConstructor;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -43,6 +50,11 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 数据同步执行与追踪 API。
@@ -56,6 +68,270 @@ import org.springframework.web.bind.annotation.RestController;
 public class DataSyncExecutionController {
 
     private final DataSyncService dataSyncService;
+    private final DataSyncAgentRuntimeTrustedAccessSupport trustedAccessSupport;
+    private final ObjectMapper objectMapper;
+
+    /**
+     * 为 GraphRAG 构建器导出真实业务快照。
+     *
+     * <p>这是内部事实投影，不是新的用户查询 API：Python Runtime 必须先通过服务身份令牌，
+     * 再携带租户、项目和应用上下文访问。快照只包含任务、执行、日志、错误码和连接器能力等低敏
+     * 结构化事实，故意不返回 SQL、连接串、凭据、样本行或字段映射正文。返回的事实仍是 PROPOSED，
+     * 后续必须经过 permission-admin、Kafka、Java audit/outbox 和 Neo4j consumer 的审批门禁。</p>
+     */
+    @GetMapping("/internal/data-sync/graph-facts/snapshot")
+    public PlatformApiResponse<Map<String, Object>> graphFactsSnapshot(
+            @PathVariable Long taskId,
+            @RequestParam(required = false) Long executionId,
+            @RequestParam String applicationId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        trustedAccessSupport.requireService(headers, "python-ai-runtime");
+        SyncActorContext context = actorContext(tenantId, actorId, actorRole, traceId, headers);
+        if (context.applicationId() == null || !applicationId.equals(String.valueOf(context.applicationId()))) {
+            throw new IllegalArgumentException("applicationId 必须与受信上下文一致");
+        }
+        SyncTask task = dataSyncService.getTask(taskId, context);
+        SyncTaskDefinition definition = task.getDefinition();
+        SyncExecutionDiagnosisResponse diagnosis = dataSyncService.diagnoseExecution(taskId, executionId, context);
+        Long resolvedExecutionId = diagnosis.executionId() == null ? executionId : diagnosis.executionId();
+        List<SyncExecutionLog> logs = new ArrayList<>();
+        if (resolvedExecutionId != null) {
+            logs.addAll(dataSyncService.pageExecutionLogs(
+                    new SyncExecutionLogQueryCriteria(taskId, resolvedExecutionId, null, null, 1L, 200L),
+                    context).getRecords());
+        }
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("schemaVersion", "datasmart.business-graph-snapshot.v1");
+        snapshot.put("snapshotId", "task-" + taskId + "-execution-" + (resolvedExecutionId == null ? "latest" : resolvedExecutionId));
+        snapshot.put("asOf", java.time.OffsetDateTime.now().toString());
+        snapshot.put("sourceUri", "datasync://tasks/" + taskId + "/graph-facts");
+        snapshot.put("scope", fact(
+                "tenantId", String.valueOf(task.getTenantId()),
+                "applicationId", applicationId,
+                "projectId", String.valueOf(task.getProjectId()),
+                "sensitivityLevel", "internal"));
+        snapshot.put("applications", List.of(fact("id", applicationId, "name", "application-" + applicationId)));
+        snapshot.put("projects", List.of(fact("id", task.getProjectId(), "applicationId", applicationId, "name", "project-" + task.getProjectId())));
+        snapshot.put("dataSources", dataSources(definition, task));
+        snapshot.put("tasks", List.of(taskFact(task, definition)));
+        snapshot.put("taskVersions", List.of(taskVersionFact(definition)));
+        snapshot.put("executions", List.of(executionFact(diagnosis)));
+        snapshot.put("logs", logs.stream().map(this::logFact).toList());
+        snapshot.put("errors", diagnosis.errors() == null ? List.of() : diagnosis.errors().stream().map(this::errorFact).toList());
+        Map<String, Object> metadataFacts = metadataFacts(definition, task, context);
+        snapshot.putAll(metadataFacts);
+        snapshot.put("mappings", mappingFacts(definition));
+        snapshot.put("runbooks", List.of());
+        snapshot.put("incidents", diagnosis.similarCases() == null ? List.of() : diagnosis.similarCases().stream().map(this::caseFact).toList());
+        snapshot.put("sourceStatus", "COMPLETE");
+        return PlatformApiResponse.success(snapshot, traceId);
+    }
+
+    /** 将任务定义投影为图构建器可消费的数据源事实，不复制连接配置。 */
+    private List<Map<String, Object>> dataSources(SyncTaskDefinition definition, SyncTask task) {
+        List<Map<String, Object>> values = new ArrayList<>();
+        values.add(fact("id", definition.getSourceDatasourceId(), "projectId", task.getProjectId(),
+                "name", "source-datasource-" + definition.getSourceDatasourceId(),
+                "connectorType", String.valueOf(definition.getSourceConnectorType())));
+        values.add(fact("id", definition.getTargetDatasourceId(), "projectId", task.getProjectId(),
+                "name", "target-datasource-" + definition.getTargetDatasourceId(),
+                "connectorType", String.valueOf(definition.getTargetConnectorType())));
+        return values;
+    }
+
+    /** 投影任务主状态和执行所需的稳定定位字段。 */
+    private Map<String, Object> taskFact(SyncTask task, SyncTaskDefinition definition) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("id", task.getId());
+        value.put("projectId", task.getProjectId());
+        value.put("name", task.getName());
+        value.put("state", task.getCurrentState());
+        value.put("sourceDatasourceId", definition.getSourceDatasourceId());
+        value.put("targetDatasourceId", definition.getTargetDatasourceId());
+        value.put("sourceTableId", definition.getSourceObjectName());
+        value.put("targetTableId", definition.getTargetObjectName());
+        value.put("successfulVersionId", definition.getId());
+        return value;
+    }
+
+    /** 任务定义版本只保留模式、策略、对象和映射声明状态，不输出配置正文。 */
+    private Map<String, Object> taskVersionFact(SyncTaskDefinition definition) {
+        return fact("id", definition.getId(), "taskId", definition.getId(),
+                "version", definition.getUpdateTime() == null ? "current" : definition.getUpdateTime().toString(),
+                "syncMode", String.valueOf(definition.getSyncMode()),
+                "writeStrategy", String.valueOf(definition.getWriteStrategy()),
+                "fieldMappingDeclared", definition.getFieldMappingConfig() != null && !definition.getFieldMappingConfig().isBlank());
+    }
+
+    /** 执行诊断只投影状态、计数和根因码，保证图谱不会携带原始错误正文。 */
+    private Map<String, Object> executionFact(SyncExecutionDiagnosisResponse diagnosis) {
+        return fact("id", diagnosis.executionId() == null ? "latest" : diagnosis.executionId(),
+                "taskId", diagnosis.taskId(), "state", diagnosis.executionState(),
+                "recordsRead", diagnosis.recordsRead(), "recordsWritten", diagnosis.recordsWritten(),
+                "failedRecordCount", diagnosis.failedRecordCount(), "rootCauseCodes",
+                diagnosis.rootCauseCodes() == null ? List.of() : diagnosis.rootCauseCodes());
+    }
+
+    /** 运行日志只保留阶段、事件和固定摘要，作为 GraphRAG 的错误事实来源。 */
+    private Map<String, Object> logFact(SyncExecutionLog log) {
+        return fact("id", log.getId(), "executionId", log.getExecutionId(), "logStage", log.getLogStage(),
+                "eventType", log.getEventType(), "eventStatus", safe(log.getEventStatus()),
+                "message", safe(log.getMessage()));
+    }
+
+    /** 错误摘要只保留稳定分类字段，禁止图谱建立在样本值或堆栈正文上。 */
+    private Map<String, Object> errorFact(SyncExecutionDiagnosisResponse.ErrorSummary error) {
+        return fact("id", safe(error.errorCode()) + ":" + safe(error.errorType()), "errorType", error.errorType(),
+                "errorCode", error.errorCode(), "count", error.count(), "retryable", error.retryable());
+    }
+
+    /** 将历史案例关联转换为可追溯的事故实体。 */
+    private Map<String, Object> caseFact(SyncExecutionDiagnosisResponse.KnowledgeCaseSummary item) {
+        return fact("id", item.caseId(), "title", safe(item.title()), "incidentType", safe(item.incidentType()),
+                "resolutionSummary", safe(item.resolutionSummary()));
+    }
+
+    /** 调用 data-sync 已有元数据发现能力，把真实 schema/table/field 投影成图实体。 */
+    private Map<String, Object> metadataFacts(SyncTaskDefinition definition,
+                                              SyncTask task,
+                                              SyncActorContext context) {
+        List<Map<String, Object>> schemas = new ArrayList<>();
+        List<Map<String, Object>> tables = new ArrayList<>();
+        List<Map<String, Object>> fields = new ArrayList<>();
+        List<Map<String, Object>> constraints = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        discoverSide("SOURCE", definition.getSourceDatasourceId(), definition.getSourceConnectorType(),
+                definition.getSourceSchemaName(), definition.getSourceObjectName(), task, context,
+                schemas, tables, fields, constraints, warnings);
+        discoverSide("TARGET", definition.getTargetDatasourceId(), definition.getTargetConnectorType(),
+                definition.getTargetSchemaName(), definition.getTargetObjectName(), task, context,
+                schemas, tables, fields, constraints, warnings);
+        return fact("schemas", schemas, "tables", tables, "fields", fields,
+                "constraints", constraints, "metadataWarnings", warnings);
+    }
+
+    /** 单侧元数据查询的低敏投影；异常只降级为 warning，保留任务与执行事实。 */
+    private void discoverSide(String side,
+                              Long datasourceId,
+                              String connectorType,
+                              String schemaName,
+                              String tableName,
+                              SyncTask task,
+                              SyncActorContext context,
+                              List<Map<String, Object>> schemas,
+                              List<Map<String, Object>> tables,
+                              List<Map<String, Object>> fields,
+                              List<Map<String, Object>> constraints,
+                              List<String> warnings) {
+        if (datasourceId == null || tableName == null || tableName.isBlank()) {
+            warnings.add(side + "_METADATA_SCOPE_INCOMPLETE");
+            return;
+        }
+        try {
+            SyncTaskMetadataDiscoveryRequest request = new SyncTaskMetadataDiscoveryRequest();
+            request.setDatasourceId(datasourceId);
+            request.setSide(side);
+            request.setConnectorType(connectorType);
+            request.setFilterMode("TABLE");
+            request.setSchemaPattern(schemaName);
+            request.setTableNamePattern(tableName);
+            request.setIncludeColumns(true);
+            request.setIncludeViews(false);
+            request.setMaxTables(16);
+            request.setMaxColumnsPerTable(256);
+            SyncTaskMetadataDiscoveryResponse response = dataSyncService.discoverTaskMetadata(request, context);
+            for (String schema : response.getSchemas() == null ? List.<String>of() : response.getSchemas()) {
+                schemas.add(fact("id", side + ":" + datasourceId + ":schema:" + schema,
+                        "dataSourceId", datasourceId, "name", safe(schema)));
+            }
+            for (SyncTaskMetadataDiscoveryResponse.TableObject table :
+                    response.getTables() == null ? List.<SyncTaskMetadataDiscoveryResponse.TableObject>of() : response.getTables()) {
+                String tableId = side + ":" + datasourceId + ":table:" + safe(table.getTableName());
+                String schemaId = side + ":" + datasourceId + ":schema:" + safe(table.getSchemaName());
+                tables.add(fact("id", tableId, "schemaId", schemaId, "dataSourceId", datasourceId,
+                        "name", safe(table.getTableName()), "tableType", safe(table.getTableType())));
+                for (SyncTaskMetadataDiscoveryResponse.FieldObject field :
+                        table.getFields() == null ? List.<SyncTaskMetadataDiscoveryResponse.FieldObject>of() : table.getFields()) {
+                    String fieldId = tableId + ":field:" + safe(field.getFieldName());
+                    Map<String, Object> fieldFact = new LinkedHashMap<>();
+                    fieldFact.put("id", fieldId);
+                    fieldFact.put("tableId", tableId);
+                    fieldFact.put("name", safe(field.getFieldName()));
+                    fieldFact.put("dataType", safe(field.getDataTypeName()));
+                    fieldFact.put("nullable", field.getNullable());
+                    fields.add(fieldFact);
+                    if (Boolean.TRUE.equals(field.getPrimaryKey())) {
+                        constraints.add(fact("id", fieldId + ":primary-key", "fieldId", fieldId,
+                                "constraintType", "PRIMARY_KEY"));
+                    }
+                    if (Boolean.FALSE.equals(field.getNullable())) {
+                        constraints.add(fact("id", fieldId + ":not-null", "fieldId", fieldId,
+                                "constraintType", "NOT_NULL"));
+                    }
+                }
+            }
+            if (response.getWarnings() != null) {
+                warnings.addAll(response.getWarnings().stream().map(item -> side + ":" + safe(item)).toList());
+            }
+        } catch (RuntimeException exception) {
+            warnings.add(side + "_METADATA_DISCOVERY_UNAVAILABLE");
+        }
+    }
+
+    /** 从已持久化字段映射 JSON 只提取两端字段名，禁止把转换表达式或默认值带入图谱。 */
+    private List<Map<String, Object>> mappingFacts(SyncTaskDefinition definition) {
+        if (definition.getFieldMappingConfig() == null || definition.getFieldMappingConfig().isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(definition.getFieldMappingConfig());
+            JsonNode mappings = root.isArray() ? root : root.path("mappings");
+            if (!mappings.isArray()) {
+                return List.of();
+            }
+            List<Map<String, Object>> facts = new ArrayList<>();
+            for (JsonNode item : mappings) {
+                String source = safe(item.path("sourceField").asText(item.path("source").asText("")));
+                String target = safe(item.path("targetField").asText(item.path("target").asText("")));
+                if (!source.isBlank() && !target.isBlank()) {
+                    facts.add(fact("id", "mapping:" + source + "->" + target,
+                            "sourceFieldId", source, "targetFieldId", target));
+                }
+                if (facts.size() >= 512) {
+                    break;
+                }
+            }
+            return facts;
+        } catch (Exception exception) {
+            return List.of();
+        }
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.length() > 256 ? value.substring(0, 256) : value;
+    }
+
+    /**
+     * 构造允许 null 值的事实 Map。
+     *
+     * <p>真实任务的连接器元数据可能尚未完整发现，Java {@link Map#of(Object, Object, Object, Object)}
+     * 遇到 null 会直接抛出 NPE，反而阻断整份快照。快照是受控的事实投影，允许保留 null 让下游按
+     * metadataWarnings 和字段缺失做降级判断。</p>
+     */
+    private Map<String, Object> fact(Object... entries) {
+        if (entries.length % 2 != 0) {
+            throw new IllegalArgumentException("事实 Map 参数必须成对出现");
+        }
+        Map<String, Object> value = new LinkedHashMap<>();
+        for (int index = 0; index < entries.length; index += 2) {
+            value.put(String.valueOf(entries[index]), entries[index + 1]);
+        }
+        return value;
+    }
 
     /**
      * 查询某个同步任务的执行历史。
