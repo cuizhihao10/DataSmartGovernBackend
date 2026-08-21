@@ -383,10 +383,21 @@ class RagPipeline:
             self._settings,
             query=query,
         )
-        selected = self._retriever.select_diverse(
-            citation_candidates,
-            top_k=max(1, min(query.top_k, 20)),
-        )
+        selection_limit = max(1, min(query.top_k, 20))
+        if rag_query_requests_multiple_evidence(query.question):
+            # 多证据裁剪阶段已经用 facet 覆盖、资料职责和来源多样性完成了一次有界集合选择。
+            # 这里不能再次把完整候选交给 MMR：MMR 只知道 finalScore 和文本相似度，不知道某份
+            # 资料承担的是“接口、事故、日志”中的哪一面，容易用一份高分重复资料替换刚刚保住的
+            # 低分互补资料。保留裁剪器的插入顺序，使“先覆盖缺失 facet，再补充职责”的决策成为
+            # 最终引用事实；候选仍然已经通过范围过滤、Reranker 和 evidence gate。
+            selected = citation_candidates[:selection_limit]
+        else:
+            # 单证据查询没有 facet 覆盖合同，继续使用 MMR 消除同一文档的相邻 chunk，避免改变
+            # 原有单文档引用精度和上下文去重行为。
+            selected = self._retriever.select_diverse(
+                citation_candidates,
+                top_k=selection_limit,
+            )
         compressed_context, citations = self._compressor.compress(
             query,
             selected,
@@ -1914,7 +1925,10 @@ def _reserve_multi_evidence_coverage(
 
     if not selected:
         return currently_selected
-    return tuple(sorted(selected.values(), key=lambda item: item.final_score, reverse=True))
+    # ``selected`` 的插入顺序就是有限集合覆盖的决策顺序：先填补缺失 facet，再按职责互补补充。
+    # 不能在这里重新按整句 finalScore 排序，否则下游即使跳过 MMR，也会再次丢掉低分但唯一覆盖
+    # 某个子问题的资料。每个 document 已经由字典去重，返回值仍然严格受 topK 上限约束。
+    return tuple(selected.values())
 
 
 def _rag_responsibility_key(candidate: RagScoredChunk) -> str:

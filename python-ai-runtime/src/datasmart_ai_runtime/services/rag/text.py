@@ -276,7 +276,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "schema_mapping",
-        (("字段", "schema", "列"), ("映射", "默认值", "非空", "约束", "漂移", "演进")),
+        (("字段", "schema", "列"), ("映射", "默认值", "非空", "约束", "漂移", "演进", "不满足要求", "系统代劳", "人工")),
         ("field_mapping_case", "schema_evolution_cases", "recovery_manual", "incident_schema_drift"),
         ("dataset", "runbook", "incident"), ("xlsx", "docx"), 0.95,
     ),
@@ -292,23 +292,23 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "worker_and_consumer_logs",
-        (("worker", "消费者", "consumer"), ("日志", "错误", "验证", "lag", "积压")),
+        (("worker", "消费者", "消费组", "consumer"), ("日志", "错误", "验证", "lag", "积压", "堆积", "分区")),
         ("worker_execution", "kafka_lag_log", "observability_operations_manual"),
         ("incident", "runbook"), ("log", "docx"), 0.95,
     ),
     _RagDocumentIntentHint(
         "observability_operations",
-        (("日志", "指标", "trace", "追踪", "运行痕迹", "运行轨迹"), ("定位", "排查", "故障", "异常", "环节", "卡住")),
+        (("日志", "指标", "trace", "追踪", "运行痕迹", "运行轨迹", "运行线索"), ("定位", "排查", "故障", "异常", "作业异常", "问题位置", "环节", "卡住", "跨团队")),
         ("observability_operations_manual",), ("runbook",), ("docx",), 1.15,
     ),
     _RagDocumentIntentHint(
         "backup_disaster_recovery",
-        (("灾难", "灾备", "演练", "rpo", "rto"), ("恢复", "数据库", "对象", "kafka", "位点", "顺序")),
+        (("灾难", "灾备", "演练", "严重故障", "故障后", "rpo", "rto"), ("恢复", "数据库", "对象", "业务资料", "服务", "位点", "顺序", "恢复顺序")),
         ("backup_disaster_recovery_manual",), ("runbook",), ("docx",), 1.20,
     ),
     _RagDocumentIntentHint(
         "platform_deployment",
-        (("部署", "发布", "安装", "上线"), ("java", "jdk", "kafka", "pgvector", "ai runtime", "服务")),
+        (("部署", "发布", "安装", "上线", "新环境"), ("java", "jdk", "kafka", "pgvector", "ai runtime", "服务", "健康检查", "基础服务")),
         ("deployment_manual",), ("runbook",), ("docx",), 1.20,
     ),
     _RagDocumentIntentHint(
@@ -334,7 +334,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "security_approval",
-        (("审批", "授权", "权限", "越权"), ("双主体", "边界", "安全", "校验", "人工")),
+        (("审批", "授权", "权限", "越权", "同意", "自动处理"), ("双主体", "边界", "安全", "校验", "人工", "范围限制", "做的范围")),
         ("security_manual",), ("rule", "document"), ("docx",), 1.15,
     ),
     _RagDocumentIntentHint(
@@ -381,13 +381,13 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "kafka_operations",
-        (("kafka", "消息", "消费者"), ("积压", "lag", "dlt", "死信", "回放", "重复消费")),
+        (("kafka", "消息", "消费者", "消费组"), ("积压", "堆积", "堆着不动", "分区", "lag", "dlt", "死信", "失败队列", "回放", "重复消费", "重复处理", "处理变慢")),
         ("kafka_operations_manual", "kafka_task_cases", "kafka_lag_log", "incident_kafka_backlog"),
         ("runbook", "task_case", "incident"), ("docx", "xlsx", "log"), 1.00,
     ),
     _RagDocumentIntentHint(
         "recovery_and_audit",
-        (("恢复", "修复", "recovery"), ("事件", "台账", "验证", "审计", "快照", "状态")),
+        (("恢复", "修复", "补救", "补救过程", "recovery"), ("事件", "台账", "验证", "最后确认", "审计", "快照", "状态", "依据", "动作")),
         ("recovery_events", "database_recovery_ledger", "recovery_decision_trace", "agent_state_snapshot"),
         ("incident", "dataset", "memory_export"), ("json", "jsonl", "sql"), 0.90,
     ),
@@ -418,7 +418,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "pgvector_and_model_provider",
-        (("pgvector", "向量", "embedding", "reranker"), ("模型", "provider", "维度", "检索", "索引")),
+        (("pgvector", "向量", "embedding", "reranker", "资料匹配", "语义检索", "检索结果", "智能服务", "外部服务"), ("模型", "provider", "维度", "检索", "索引", "存放设置", "存储设置", "结果对不上", "不稳定", "被限制", "答复不全", "响应缺项", "降级", "处理变慢")),
         ("postgresql_pgvector_manual", "model_provider_manual"), ("runbook",), ("docx", "md"), 0.90,
     ),
     _RagDocumentIntentHint(
@@ -1472,23 +1472,60 @@ def _rag_intent_hint_is_active(
         # 多证据拆分会把“日志、指标和 trace”拆成几个短 facet。短 facet 单独看时无法恢复完整
         # 运维语义，因此允许使用整句上下文激活这个职责，但仍要求至少出现两个可观测性信号，
         # 避免普通“错误日志”问题把所有结果强行路由到可观测性手册。
-        observability_signals = ("日志", "指标", "trace", "追踪")
+        observability_signals = ("日志", "指标", "trace", "追踪", "运行线索", "运行痕迹", "运行轨迹")
         signal_count = sum(1 for signal in observability_signals if signal in context)
-        return signal_count >= 2 or ("跨 agent" in context and "worker" in context)
+        return (
+            signal_count >= 2
+            or ("跨 agent" in context and "worker" in context)
+            or ("运行线索" in context and any(term in context for term in ("问题位置", "定位", "异常")))
+        )
     if intent_key == "backup_disaster_recovery":
         # 灾备问题经常把数据库、对象存储、Kafka 位点和服务列成一个恢复顺序。子问题只剩“Kafka
         # 位点”时仍需回到整句确认这是平台灾备，而不是消费者积压排障。
-        return any(term in context for term in ("灾难恢复", "灾难演练", "rpo", "rto"))
+        return any(
+            term in context
+            for term in (
+                "灾难恢复",
+                "灾难演练",
+                "严重故障",
+                "故障后",
+                "业务资料",
+                "恢复顺序",
+                "rpo",
+                "rto",
+            )
+        )
     if intent_key == "platform_deployment":
-        # 只有部署语境才激活总部署手册；普通 Kafka 或 pgvector 故障不能仅凭组件名称进入该职责。
+        # 只有部署/上线/健康检查语境才激活总部署手册；普通 Kafka 或 pgvector 故障不能仅凭组件名称进入该职责。
         platform_components = ("java", "jdk", "kafka", "pgvector", "ai runtime")
         component_count = sum(1 for component in platform_components if component in context)
-        return "部署" in context and component_count >= 2
+        lifecycle_context = any(
+            term in context
+            for term in ("部署", "发布", "安装", "上线", "新环境", "健康检查")
+        )
+        # 自然问法经常只说“新环境上线前检查基础服务”，不重复列出所有组件；“健康检查 +
+        # 基础服务”已经足以表达部署手册职责，但仍不影响普通组件故障查询。
+        return lifecycle_context and (
+            component_count >= 2
+            or ("健康检查" in context and "基础服务" in context)
+        )
     if intent_key == "kafka_operations":
         lifecycle_context = any(term in context for term in ("部署", "灾难恢复", "灾难演练"))
         kafka_failure_context = any(
             term in context
-            for term in ("积压", "dlt", "死信", "消费者日志", "重复消费", "group lag", "同步积压")
+            for term in (
+                "积压",
+                "堆积",
+                "分区",
+                "消费组",
+                "处理变慢",
+                "dlt",
+                "死信",
+                "消费者日志",
+                "重复消费",
+                "group lag",
+                "同步积压",
+            )
         )
         if lifecycle_context and not kafka_failure_context:
             return False
@@ -1496,10 +1533,32 @@ def _rag_intent_hint_is_active(
         deployment_context = "部署" in context
         pgvector_failure_context = any(
             term in context
-            for term in ("向量检索", "维度", "变慢", "降级", "provider degraded", "模型 provider")
+            for term in (
+                "向量检索",
+                "维度",
+                "变慢",
+                "降级",
+                "provider degraded",
+                "模型 provider",
+                "资料匹配",
+                "语义检索",
+                "检索结果",
+                "存放设置",
+                "存储设置",
+                "结果对不上",
+                "外部智能服务",
+                "外部服务",
+                "被限制",
+                "答复不全",
+                "响应缺项",
+            )
         )
         if deployment_context and not pgvector_failure_context:
             return False
+        # “外部智能服务不稳定/答复不全”与“资料匹配变慢/结果对不上”是两类不同的自然
+        # 问法，但都已经具备 Provider 或 pgvector 的故障语义；只有在命中这些受控状态词时
+        # 才允许该职责先验参与排序，避免所有“检索”问题都抬高模型手册。
+        return pgvector_failure_context
     if intent_key == "configuration_versions":
         # 明确要求“上一版本/差异/对比”时才启用配置差异职责；最近成功任务的配置由成功任务案例承担。
         if any(term in query for term in ("最近成功任务", "成功同步任务", "成功任务参数")):
@@ -1538,6 +1597,23 @@ def _rag_intent_category_allowed(
     context = str(context_query or query).casefold()
     if not normalized_category:
         return True
+
+    if intent_key == "pgvector_and_model_provider":
+        # 两类自然问法共享“检索/模型”词汇，但资料职责不同：外部服务不稳定、被限流或答复
+        # 不全时应优先 Provider 手册；资料匹配、存放设置和结果对不上时应优先 pgvector 手册。
+        # 该分流只收窄已经激活的职责先验，不创建新候选，也不替代正文和向量证据。
+        provider_context = any(
+            term in context
+            for term in ("外部智能服务", "外部服务", "被限制", "答复不全", "响应缺项", "限流")
+        )
+        pgvector_context = any(
+            term in context
+            for term in ("资料匹配", "语义检索", "存放设置", "存储设置", "结果对不上", "向量检索")
+        )
+        if provider_context and not pgvector_context:
+            return normalized_category == "model_provider_manual"
+        if pgvector_context and not provider_context:
+            return normalized_category == "postgresql_pgvector_manual"
 
     if intent_key == "operations_flow":
         # “运维流程/排查顺序”默认落到平台通用 Runbook；Kafka 和可观测性专册由各自明确术语激活。

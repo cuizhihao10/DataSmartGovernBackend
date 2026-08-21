@@ -2736,6 +2736,106 @@ class RagPipelineTest(unittest.TestCase):
             rag_query_document_intent_score(disaster_query, chunks["kafka-manual"]),
         )
 
+    def test_natural_multiformat_queries_activate_semantic_manual_responsibilities(self) -> None:
+        """自然中文问法也要激活正确资料职责，避免 Embedding 命中后被证据门禁再次丢弃。
+
+        真实跨格式评测中的问题通常不会复述 Manifest 的 category 或资料标题，例如“新环境上线前
+        健康检查怎么排”“外部服务答复不全怎么办”“消费组和分区堆积最严重在哪里”。如果职责先验
+        只识别“部署、Provider、Kafka”这些显式词，目标文档虽然已经被 Embedding 召回，仍会因为
+        ``minimumUnanchoredVectorScore`` 或相对重排裁剪被通用手册抢走。本回归只验证受控意图分：
+        它不能直接生成答案，也不能扩大候选范围，但必须足够高以支持后续 evidence gate 的职责保护。
+        """
+
+        documents = (
+            RagDocument(
+                document_id="deployment-manual",
+                title="DataSmart Govern 部署手册",
+                source_uri="test://deployment-manual",
+                source_type=RagChunkSourceType.RUNBOOK,
+                content="部署时依次完成基础服务健康检查，并验证 Java、Kafka、pgvector 和 AI Runtime。",
+                metadata={"category": "deployment_manual", "contentFormat": "docx"},
+            ),
+            RagDocument(
+                document_id="operations-manual",
+                title="DataSmart Govern 运维手册",
+                source_uri="test://operations-manual",
+                source_type=RagChunkSourceType.RUNBOOK,
+                content="运维手册记录常规日志、指标与服务排查流程。",
+                metadata={"category": "operations_manual", "contentFormat": "docx"},
+            ),
+            RagDocument(
+                document_id="provider-manual",
+                title="模型 Provider 运维手册",
+                source_uri="test://provider-manual",
+                source_type=RagChunkSourceType.RUNBOOK,
+                content="外部智能服务不稳定、被限流或答复不全时，执行重试、降级和响应完整性校验。",
+                metadata={"category": "model_provider_manual", "contentFormat": "docx"},
+            ),
+            RagDocument(
+                document_id="pgvector-manual",
+                title="PostgreSQL pgvector 运维手册",
+                source_uri="test://pgvector-manual",
+                source_type=RagChunkSourceType.RUNBOOK,
+                content="资料匹配变慢或结果对不上时，检查存放设置、向量维度和索引。",
+                metadata={"category": "postgresql_pgvector_manual", "contentFormat": "docx"},
+            ),
+            RagDocument(
+                document_id="kafka-log",
+                title="Kafka 消费积压诊断日志",
+                source_uri="test://kafka-log",
+                source_type=RagChunkSourceType.INCIDENT,
+                content="记录消费组、分区和消息堆积情况。",
+                metadata={"category": "kafka_lag_log", "contentFormat": "log"},
+            ),
+            RagDocument(
+                document_id="kafka-postmortem",
+                title="Kafka 积压事故复盘",
+                source_uri="test://kafka-postmortem",
+                source_type=RagChunkSourceType.INCIDENT,
+                content="复盘 Kafka 积压事故的根因和 DLT 处置过程。",
+                metadata={"category": "incident_kafka_backlog", "contentFormat": "docx"},
+            ),
+        )
+        chunks = {
+            document.document_id: chunk_document(document)[0]
+            for document in documents
+        }
+
+        deployment_question = "新环境上线前，基础服务的健康检查先后怎样安排？"
+        provider_question = "外部智能服务不稳定、请求被限制或答复不全时，怎样稳妥继续？"
+        pgvector_question = "资料匹配变慢或返回结果对不上时，该从哪些存放设置查起？"
+        kafka_question = "消息处理变慢时，哪个消费组和分区堆积最严重？"
+
+        deployment_score = rag_query_document_intent_score(
+            deployment_question,
+            chunks["deployment-manual"],
+        )
+        provider_score = rag_query_document_intent_score(
+            provider_question,
+            chunks["provider-manual"],
+        )
+        pgvector_score = rag_query_document_intent_score(
+            pgvector_question,
+            chunks["pgvector-manual"],
+        )
+        kafka_score = rag_query_document_intent_score(
+            kafka_question,
+            chunks["kafka-log"],
+        )
+
+        self.assertGreaterEqual(deployment_score, 0.85)
+        self.assertGreaterEqual(provider_score, 0.85)
+        self.assertGreaterEqual(pgvector_score, 0.85)
+        self.assertGreaterEqual(kafka_score, 0.85)
+        self.assertGreater(
+            deployment_score,
+            rag_query_document_intent_score(deployment_question, chunks["operations-manual"]),
+        )
+        self.assertGreater(
+            provider_score,
+            rag_query_document_intent_score(provider_question, chunks["operations-manual"]),
+        )
+
     def test_multi_evidence_checkpoint_keeps_incident_replay_and_recovery_decision(self) -> None:
         """Checkpoint 恢复问题应同时引用事故、失败分片 replay 和 Recovery 决策。"""
 
