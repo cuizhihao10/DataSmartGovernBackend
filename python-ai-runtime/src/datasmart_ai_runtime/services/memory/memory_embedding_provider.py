@@ -566,7 +566,14 @@ def _validate_embedding_endpoint(endpoint: str) -> None:
 
 
 def _provider_type(value: str | None) -> MemoryEmbeddingProviderType:
-    """规范化 Provider 类型并对非法值快速失败。"""
+    """规范化 Provider 类型并对非法值快速失败。
+
+    SiliconFlow 的 Embedding 接口遵循 OpenAI-compatible ``/embeddings`` 合同，
+    因此业务配置可以使用更直观的 ``siliconflow`` 名称，但底层仍复用同一套
+    OpenAI-compatible HTTP 实现。这里做别名归一化，避免 RAG 层已经允许
+    ``DATASMART_RAG_EMBEDDING_PROVIDER=siliconflow`` 时，在共享 Memory Provider
+    解析阶段被错误拒绝，导致 Runtime 尚未启动就进入 unhealthy。
+    """
 
     normalized = (value or "disabled").strip().lower().replace("_", "-")
     aliases = {
@@ -576,6 +583,7 @@ def _provider_type(value: str | None) -> MemoryEmbeddingProviderType:
         "test": MemoryEmbeddingProviderType.DETERMINISTIC,
         "openai": MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
         "openai-compatible": MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
+        "siliconflow": MemoryEmbeddingProviderType.OPENAI_COMPATIBLE,
     }
     if normalized in aliases:
         return aliases[normalized]

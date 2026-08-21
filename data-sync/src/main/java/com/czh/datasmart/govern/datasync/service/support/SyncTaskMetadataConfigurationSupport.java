@@ -272,7 +272,7 @@ public class SyncTaskMetadataConfigurationSupport {
         remote.setIncludeColumns(Boolean.TRUE.equals(request.getIncludeColumns()));
         remote.setIncludeViews(Boolean.TRUE.equals(request.getIncludeViews()));
         remote.setIncludePrimaryKeys(Boolean.TRUE);
-        remote.setIncludeIndexes(Boolean.FALSE);
+        remote.setIncludeIndexes(Boolean.TRUE.equals(request.getIncludeIndexes()));
         remote.setIncludeSampleRows(Boolean.FALSE);
         /*
          * 下游 DTO 对 sampleRowLimit 有 @Min(1) 约束。includeSampleRows=false 时继续传 0 会触发无意义的
@@ -333,6 +333,13 @@ public class SyncTaskMetadataConfigurationSupport {
         object.setTableName(table.getTableName());
         object.setTableType(table.getTableType());
         object.setPrimaryKeys(table.getPrimaryKeys() == null ? List.of() : table.getPrimaryKeys());
+        object.setIndexes(table.getIndexes() == null ? List.of() : table.getIndexes().stream().map(index -> {
+            SyncTaskMetadataDiscoveryResponse.IndexObject value = new SyncTaskMetadataDiscoveryResponse.IndexObject();
+            value.setIndexName(index.getIndexName());
+            value.setUnique(index.getUnique());
+            value.setColumnNames(index.getColumnNames());
+            return value;
+        }).toList());
         object.setFields(toFieldObjects(table));
         return object;
     }

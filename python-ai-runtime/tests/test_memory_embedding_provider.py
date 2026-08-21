@@ -340,6 +340,21 @@ class MemoryEmbeddingProviderTest(unittest.TestCase):
         self.assertNotIn("secret-value", serialized)
         self.assertNotIn("embedding.example.internal", serialized)
 
+    def test_siliconflow_provider_alias_uses_openai_compatible_contract(self) -> None:
+        """RAG 层的 SiliconFlow 配置应归一化到共享 OpenAI-compatible Provider。"""
+
+        settings = memory_embedding_provider_settings_from_env(
+            {
+                "DATASMART_AI_MEMORY_EMBEDDING_PROVIDER": "siliconflow",
+                "DATASMART_AI_MEMORY_EMBEDDING_ENDPOINT": "https://api.siliconflow.cn/v1/embeddings",
+                "DATASMART_AI_MEMORY_EMBEDDING_API_KEY": "unit-test-secret",
+                "DATASMART_AI_MEMORY_EMBEDDING_MODEL": "BAAI/bge-m3",
+                "DATASMART_AI_MEMORY_EMBEDDING_DIMENSIONS": "1024",
+            }
+        )
+
+        self.assertEqual(MemoryEmbeddingProviderType.OPENAI_COMPATIBLE, settings.provider_type)
+
     def test_remote_embedding_endpoint_with_bearer_key_requires_https(self) -> None:
         """Bearer 密钥不能通过远程明文 HTTP 发送，localhost 调试地址除外。"""
 

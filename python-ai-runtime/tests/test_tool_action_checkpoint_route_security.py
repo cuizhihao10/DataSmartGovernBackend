@@ -73,6 +73,25 @@ class ToolActionCheckpointRouteSecurityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.store = InMemoryToolActionExecutionCheckpointStore(max_checkpoints_per_thread=5, max_total_checkpoints=20)
 
+    def test_fastapi_request_annotation_is_bound_for_future_annotations(self) -> None:
+        """启用 future annotations 时仍需把闭包局部 request_type 绑定成真实 Request 类型。"""
+
+        app = FakeApp()
+        register_tool_action_checkpoint_routes(
+            app,
+            request_type=FakeRequest,
+            checkpoint_store=self.store,
+        )
+
+        self.assertIs(
+            FakeRequest,
+            app.post_routes["/agent/tool-actions/checkpoints/query"].__annotations__["http_request"],
+        )
+        self.assertIs(
+            FakeRequest,
+            app.post_routes["/agent/tool-actions/checkpoints/resume-preview"].__annotations__["http_request"],
+        )
+
     def test_required_signature_rejects_unsigned_checkpoint_query(self) -> None:
         """checkpoint 路由开启 fail-closed 后，伪造 gateway 来源但无签名应返回稳定安全错误。"""
 

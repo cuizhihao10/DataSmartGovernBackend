@@ -44,7 +44,8 @@ class BusinessGraphBuilderTest(unittest.TestCase):
             "taskVersions": [{"id": "version-7", "name": "成功配置 v7", "taskId": "task-1"}],
             "executions": [{"id": "execution-1", "name": "执行 1", "taskId": "task-1", "errorId": "error-1", "logId": "log-1"}],
             "errors": [{"id": "error-1", "name": "字段映射错误", "errorCode": "FIELD_MAPPING_INVALID"}],
-            "logs": [{"id": "log-1", "name": "execution-1 error log", "executionId": "execution-1", "errorId": "error-1"}],
+            "logs": [{"id": "log-1", "name": "execution-1 error log", "executionId": "execution-1", "errorId": "error-1",
+                      "logLevel": "ERROR", "eventStatus": "FAILED", "message": "NOT_NULL_VIOLATION target field is null"}],
             "runbooks": [{"id": "runbook-1", "name": "字段映射修复手册", "recommendedAction": "REFRESH_METADATA",
                            "errorId": "error-1"}],
             "actions": [{"id": "REFRESH_METADATA", "name": "刷新元数据"}],
@@ -68,6 +69,9 @@ class BusinessGraphBuilderTest(unittest.TestCase):
         self.assertIn("LOG_MATCHES_ERROR", relation_names)
         self.assertIn("FIELD_HAS_CONSTRAINT", relation_names)
         self.assertIn("RUNBOOK_ADDRESSES_ERROR", relation_names)
+        self.assertEqual(1, len(result.failure_log_documents))
+        self.assertEqual(1, len(result.to_fact_bundle()["ragDocuments"]))
+        self.assertEqual("exact_search", result.failure_log_documents[0].source_type.value)
 
     def test_candidate_cannot_be_ingested_before_approval(self) -> None:
         result = BusinessGraphBuilder().build(self.snapshot())

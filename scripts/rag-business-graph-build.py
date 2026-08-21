@@ -27,6 +27,8 @@ if str(PYTHON_SRC) not in sys.path:
     sys.path.insert(0, str(PYTHON_SRC))
 
 from datasmart_ai_runtime.services.rag.business_graph_builder import BusinessGraphBuilder
+from datasmart_ai_runtime.services.rag.failure_log_rag_sink import ingest_failure_log_documents
+from datasmart_ai_runtime.services.rag.persistence import build_rag_knowledge_base_runtime
 
 
 def main() -> int:
@@ -37,6 +39,12 @@ def main() -> int:
     source.add_argument("--snapshot", help="结构化业务快照 JSON 路径")
     source.add_argument("--source-url", help="data-sync 内部快照 URL 根地址")
     parser.add_argument("--task-id", type=int, help="实时快照对应的 data-sync taskId")
+    parser.add_argument(
+        "--project-wide",
+        action="store_true",
+        help="实时模式下按项目汇总当前调用者可见任务，而不是只读取一个 taskId",
+    )
+    parser.add_argument("--max-tasks", type=int, default=200, help="项目级快照最多包含的任务数，范围 1-200")
     parser.add_argument("--execution-id", type=int, help="可选的真实 executionId")
     parser.add_argument("--tenant-id", help="实时快照租户范围")
     parser.add_argument("--application-id", help="实时快照对应的 applicationId")
@@ -48,6 +56,16 @@ def main() -> int:
     )
     parser.add_argument("--source-service", default="python-ai-runtime", help="内部来源服务名")
     parser.add_argument("--output", required=True, help="待审批 graph-facts JSON 输出路径")
+    parser.add_argument(
+        "--ingest-rag-documents",
+        action="store_true",
+        help="把快照中的低敏失败日志文档幂等摄取到已配置的 PostgreSQL/pgvector RAG 知识库",
+    )
+    parser.add_argument(
+        "--allow-nonpersistent-rag-ingest",
+        action="store_true",
+        help="仅用于 learning/test：允许非持久知识库摄取；生产默认拒绝",
+    )
     parser.add_argument(
         "--upload-minio",
         action="store_true",
@@ -83,6 +101,26 @@ def main() -> int:
     fact_bundle = result.to_fact_bundle()
     serialized_bundle = json.dumps(fact_bundle, ensure_ascii=False, indent=2) + "\n"
     output_path.write_text(serialized_bundle, encoding="utf-8")
+    rag_ingestion = {
+        "status": "NOT_REQUESTED",
+        "documentCount": len(result.failure_log_documents),
+        "chunkCount": 0,
+        "persistent": False,
+    }
+    if args.ingest_rag_documents:
+        # CLI 只负责装配已配置的正式知识库，不接收 API key 参数，也不把 provider 细节写入输出。
+        # build_rag_knowledge_base_runtime 在生产环境 fail-closed；因此“输出事实包成功”不会被
+        # 误报为“失败日志已经可检索”。
+        runtime = build_rag_knowledge_base_runtime()
+        if not runtime.available:
+            raise RuntimeError("RAG 知识库不可用，失败日志摄取已拒绝")
+        ingestion = ingest_failure_log_documents(
+            result.failure_log_documents,
+            runtime.knowledge_base,
+            persistent=runtime.persistent,
+            require_persistent=not args.allow_nonpersistent_rag_ingest,
+        )
+        rag_ingestion = ingestion.to_dict()
     fact_uri = None
     if args.upload_minio:
         fact_uri = _upload_fact_bundle(
@@ -102,10 +140,12 @@ def main() -> int:
         "fingerprint": result.fingerprint,
         "entityCount": result.entity_count,
         "edgeCount": result.edge_count,
+        "failureLogDocumentCount": len(result.failure_log_documents),
         "skippedRelationCount": result.skipped_relation_count,
         "warningCount": len(result.warnings),
         "factBundleUri": fact_uri,
         "uploadStatus": "UPLOADED" if fact_uri else "LOCAL_ONLY",
+        "ragIngestion": rag_ingestion,
     }, ensure_ascii=False))
     return 0
 
@@ -174,11 +214,15 @@ def _load_live_snapshot(args: argparse.Namespace) -> dict[str, object]:
     """从受信 data-sync 读取真实业务快照；响应只在内存中短暂存在。"""
 
     base = str(args.source_url).rstrip("/")
-    # 当前 Controller 位于 /sync-tasks/{taskId} 下，保留该路径能复用已有任务范围校验。
-    url = f"{base}/sync-tasks/{args.task_id}/internal/data-sync/graph-facts/snapshot?"
+    # 当前 Controller 位于 /sync-tasks/{taskId} 下；项目级模式仍保留一个 anchor taskId，
+    # 由 Java 先验证该任务可见，再按同一 projectId 有界分页其它任务，避免新增绕过权限的全局入口。
+    route = "project-snapshot" if args.project_wide else "snapshot"
+    url = f"{base}/sync-tasks/{args.task_id}/internal/data-sync/graph-facts/{route}?"
     params = {"applicationId": str(args.application_id)}
     if args.execution_id:
         params["executionId"] = str(args.execution_id)
+    if args.project_wide:
+        params["maxTasks"] = str(max(1, min(int(args.max_tasks or 200), 200)))
     source_token = str(args.source_token or os.getenv("DATASMART_GRAPH_SOURCE_TOKEN") or "")
     request = Request(
         url + urlencode(params),

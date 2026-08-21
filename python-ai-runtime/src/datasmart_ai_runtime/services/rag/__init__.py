@@ -127,6 +127,15 @@ from datasmart_ai_runtime.services.rag.business_graph_builder import (
     BusinessGraphBuildResult,
     BusinessGraphBuilder,
 )
+from datasmart_ai_runtime.services.rag.failure_log_materializer import (
+    materialize_failure_log_documents,
+)
+from datasmart_ai_runtime.services.rag.failure_log_rag_sink import (
+    FailureLogRagIngestionError,
+    FailureLogRagIngestionResult,
+    FailureLogRagKnowledgeSink,
+    ingest_failure_log_documents,
+)
 from datasmart_ai_runtime.services.rag.graph_approval_consumer import (
     GRAPH_FACT_APPROVAL_EVENT_SCHEMA_VERSION,
     GraphFactApprovalConsumer,
@@ -285,6 +294,11 @@ __all__ = [
     "BusinessGraphBuildError",
     "BusinessGraphBuildResult",
     "BusinessGraphBuilder",
+    "materialize_failure_log_documents",
+    "FailureLogRagIngestionError",
+    "FailureLogRagIngestionResult",
+    "FailureLogRagKnowledgeSink",
+    "ingest_failure_log_documents",
     "GRAPH_FACT_APPROVAL_EVENT_SCHEMA_VERSION",
     "GraphFactApprovalConsumer",
     "GraphFactApprovalConsumerError",

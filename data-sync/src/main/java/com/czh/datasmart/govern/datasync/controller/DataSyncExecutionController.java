@@ -28,6 +28,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQuery
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.controller.support.DataSyncAgentRuntimeTrustedAccessSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
@@ -99,11 +100,23 @@ public class DataSyncExecutionController {
         SyncTaskDefinition definition = task.getDefinition();
         SyncExecutionDiagnosisResponse diagnosis = dataSyncService.diagnoseExecution(taskId, executionId, context);
         Long resolvedExecutionId = diagnosis.executionId() == null ? executionId : diagnosis.executionId();
+        SyncExecution executionRecord = null;
         List<SyncExecutionLog> logs = new ArrayList<>();
+        List<SyncCheckpoint> checkpoints = new ArrayList<>();
+        List<SyncObjectExecutionView> objectExecutions = new ArrayList<>();
         if (resolvedExecutionId != null) {
+            executionRecord = dataSyncService.pageExecutions(
+                    new SyncExecutionQueryCriteria(taskId, null, null, 1L, 200L), context)
+                    .getRecords().stream()
+                    .filter(item -> resolvedExecutionId.equals(item.getId()))
+                    .findFirst().orElse(null);
             logs.addAll(dataSyncService.pageExecutionLogs(
                     new SyncExecutionLogQueryCriteria(taskId, resolvedExecutionId, null, null, 1L, 200L),
                     context).getRecords());
+            checkpoints.addAll(dataSyncService.pageCheckpoints(
+                    new SyncCheckpointQueryCriteria(taskId, resolvedExecutionId, null, 1L, 200L), context).getRecords());
+            objectExecutions.addAll(dataSyncService.pageObjectExecutions(
+                    new SyncObjectExecutionQueryCriteria(taskId, resolvedExecutionId, null, null, 1L, 200L), context).getRecords());
         }
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("schemaVersion", "datasmart.business-graph-snapshot.v1");
@@ -120,11 +133,16 @@ public class DataSyncExecutionController {
         List<Map<String, Object>> errorFacts = errorFacts(diagnosis);
         List<String> errorIds = errorFacts.stream().map(item -> String.valueOf(item.get("id"))).toList();
         List<String> logIds = logs.stream().map(item -> String.valueOf(item.getId())).toList();
+        List<String> checkpointIds = checkpoints.stream().map(item -> String.valueOf(item.getId())).toList();
         snapshot.put("dataSources", dataSources(definition, task));
+        snapshot.put("connectors", connectorFacts(definition));
         snapshot.put("tasks", List.of(taskFact(task, definition)));
         snapshot.put("taskVersions", List.of(taskVersionFact(task, definition)));
-        snapshot.put("executions", List.of(executionFact(diagnosis, errorIds, logIds)));
+        snapshot.put("executions", List.of(executionFact(diagnosis, executionRecord, errorIds, logIds, checkpointIds)));
         snapshot.put("logs", logs.stream().map(item -> logFact(item, errorIds)).toList());
+        snapshot.put("checkpoints", checkpoints.stream().map(this::checkpointFact).toList());
+        snapshot.put("objectExecutions", objectExecutions.stream().map(this::objectExecutionFact).toList());
+        snapshot.put("replays", replayFacts(executionRecord, errorIds, checkpointIds));
         snapshot.put("errors", errorFacts);
         Map<String, Object> metadataFacts = metadataFacts(definition, task, context);
         snapshot.putAll(metadataFacts);
@@ -137,6 +155,126 @@ public class DataSyncExecutionController {
                 : diagnosis.similarCases().stream().map(item -> caseFact(item, errorIds)).toList());
         snapshot.put("sourceStatus", metadataWarnings.isEmpty() ? "COMPLETE" : "INCOMPLETE");
         return PlatformApiResponse.success(snapshot, traceId);
+    }
+
+    /**
+     * 为整 个 application/project 导出有界业务图谱快照。
+     *
+     * <p>单任务快照适合故障恢复，但 GraphRAG 在判断任务依赖、共享数据源、字段血缘和历史成功配置时，
+     * 还需要同一项目内其它可见任务作为关系端点。本接口先通过 {@link DataSyncService#pageTasks}
+     * 获取当前调用者在项目范围内可见的任务，再逐任务复用单任务快照；因此不会绕过原有的租户、项目、
+     * SELF 数据范围和服务身份校验。任务数被限制在 200 以内，避免一次图谱构建拖垮控制面；调用方可通过
+     * {@code maxTasks} 调小窗口，后续用 snapshotId/asOf 做增量构建。</p>
+     *
+     * <p>聚合只合并低敏结构化事实，并按实体 ID 去重。任何一个任务的核心元数据发现不完整，整体
+     * {@code sourceStatus} 就保持 INCOMPLETE，Python BusinessGraphBuilder 会拒绝进入审批，避免用
+     * “项目里部分任务成功”伪装成完整业务图谱。</p>
+     */
+    @GetMapping("/internal/data-sync/graph-facts/project-snapshot")
+    public PlatformApiResponse<Map<String, Object>> projectGraphFactsSnapshot(
+            @PathVariable Long taskId,
+            @RequestParam String applicationId,
+            @RequestParam(defaultValue = "200") Integer maxTasks,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        trustedAccessSupport.requireService(headers, "python-ai-runtime");
+        SyncActorContext context = actorContext(tenantId, actorId, actorRole, traceId, headers);
+        if (context.applicationId() == null || !applicationId.equals(String.valueOf(context.applicationId()))) {
+            throw new IllegalArgumentException("applicationId 必须与受信上下文一致");
+        }
+        SyncTask anchorTask = dataSyncService.getTask(taskId, context);
+        int boundedMaxTasks = Math.max(1, Math.min(maxTasks == null ? 200 : maxTasks, 200));
+        PlatformPageResponse<SyncTask> taskPage = dataSyncService.pageTasks(
+                new SyncTaskQueryCriteria(null, anchorTask.getProjectId(), null, null, null,
+                        null, null, 1L, (long) boundedMaxTasks), context);
+
+        Map<String, Object> aggregate = new LinkedHashMap<>();
+        aggregate.put("schemaVersion", "datasmart.business-graph-snapshot.v1");
+        aggregate.put("snapshotId", "project-" + anchorTask.getProjectId() + "-tasks-" + boundedMaxTasks);
+        aggregate.put("asOf", java.time.OffsetDateTime.now().toString());
+        aggregate.put("sourceUri", "datasync://projects/" + anchorTask.getProjectId() + "/graph-facts");
+        aggregate.put("scope", fact("tenantId", String.valueOf(anchorTask.getTenantId()),
+                "applicationId", applicationId, "projectId", String.valueOf(anchorTask.getProjectId()),
+                "sensitivityLevel", "internal"));
+        String[] factSections = {
+                "applications", "projects", "dataSources", "connectors", "schemas", "tables", "fields",
+                "constraints", "tasks", "taskVersions", "executions", "logs", "checkpoints", "objectExecutions",
+                "replays", "errors", "mappings", "actions", "runbooks", "incidents"
+        };
+        for (String section : factSections) {
+            aggregate.put(section, new ArrayList<>());
+        }
+        List<String> metadataWarnings = new ArrayList<>();
+        List<String> metadataAdvisories = new ArrayList<>();
+        boolean complete = true;
+        int includedTaskCount = 0;
+        List<SyncTask> tasks = taskPage == null || taskPage.getRecords() == null
+                ? List.of() : taskPage.getRecords();
+        for (SyncTask visibleTask : tasks) {
+            PlatformApiResponse<Map<String, Object>> taskResponse = graphFactsSnapshot(
+                    visibleTask.getId(), null, applicationId, tenantId, actorId, actorRole, traceId, headers);
+            Map<String, Object> taskSnapshot = taskResponse.getData();
+            if (taskSnapshot == null) {
+                complete = false;
+                continue;
+            }
+            includedTaskCount++;
+            for (String section : factSections) {
+                appendUniqueFacts(aggregate, taskSnapshot, section);
+            }
+            appendStrings(metadataWarnings, taskSnapshot.get("metadataWarnings"));
+            appendStrings(metadataAdvisories, taskSnapshot.get("metadataAdvisories"));
+            if (!"COMPLETE".equalsIgnoreCase(String.valueOf(taskSnapshot.get("sourceStatus")))) {
+                complete = false;
+            }
+        }
+        aggregate.put("metadataWarnings", List.copyOf(metadataWarnings));
+        aggregate.put("metadataAdvisories", List.copyOf(metadataAdvisories));
+        aggregate.put("taskCount", includedTaskCount);
+        aggregate.put("truncated", taskPage != null && taskPage.getTotal() != null
+                && taskPage.getTotal() > includedTaskCount);
+        aggregate.put("sourceStatus", complete ? "COMPLETE" : "INCOMPLETE");
+        return PlatformApiResponse.success(aggregate, traceId);
+    }
+
+    /** 合并一个任务快照的事实数组，并按稳定 ID 去重，保证聚合图谱可重复构建。 */
+    private void appendUniqueFacts(Map<String, Object> aggregate,
+                                   Map<String, Object> taskSnapshot,
+                                   String section) {
+        Object sourceValue = taskSnapshot.get(section);
+        if (!(sourceValue instanceof List<?> sourceFacts)) {
+            return;
+        }
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> targetFacts = (List<Map<String, Object>>) aggregate.get(section);
+        for (Object sourceFact : sourceFacts) {
+            if (!(sourceFact instanceof Map<?, ?> rawMap)) {
+                continue;
+            }
+            Map<String, Object> fact = new LinkedHashMap<>();
+            rawMap.forEach((key, value) -> fact.put(String.valueOf(key), value));
+            String identity = safe(String.valueOf(fact.get("id")));
+            boolean duplicate = targetFacts.stream().anyMatch(existing -> identity.equals(safe(String.valueOf(existing.get("id")))));
+            if (!duplicate) {
+                targetFacts.add(fact);
+            }
+        }
+    }
+
+    /** 追加聚合快照的低敏 warning/advisory，并保持首次出现顺序。 */
+    private void appendStrings(List<String> target, Object rawValues) {
+        if (!(rawValues instanceof List<?> values)) {
+            return;
+        }
+        for (Object value : values) {
+            String normalized = safe(String.valueOf(value));
+            if (!normalized.isBlank() && !target.contains(normalized)) {
+                target.add(normalized);
+            }
+        }
     }
 
     /** 将任务定义投影为图构建器可消费的数据源事实，不复制连接配置。 */
@@ -184,14 +322,69 @@ public class DataSyncExecutionController {
      * 一等事实输出。列表只包含控制面主键和摘要 ID，不包含日志正文、样本值或堆栈。</p>
      */
     private Map<String, Object> executionFact(SyncExecutionDiagnosisResponse diagnosis,
+                                              SyncExecution executionRecord,
                                               List<String> errorIds,
-                                              List<String> logIds) {
+                                              List<String> logIds,
+                                              List<String> checkpointIds) {
         return fact("id", diagnosis.executionId() == null ? "latest" : diagnosis.executionId(),
                 "taskId", diagnosis.taskId(), "state", diagnosis.executionState(),
                 "recordsRead", diagnosis.recordsRead(), "recordsWritten", diagnosis.recordsWritten(),
                 "failedRecordCount", diagnosis.failedRecordCount(), "rootCauseCodes",
                 diagnosis.rootCauseCodes() == null ? List.of() : diagnosis.rootCauseCodes(),
-                "errorIds", errorIds, "logIds", logIds);
+                "errorIds", errorIds, "logIds", logIds, "checkpointIds", checkpointIds,
+                "triggerType", executionRecord == null ? null : executionRecord.getTriggerType(),
+                "checkpointRef", executionRecord == null ? null : executionRecord.getCheckpointRef());
+    }
+
+    /** 连接器事实只描述能力类别，不复制数据源连接配置或密钥。 */
+    private List<Map<String, Object>> connectorFacts(SyncTaskDefinition definition) {
+        List<Map<String, Object>> facts = new ArrayList<>();
+        addConnectorFact(facts, definition.getSourceConnectorType(), "SOURCE");
+        addConnectorFact(facts, definition.getTargetConnectorType(), "TARGET");
+        return facts;
+    }
+
+    /** 将连接器类型投影为稳定能力摘要，供 Agent 判断 checkpoint/replay 是否可行。 */
+    private void addConnectorFact(List<Map<String, Object>> facts, String connectorType, String role) {
+        String type = safe(connectorType).toUpperCase(Locale.ROOT);
+        if (type.isBlank()) {
+            return;
+        }
+        facts.add(fact("id", role + ":connector:" + type, "connectorType", type, "role", role,
+                "supportsMetadataDiscovery", true, "supportsCheckpointResume", true,
+                "supportsReplay", true, "capabilitySource", "DATASYNC_GOVERNED_CAPABILITY_MATRIX"));
+    }
+
+    /** checkpoint 只输出引用/摘要，绝不把原始水位值写入图谱。 */
+    private Map<String, Object> checkpointFact(SyncCheckpoint checkpoint) {
+        return fact("id", checkpoint.getId(), "executionId", checkpoint.getExecutionId(),
+                "taskId", checkpoint.getSyncTaskId(), "checkpointType", checkpoint.getCheckpointType(),
+                "shardOrPartition", checkpoint.getShardOrPartition(), "recordsRead", checkpoint.getRecordsRead(),
+                "recordsWritten", checkpoint.getRecordsWritten(), "checkpointTime", checkpoint.getCheckpointTime(),
+                "valuePolicy", "REFERENCE_ONLY_NO_RAW_CHECKPOINT_VALUE");
+    }
+
+    /** 失败分片/对象是恢复决策的重要图事实，正文仍由 data-sync 控制面保护。 */
+    private Map<String, Object> objectExecutionFact(SyncObjectExecutionView object) {
+        return fact("id", object.id(), "executionId", object.executionId(), "taskId", object.syncTaskId(),
+                "objectOrdinal", object.objectOrdinal(), "workUnitType", object.workUnitType(),
+                "shardOrPartition", object.shardOrPartition(), "objectState", object.objectState(),
+                "attemptCount", object.attemptCount(), "failedRecordCount", object.failedRecordCount(),
+                "lastErrorType", object.lastErrorType(), "lastErrorCode", object.lastErrorCode(),
+                "payloadPolicy", object.payloadPolicy());
+    }
+
+    /** 把当前诊断中的 REPLAY 运行和 checkpoint 来源绑定为可审计图事实。 */
+    private List<Map<String, Object>> replayFacts(SyncExecution executionRecord,
+                                                   List<String> errorIds,
+                                                   List<String> checkpointIds) {
+        if (executionRecord == null || !"REPLAY".equalsIgnoreCase(safe(executionRecord.getTriggerType()))) {
+            return List.of();
+        }
+        return List.of(fact("id", "replay:" + executionRecord.getId(),
+                "executionId", executionRecord.getId(), "errorIds", errorIds,
+                "checkpointIds", checkpointIds, "status", executionRecord.getExecutionState(),
+                "sourceExecutionRef", executionRecord.getCheckpointRef()));
     }
 
     /**
@@ -286,6 +479,7 @@ public class DataSyncExecutionController {
             request.setTableNamePattern(tableName);
             request.setIncludeColumns(true);
             request.setIncludeViews(false);
+            request.setIncludeIndexes(true);
             request.setMaxTables(16);
             request.setMaxColumnsPerTable(256);
             SyncTaskMetadataDiscoveryResponse response = dataSyncService.discoverTaskMetadata(request, context);
@@ -310,6 +504,20 @@ public class DataSyncExecutionController {
                 String schemaId = side + ":" + datasourceId + ":schema:" + safe(resolvedSchemaName);
                 tables.add(fact("id", tableId, "schemaId", schemaId, "dataSourceId", datasourceId,
                         "name", safe(table.getTableName()), "tableType", safe(table.getTableType())));
+                if (table.getIndexes() != null) {
+                    for (SyncTaskMetadataDiscoveryResponse.IndexObject index : table.getIndexes()) {
+                        if (index == null || index.getIndexName() == null || index.getIndexName().isBlank()) {
+                            continue;
+                        }
+                        for (String columnName : index.getColumnNames() == null ? List.<String>of() : index.getColumnNames()) {
+                            String indexFieldId = fieldId(side, datasourceId, resolvedSchemaName, table.getTableName(), columnName);
+                            constraints.add(fact("id", tableId + ":index:" + index.getIndexName() + ":" + columnName,
+                                    "fieldId", indexFieldId,
+                                    "constraintType", Boolean.TRUE.equals(index.getUnique()) ? "UNIQUE" : "INDEX",
+                                    "constraintName", safe(index.getIndexName())));
+                        }
+                    }
+                }
                 for (SyncTaskMetadataDiscoveryResponse.FieldObject field :
                         table.getFields() == null ? List.<SyncTaskMetadataDiscoveryResponse.FieldObject>of() : table.getFields()) {
                     String fieldId = tableId + ":field:" + safe(field.getFieldName());

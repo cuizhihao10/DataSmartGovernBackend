@@ -89,7 +89,11 @@ param(
     [string]$ServiceAccessToken = "",
 
     [long]$TenantId = 10,
-    [long]$ApplicationId = 10001,
+    # 本地 permission-admin 初始化数据把项目 101 绑定到默认 FlashSync 应用 10010。
+    # E2E 必须使用权限中心真实物化的 applicationId；如果继续使用一个未绑定的占位值，
+    # Gateway 会按 fail-closed 规则清除应用 Header，Python Runtime 随后无法写入受治理
+    # specialist turn fact，最终表现为模型规划链路的无响应/500，而不是业务检索问题。
+    [long]$ApplicationId = 10010,
     [long]$ProjectId = 101,
     [long]$ActorId = 1001,
     [string]$ActorRole = "PROJECT_OWNER",
@@ -113,7 +117,10 @@ param(
     [string]$TargetSchema = "datasmart_e2e",
     [string]$TargetTable = "orders_platform_clean",
 
-    [int]$TimeoutSeconds = 10,
+    # 主 Agent 规划会经过 reasoning provider 和多专业 Agent durable turn，不能复用普通
+    # CRUD 请求的 10 秒超时。Compose 当前 reasoning timeout 为 180 秒，这里留出网关、
+    # 策略评估和 JSON 序列化余量，避免真实模型已经开始执行却被 PowerShell 报成 NO_RESPONSE。
+    [int]$TimeoutSeconds = 240,
     [int]$StartupTimeoutSeconds = 120,
     [int]$ProbeIntervalSeconds = 3
 )
@@ -1400,7 +1407,9 @@ function Invoke-GovernedAutopilotRecoveryE2E {
         [string]$SourceDatasourceName,
         [long]$SourceDatasourceId,
         [string]$TargetDatasourceName,
-        [long]$TargetDatasourceId
+        [long]$TargetDatasourceId,
+        [long]$TaskId,
+        [long]$ExecutionId
     )
 
     <#
@@ -1440,14 +1449,17 @@ function Invoke-GovernedAutopilotRecoveryE2E {
         $autopilotRun = Invoke-NativeCommandSafely -Name "六 Agent 受治理 Autopilot E2E" -Command {
             & powershell -NoProfile -ExecutionPolicy Bypass -File $autopilotScript `
                 -Execute `
-                -ConfirmAndExecute `
-                -EnableAutopilot `
+                -Scenario Recovery `
                 -GatewayBaseUrl $GatewayBaseUrl `
                 -KeycloakBaseUrl $KeycloakBaseUrl `
                 -KeycloakUsername $UserAccountUsername `
                 -TenantId $TenantId `
                 -ProjectId $ProjectId `
                 -ActorId ([string]$ActorId) `
+                -TaskId ([string]$TaskId) `
+                -ExecutionId ([string]$ExecutionId) `
+                -FailureCode "CONSTRAINT_VIOLATION" `
+                -FailureReference ("datasync://tasks/{0}/executions/{1}/diagnosis" -f $TaskId, $ExecutionId) `
                 -SourceDatasourceName $SourceDatasourceName `
                 -TargetDatasourceName $TargetDatasourceName `
                 -SourceDatasourceId ([string]$SourceDatasourceId) `
@@ -2580,7 +2592,9 @@ function Main {
         -SourceDatasourceName $sourceDatasourceName `
         -SourceDatasourceId $sourceDatasourceId `
         -TargetDatasourceName $targetDatasourceName `
-        -TargetDatasourceId $targetDatasourceId
+        -TargetDatasourceId $targetDatasourceId `
+        -TaskId $taskId `
+        -ExecutionId $firstExecutionId
     Invoke-OfflineModeClosureE2E `
         -ApiRoots $apiRoots `
         -UserHeaders $userHeaders `

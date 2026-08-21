@@ -56,6 +56,8 @@ public class SyncTaskMetadataDiscoveryRequest {
     private String tableNamePattern;
     private Boolean includeColumns;
     private Boolean includeViews;
+    /** 是否把索引/唯一约束摘要一并带回，用于真实业务图谱构建。 */
+    private Boolean includeIndexes;
     private Integer maxTables;
     private Integer maxColumnsPerTable;
 }

@@ -68,6 +68,14 @@ def _edge(source_id: str, target_id: str, document_id: str, chunk_id: str) -> di
     }
 
 
+def _edge_with_relation(source_id: str, target_id: str, document_id: str, chunk_id: str, relation: str) -> dict[str, object]:
+    """构造任意业务关系边，验证 Neo4j Provider 不再绑定 REPORTS_TO。"""
+
+    value = _edge(source_id, target_id, document_id, chunk_id)
+    value["relation"] = relation
+    return value
+
+
 class _FakeSession:
     """按参数响应两类参数化 Cypher 的最小 fake session。"""
 
@@ -251,6 +259,28 @@ class Neo4jGraphRagProviderTest(unittest.TestCase):
         self.assertEqual(GraphRagResultStatus.REFUSAL.value, result.status)
         self.assertEqual("CONFLICTING_CURRENT_EDGES", result.reason_code)
         self.assertIsNone(result.answer)
+
+    def test_business_relation_query_reads_field_mapping(self) -> None:
+        """Neo4j 逐跳读取应支持 FIELD_MAPS_TO 等数据同步业务关系。"""
+
+        entities = {
+            "source-field": _entity("source-field", "源客户编号"),
+            "target-field": _entity("target-field", "目标客户编号"),
+        }
+        driver = _FakeDriver(
+            entities,
+            [_edge_with_relation("source-field", "target-field", "mapping-doc", "chunk-1", "FIELD_MAPS_TO")],
+        )
+        provider = Neo4jGraphRagProvider(
+            driver,
+            GraphRagNeo4jSettings(provider_type="neo4j", uri="bolt://neo4j:7687", username="neo4j", password="secret"),
+        )
+        result = provider.query(GraphRagQuery(
+            tenant="tenant-a", project="project-a", workspace="workspace-a", sensitivity="internal",
+            start_entity="源客户编号", relation="FIELD_MAPS_TO", hops=1,
+        ))
+        self.assertEqual(GraphRagResultStatus.SUCCESS.value, result.status)
+        self.assertEqual("目标客户编号", result.answer)
 
     def test_provider_factory_is_disabled_by_default_and_fail_closed_when_incomplete(self) -> None:
         """未显式启用时不连接 Neo4j，启用但缺配置时返回稳定拒答 Provider。"""

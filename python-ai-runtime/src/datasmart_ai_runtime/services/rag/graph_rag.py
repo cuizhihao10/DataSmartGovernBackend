@@ -4,9 +4,8 @@
 本地学习和后续 ``RagPipeline`` 注入。它把图数据、范围授权、时间有效性、别名解析、
 有限跳数和证据路径放在同一个清晰的接口内，避免调用方直接拼接图查询或绕过治理规则。
 
-当前只实现一种自然语言关系：``REPORTS_TO``，对应中文的“上级/上司/主管/领导”。
-实现故意保持同步且纯内存；未来接入图数据库时，只需实现同样的 ``GraphRagRetriever``
-接口，调用方不需要改变结果合同。
+关系查询同时覆盖组织关系和数据同步领域关系。实现故意保持同步且纯内存；接入图数据库时，
+Provider 只需遵循相同的 ``GraphRagRetriever`` 合同，调用方不需要知道底层存储。
 """
 
 from __future__ import annotations
@@ -59,6 +58,8 @@ class GraphRagRelation(str, Enum):
     EXECUTION_HAS_CHECKPOINT = "EXECUTION_HAS_CHECKPOINT"
     EXECUTION_REPLAYS_ERROR = "EXECUTION_REPLAYS_ERROR"
     EXECUTION_HAS_LOG = "EXECUTION_HAS_LOG"
+    EXECUTION_HAS_OBJECT_EXECUTION = "EXECUTION_HAS_OBJECT_EXECUTION"
+    OBJECT_EXECUTION_FAILED_WITH = "OBJECT_EXECUTION_FAILED_WITH"
     LOG_MATCHES_ERROR = "LOG_MATCHES_ERROR"
     TASK_HAS_VERSION = "TASK_HAS_VERSION"
     APPLICATION_CONTAINS_PROJECT = "APPLICATION_CONTAINS_PROJECT"
@@ -152,10 +153,37 @@ def _normalize_relation(value: Any) -> str:
         return value.value
     normalized = _normalize_alias(value).replace("-", "_")
     compact = normalized.replace("_", "")
-    if normalized.upper() == GraphRagRelation.REPORTS_TO.value or compact.upper() == "REPORTSTO":
-        return GraphRagRelation.REPORTS_TO.value
-    if normalized in {"上级", "上司", "主管", "领导"}:
-        return GraphRagRelation.REPORTS_TO.value
+    aliases = {
+        "REPORTSTO": GraphRagRelation.REPORTS_TO.value,
+        "上级": GraphRagRelation.REPORTS_TO.value,
+        "上司": GraphRagRelation.REPORTS_TO.value,
+        "主管": GraphRagRelation.REPORTS_TO.value,
+        "领导": GraphRagRelation.REPORTS_TO.value,
+        "数据源": GraphRagRelation.TASK_USES_DATASOURCE.value,
+        "使用数据源": GraphRagRelation.TASK_USES_DATASOURCE.value,
+        "包含表": GraphRagRelation.SCHEMA_CONTAINS_TABLE.value,
+        "表": GraphRagRelation.SCHEMA_CONTAINS_TABLE.value,
+        "字段": GraphRagRelation.TABLE_HAS_FIELD.value,
+        "映射": GraphRagRelation.FIELD_MAPS_TO.value,
+        "约束": GraphRagRelation.FIELD_HAS_CONSTRAINT.value,
+        "执行": GraphRagRelation.TASK_HAS_EXECUTION.value,
+        "错误": GraphRagRelation.EXECUTION_FAILED_WITH.value,
+        "日志": GraphRagRelation.EXECUTION_HAS_LOG.value,
+        "依赖": GraphRagRelation.TASK_DEPENDS_ON_TASK.value,
+        "版本": GraphRagRelation.TASK_HAS_VERSION.value,
+        "检查点": GraphRagRelation.EXECUTION_HAS_CHECKPOINT.value,
+        "checkpoint": GraphRagRelation.EXECUTION_HAS_CHECKPOINT.value,
+        "重放": GraphRagRelation.EXECUTION_REPLAYS_ERROR.value,
+        "replay": GraphRagRelation.EXECUTION_REPLAYS_ERROR.value,
+        "runbook": GraphRagRelation.RUNBOOK_ADDRESSES_ERROR.value,
+        "修复动作": GraphRagRelation.RUNBOOK_RECOMMENDS_ACTION.value,
+    }
+    if normalized.upper() in GraphRagRelation._value2member_map_:
+        return normalized.upper()
+    if compact.upper() in aliases:
+        return aliases[compact.upper()]
+    if normalized in aliases:
+        return aliases[normalized]
     return str(value).strip().upper() if value is not None else ""
 
 
@@ -720,6 +748,30 @@ def parse_graph_rag_question(question: str) -> GraphRagParsedQuestion | None:
                 relation=GraphRagRelation.REPORTS_TO.value,
                 hops=hops,
             )
+
+    # 数据同步领域的自然语言问句是“实体 + 关系目标”的一跳查询。这里明确列出
+    # 关系词，避免把任意中文句子猜成图关系；复杂条件仍应使用结构化字段。
+    domain_patterns = (
+        (r"^(?P<subject>.+?)(?:使用了|使用|关联的|连接的)哪些?数据源$", GraphRagRelation.TASK_USES_DATASOURCE.value),
+        (r"^(?P<subject>.+?)(?:有哪些|包含哪些|下有哪些)字段$", GraphRagRelation.TABLE_HAS_FIELD.value),
+        (r"^(?P<subject>.+?)(?:映射到|对应到|映射的)哪些?目标字段$", GraphRagRelation.FIELD_MAPS_TO.value),
+        (r"^(?P<subject>.+?)(?:有哪些|包含哪些)(?:约束|限制)$", GraphRagRelation.FIELD_HAS_CONSTRAINT.value),
+        (r"^(?P<subject>.+?)(?:对应|关联)哪些?执行$", GraphRagRelation.TASK_HAS_EXECUTION.value),
+        (r"^(?P<subject>.+?)(?:对应|产生|包含)哪些?错误$", GraphRagRelation.EXECUTION_FAILED_WITH.value),
+        (r"^(?P<subject>.+?)(?:对应|包含|产生)哪些?日志$", GraphRagRelation.EXECUTION_HAS_LOG.value),
+        (r"^(?P<subject>.+?)(?:依赖|依赖了)哪些?任务$", GraphRagRelation.TASK_DEPENDS_ON_TASK.value),
+        (r"^(?P<subject>.+?)(?:有哪些|包含哪些)版本$", GraphRagRelation.TASK_HAS_VERSION.value),
+        (r"^(?P<subject>.+?)(?:有哪些|包含哪些)(?:checkpoint|检查点)$", GraphRagRelation.EXECUTION_HAS_CHECKPOINT.value),
+        (r"^(?P<subject>.+?)(?:有哪些|包含哪些)replay(?:记录)?$", GraphRagRelation.EXECUTION_REPLAYS_ERROR.value),
+        (r"^(?P<subject>.+?)(?:对应|关联)哪些?runbook$", GraphRagRelation.RUNBOOK_ADDRESSES_ERROR.value),
+        (r"^(?P<subject>.+?)(?:推荐|建议)哪些?修复动作$", GraphRagRelation.RUNBOOK_RECOMMENDS_ACTION.value),
+    )
+    for pattern, relation in domain_patterns:
+        match = re.fullmatch(pattern, text, flags=re.IGNORECASE)
+        if match is not None:
+            subject = match.group("subject").strip("的 ")
+            if subject:
+                return GraphRagParsedQuestion(subject=subject, relation=relation, hops=1)
     return None
 
 
@@ -1133,16 +1185,7 @@ class InMemoryGraphRag:
             return self._result(
                 GraphRagResultStatus.NOT_APPLICABLE,
                 reason=parse_reason or GraphRagReasonCode.UNSUPPORTED_QUERY,
-                message="当前 GraphRAG 只处理 REPORTS_TO 的中文上级关系问句。",
-            )
-
-        if parsed.relation != GraphRagRelation.REPORTS_TO.value:
-            return self._result(
-                GraphRagResultStatus.NOT_APPLICABLE,
-                reason=GraphRagReasonCode.RELATION_NOT_SUPPORTED,
-                message="当前未支持该关系类型。",
-                requested_hops=parsed.hops,
-                relation=parsed.relation,
+                message="当前问题未匹配受治理的图关系查询合同。",
             )
 
         if parsed.hops < 1 or query.max_hops < 1:
@@ -1209,7 +1252,11 @@ class InMemoryGraphRag:
             for edge in candidates:
                 by_target[edge.target_entity_id].append(edge)
             target_ids = tuple(sorted(by_target))
-            if len(target_ids) > 1:
+            # REPORTS_TO 等单值关系出现多个当前目标时必须拒答；数据同步的
+            # “使用哪些数据源/有哪些字段”属于集合关系，可以安全返回所有
+            # 已授权且具备完整来源的目标实体。
+            collection_relation = parsed.relation != GraphRagRelation.REPORTS_TO.value
+            if len(target_ids) > 1 and not collection_relation:
                 return self._result(
                     GraphRagResultStatus.REFUSAL,
                     reason=GraphRagReasonCode.CONFLICTING_CURRENT_EDGES,
@@ -1220,49 +1267,53 @@ class InMemoryGraphRag:
                     conflicting_target_ids=target_ids,
                 )
 
-            target_id = target_ids[0]
-            target = entity_by_id.get(target_id)
-            if target is None:
-                return self._result(
-                    GraphRagResultStatus.REFUSAL,
-                    reason=GraphRagReasonCode.TARGET_ENTITY_NOT_VISIBLE,
-                    message="关系目标不在当前治理范围内，无法安全回答。",
-                    path=tuple(path),
-                    requested_hops=parsed.hops,
-                    relation=parsed.relation,
-                )
-
-            supporting_edges = tuple(
-                sorted(
-                    by_target[target_id],
-                    key=self._edge_sort_key,
-                    reverse=True,
-                )
-            )
-            selected_edge = supporting_edges[0]
-            if not selected_edge.has_complete_provenance():
-                return self._result(
-                    GraphRagResultStatus.REFUSAL,
-                    reason=GraphRagReasonCode.INCOMPLETE_PROVENANCE,
-                    message="关系边缺少完整来源信息，拒绝生成不可审计的答案。",
-                    path=tuple(path),
-                    requested_hops=parsed.hops,
-                    relation=parsed.relation,
-                )
-            path.append(
-                GraphRagPathStep(
+            next_targets: list[GraphRagEntity] = []
+            for target_id in target_ids:
+                target = entity_by_id.get(target_id)
+                if target is None:
+                    return self._result(
+                        GraphRagResultStatus.REFUSAL,
+                        reason=GraphRagReasonCode.TARGET_ENTITY_NOT_VISIBLE,
+                        message="关系目标不在当前治理范围内，无法安全回答。",
+                        path=tuple(path),
+                        requested_hops=parsed.hops,
+                        relation=parsed.relation,
+                    )
+                supporting_edges = tuple(sorted(by_target[target_id], key=self._edge_sort_key, reverse=True))
+                selected_edge = supporting_edges[0]
+                if not selected_edge.has_complete_provenance():
+                    return self._result(
+                        GraphRagResultStatus.REFUSAL,
+                        reason=GraphRagReasonCode.INCOMPLETE_PROVENANCE,
+                        message="关系边缺少完整来源信息，拒绝生成不可审计的答案。",
+                        path=tuple(path),
+                        requested_hops=parsed.hops,
+                        relation=parsed.relation,
+                    )
+                path.append(GraphRagPathStep(
                     hop=hop,
                     source_entity=current,
                     target_entity=target,
                     edge=selected_edge,
                     supporting_edges=supporting_edges,
+                ))
+                next_targets.append(target)
+            # 集合关系只支持一跳；多跳集合遍历会把分支语义扩大成笛卡尔积，
+            # 应由调用方拆分为多个结构化查询而不是隐式放大图搜索。
+            if collection_relation and len(next_targets) > 1 and hop < parsed.hops:
+                return self._result(
+                    GraphRagResultStatus.REFUSAL,
+                    reason=GraphRagReasonCode.MAX_HOPS_EXCEEDED,
+                    message="集合关系只允许一跳查询，避免无界分支遍历。",
+                    path=tuple(path),
+                    requested_hops=parsed.hops,
+                    relation=parsed.relation,
                 )
-            )
-            current = target
+            current = next_targets[0]
 
         return self._result(
             GraphRagResultStatus.SUCCESS,
-            answer=current.canonical_name,
+            answer=("、".join(step.target_entity.canonical_name for step in path[-len(target_ids):]) if len(target_ids) > 1 else current.canonical_name),
             entity_id=current.standard_id,
             path=tuple(path),
             reason=GraphRagReasonCode.ANSWERED,

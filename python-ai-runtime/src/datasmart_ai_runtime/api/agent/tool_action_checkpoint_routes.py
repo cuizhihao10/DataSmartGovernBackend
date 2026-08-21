@@ -153,12 +153,25 @@ def register_tool_action_checkpoint_routes(
         return
 
     @app.post("/agent/tool-actions/checkpoints/query")
-    def query_tool_action_checkpoints(payload: dict[str, Any], http_request: request_type) -> dict[str, Any]:
+    def query_tool_action_checkpoints(
+        payload: dict[str, Any],
+        http_request: Any = None,
+    ) -> dict[str, Any]:
         return _handle_query_tool_action_checkpoints(payload, http_request=http_request)
 
     @app.post("/agent/tool-actions/checkpoints/resume-preview")
-    def preview_tool_action_checkpoint_resume(payload: dict[str, Any], http_request: request_type) -> dict[str, Any]:
+    def preview_tool_action_checkpoint_resume(
+        payload: dict[str, Any],
+        http_request: Any = None,
+    ) -> dict[str, Any]:
         return _handle_preview_tool_action_checkpoint_resume(payload, http_request=http_request)
+
+    # 本模块启用了 future annotations，闭包局部变量 ``request_type`` 会被保存为无法解析的
+    # ForwardRef。FastAPI 只有在注册后收到真实类型，才能把 http_request 识别为 Request，
+    # 否则 OpenAPI 生成和请求校验都会在运行时 500。这里沿用其它 Agent 路由的装配方式，
+    # 既保留无 FastAPI 的单元测试，又保证生产路由使用真实 Request 注入。
+    query_tool_action_checkpoints.__annotations__["http_request"] = request_type
+    preview_tool_action_checkpoint_resume.__annotations__["http_request"] = request_type
 
 
 def _prepare_secured_checkpoint_payload(

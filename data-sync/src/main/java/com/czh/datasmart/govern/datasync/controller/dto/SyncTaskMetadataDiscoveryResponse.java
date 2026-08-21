@@ -35,7 +35,16 @@ public class SyncTaskMetadataDiscoveryResponse {
         private String tableName;
         private String tableType;
         private List<String> primaryKeys;
+        private List<IndexObject> indexes;
         private List<FieldObject> fields;
+    }
+
+    /** 表级索引摘要，用于物化 UNIQUE/INDEX 约束关系。 */
+    @Data
+    public static class IndexObject {
+        private String indexName;
+        private Boolean unique;
+        private List<String> columnNames;
     }
 
     @Data

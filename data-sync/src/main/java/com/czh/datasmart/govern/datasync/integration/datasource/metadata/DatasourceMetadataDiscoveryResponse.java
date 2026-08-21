@@ -35,7 +35,18 @@ public class DatasourceMetadataDiscoveryResponse {
         private String tableName;
         private String tableType;
         private List<String> primaryKeys;
+        /** 唯一索引/普通索引摘要；只保留索引名和字段名，不返回表达式或执行计划。 */
+        private List<IndexSummary> indexes;
         private List<ColumnSummary> columns;
+    }
+
+    /** 连接器元数据中的低敏索引投影。 */
+    @Getter
+    @Setter
+    public static class IndexSummary {
+        private String indexName;
+        private Boolean unique;
+        private List<String> columnNames;
     }
 
     @Getter

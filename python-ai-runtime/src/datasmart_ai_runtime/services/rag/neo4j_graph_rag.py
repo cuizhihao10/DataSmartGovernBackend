@@ -182,21 +182,13 @@ class Neo4jGraphRagProvider:
             return GraphRagResult(
                 status=GraphRagResultStatus.NOT_APPLICABLE.value,
                 reason_code=parse_reason or GraphRagReasonCode.UNSUPPORTED_QUERY.value,
-                message="当前 GraphRAG 只处理 REPORTS_TO 的中文上级关系问句。",
+                message="当前问题未匹配受治理的图关系查询合同。",
             )
         if not query.scope.is_concrete_query_scope():
             return GraphRagResult(
                 status=GraphRagResultStatus.REFUSAL.value,
                 reason_code=GraphRagReasonCode.SCOPE_REQUIRED.value,
                 message="缺少具体的租户、应用、项目或敏感级别范围。",
-                requested_hops=parsed.hops,
-                relation=parsed.relation,
-            )
-        if parsed.relation != GraphRagRelation.REPORTS_TO.value:
-            return GraphRagResult(
-                status=GraphRagResultStatus.NOT_APPLICABLE.value,
-                reason_code=GraphRagReasonCode.RELATION_NOT_SUPPORTED.value,
-                message="当前未支持该关系类型。",
                 requested_hops=parsed.hops,
                 relation=parsed.relation,
             )
@@ -272,7 +264,8 @@ class Neo4jGraphRagProvider:
                 for target, relationship in candidates:
                     by_target.setdefault(target.standard_id, []).append((target, relationship))
                 target_ids = tuple(sorted(by_target))
-                if len(target_ids) > 1:
+                collection_relation = parsed.relation != GraphRagRelation.REPORTS_TO.value
+                if len(target_ids) > 1 and not collection_relation:
                     return GraphRagResult(
                         status=GraphRagResultStatus.REFUSAL.value,
                         reason_code=GraphRagReasonCode.CONFLICTING_CURRENT_EDGES.value,
@@ -282,38 +275,47 @@ class Neo4jGraphRagProvider:
                         relation=parsed.relation,
                         conflicting_target_ids=target_ids,
                     )
-                target_id = target_ids[0]
-                target, selected_edge = sorted(
-                    by_target[target_id],
-                    key=lambda item: InMemoryGraphRag._edge_sort_key(item[1]),
-                    reverse=True,
-                )[0]
-                supporting_edges = tuple(
-                    edge for _, edge in sorted(
+                next_targets: list[GraphRagEntity] = []
+                for target_id in target_ids:
+                    target, selected_edge = sorted(
                         by_target[target_id],
                         key=lambda item: InMemoryGraphRag._edge_sort_key(item[1]),
                         reverse=True,
+                    )[0]
+                    supporting_edges = tuple(
+                        edge for _, edge in sorted(
+                            by_target[target_id],
+                            key=lambda item: InMemoryGraphRag._edge_sort_key(item[1]),
+                            reverse=True,
+                        )
                     )
-                )
-                if not selected_edge.has_complete_provenance():
-                    return GraphRagResult(
-                        status=GraphRagResultStatus.REFUSAL.value,
-                        reason_code=GraphRagReasonCode.INCOMPLETE_PROVENANCE.value,
-                        message="关系边缺少完整来源信息，拒绝生成不可审计的答案。",
-                        path=tuple(path),
-                        requested_hops=parsed.hops,
-                        relation=parsed.relation,
-                    )
-                path.append(
-                    GraphRagPathStep(
+                    if not selected_edge.has_complete_provenance():
+                        return GraphRagResult(
+                            status=GraphRagResultStatus.REFUSAL.value,
+                            reason_code=GraphRagReasonCode.INCOMPLETE_PROVENANCE.value,
+                            message="关系边缺少完整来源信息，拒绝生成不可审计的答案。",
+                            path=tuple(path),
+                            requested_hops=parsed.hops,
+                            relation=parsed.relation,
+                        )
+                    path.append(GraphRagPathStep(
                         hop=hop,
                         source_entity=current,
                         target_entity=target,
                         edge=selected_edge,
                         supporting_edges=supporting_edges,
+                    ))
+                    next_targets.append(target)
+                if collection_relation and len(next_targets) > 1 and hop < parsed.hops:
+                    return GraphRagResult(
+                        status=GraphRagResultStatus.REFUSAL.value,
+                        reason_code=GraphRagReasonCode.MAX_HOPS_EXCEEDED.value,
+                        message="集合关系只允许一跳查询，避免无界分支遍历。",
+                        path=tuple(path),
+                        requested_hops=parsed.hops,
+                        relation=parsed.relation,
                     )
-                )
-                current = target
+                current = next_targets[0]
         except GraphRagQueryLimitError:
             return GraphRagResult(
                 status=GraphRagResultStatus.REFUSAL.value,
@@ -326,7 +328,7 @@ class Neo4jGraphRagProvider:
 
         return GraphRagResult(
             status=GraphRagResultStatus.SUCCESS.value,
-            answer=current.canonical_name,
+            answer=("、".join(step.target_entity.canonical_name for step in path[-len(target_ids):]) if len(target_ids) > 1 else current.canonical_name),
             entity_id=current.standard_id,
             path=tuple(path),
             reason_code=GraphRagReasonCode.ANSWERED.value,

@@ -17,6 +17,7 @@ from datasmart_ai_runtime.services.rag.graph_rag import (
     GraphRagEntity,
     GraphRagQuery,
     GraphRagReasonCode,
+    GraphRagRelation,
     GraphRagResultStatus,
     InMemoryGraphRag,
     parse_graph_rag_question,
@@ -64,13 +65,14 @@ def edge(
     project: str = "project-a",
     workspace: str = "workspace-a",
     application: str = "*",
+    relation: str = "REPORTS_TO",
 ) -> GraphRagEdge:
     """构造具有完整来源链的当前关系边。"""
 
     return GraphRagEdge(
         source_entity_id=source,
         target_entity_id=target,
-        relation="REPORTS_TO",
+        relation=relation,
         source_document_id=document_id,
         source_uri=uri or f"memory://{document_id}",
         source_chunk_id=chunk_id or f"{document_id}-chunk-1",
@@ -300,6 +302,47 @@ class InMemoryGraphRagTest(unittest.TestCase):
         self.assertEqual(GraphRagReasonCode.NO_CURRENT_PATH.value, result.reason_code)
         self.assertEqual((), result.path)
         self.assertIsNone(result.answer)
+
+    def test_business_graph_structured_queries_cover_mapping_constraints_and_logs(self) -> None:
+        """业务图谱关系必须可通过结构化查询读取，而不是只支持组织关系。"""
+
+        graph = InMemoryGraphRag(
+            entities=(
+                entity("source-field", "源客户编号"),
+                entity("target-field", "目标客户编号"),
+                entity("not-null", "NOT NULL"),
+                entity("execution", "执行 2714"),
+                entity("error", "NOT_NULL_VIOLATION"),
+                entity("log", "失败日志 2714"),
+            ),
+            edges=(
+                edge("source-field", "target-field", "mapping-doc", relation=GraphRagRelation.FIELD_MAPS_TO.value),
+                edge("source-field", "not-null", "constraint-doc", relation=GraphRagRelation.FIELD_HAS_CONSTRAINT.value),
+                edge("execution", "error", "error-doc", relation=GraphRagRelation.EXECUTION_FAILED_WITH.value),
+                edge("execution", "log", "log-doc", relation=GraphRagRelation.EXECUTION_HAS_LOG.value),
+            ),
+        )
+        mapping = graph.query(GraphRagQuery(
+            tenant="tenant-a", project="project-a", workspace="workspace-a", sensitivity="internal",
+            start_entity="源客户编号", relation=GraphRagRelation.FIELD_MAPS_TO, hops=1,
+        ))
+        self.assertEqual(GraphRagResultStatus.SUCCESS.value, mapping.status)
+        self.assertEqual("目标客户编号", mapping.answer)
+        self.assertEqual(GraphRagRelation.FIELD_MAPS_TO.value, mapping.relation)
+
+        constraints = graph.query(GraphRagQuery(
+            tenant="tenant-a", project="project-a", workspace="workspace-a", sensitivity="internal",
+            question="源客户编号有哪些约束",
+        ))
+        self.assertEqual(GraphRagResultStatus.SUCCESS.value, constraints.status)
+        self.assertIn("NOT NULL", constraints.answer or "")
+
+        logs = graph.query(GraphRagQuery(
+            tenant="tenant-a", project="project-a", workspace="workspace-a", sensitivity="internal",
+            start_entity="执行 2714", relation=GraphRagRelation.EXECUTION_HAS_LOG, hops=1,
+        ))
+        self.assertEqual(GraphRagResultStatus.SUCCESS.value, logs.status)
+        self.assertEqual("失败日志 2714", logs.answer)
 
 
 if __name__ == "__main__":

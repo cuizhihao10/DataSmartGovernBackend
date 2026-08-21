@@ -23,6 +23,7 @@ from typing import Any, Iterable, Mapping
 from datasmart_ai_runtime.services.rag.graph_rag import GraphRagRelation
 from datasmart_ai_runtime.services.rag.graph_ingestion import ControlledGraphRagIngestor
 from datasmart_ai_runtime.services.rag.models import RagChunkSourceType, RagDocument
+from datasmart_ai_runtime.services.rag.failure_log_materializer import materialize_failure_log_documents
 
 
 BUSINESS_GRAPH_SNAPSHOT_SCHEMA_VERSION = "datasmart.business-graph-snapshot.v1"
@@ -47,6 +48,7 @@ class BusinessGraphBuildResult:
     edge_count: int
     skipped_relation_count: int
     warnings: tuple[str, ...] = ()
+    failure_log_documents: tuple[RagDocument, ...] = ()
 
     def to_fact_bundle(self) -> dict[str, Any]:
         """输出可供 CLI、对象存储或 Kafka 控制面引用的低敏事实包。"""
@@ -72,6 +74,25 @@ class BusinessGraphBuildResult:
                     "enabled": self.document.enabled,
                 }
             ],
+            # 失败日志 RAG 文档与图事实共用同一范围和 snapshotId，但不进入 Neo4j 图事实文档列表；
+            # 调用方可以把它们交给 PostgreSQL/pgvector 的 upsert_documents，避免把日志正文伪装成关系边。
+            "ragDocuments": [
+                {
+                    "documentId": document.document_id,
+                    "title": document.title,
+                    "content": document.content,
+                    "sourceUri": document.source_uri,
+                    "tenantId": document.tenant_id,
+                    "applicationId": document.application_id,
+                    "projectId": document.project_id,
+                    "sourceType": document.source_type.value,
+                    "tags": list(document.tags),
+                    "sensitivityLevel": document.sensitivity_level,
+                    "metadata": dict(document.metadata),
+                    "enabled": document.enabled,
+                }
+                for document in self.failure_log_documents
+            ],
         }
 
 
@@ -96,6 +117,7 @@ class BusinessGraphBuilder:
         "taskDefinitions": "TASK_DEFINITION",
         "taskVersions": "TASK_VERSION",
         "executions": "EXECUTION",
+        "objectExecutions": "OBJECT_EXECUTION",
         "errors": "ERROR",
         "errorSamples": "ERROR",
         "logs": "LOG_EVENT",
@@ -305,6 +327,18 @@ class BusinessGraphBuilder:
                 relation(item, log, GraphRagRelation.EXECUTION_HAS_LOG.value, section="executions", record=item,
                          index=index, source_kind="EXECUTION", target_kind="LOG_EVENT")
 
+        for index, item in enumerate(_sequence(snapshot.get("objectExecutions"))):
+            relation(item.get("executionId"), item, GraphRagRelation.EXECUTION_HAS_OBJECT_EXECUTION.value,
+                     section="objectExecutions", record=item, index=index,
+                     source_kind="EXECUTION", target_kind="OBJECT_EXECUTION")
+            error_code = item.get("lastErrorCode")
+            # 对象账本只保证 errorCode 摘要；只有快照同时提供可解析的 ERROR 实体时才建立边。
+            # 不能把裸错误码猜成某次 execution 的错误实体，否则会让完整性门禁失去意义。
+            if error_code and resolve(error_code, kind="ERROR"):
+                relation(item, error_code, GraphRagRelation.OBJECT_EXECUTION_FAILED_WITH.value,
+                         section="objectExecutions", record=item, index=index,
+                         source_kind="OBJECT_EXECUTION", target_kind="ERROR")
+
         for section in ("logs", "errorLogs"):
             for index, item in enumerate(_sequence(snapshot.get(section))):
                 for execution in _values(item, "executionId", "executionIds"):
@@ -403,6 +437,7 @@ class BusinessGraphBuilder:
             edge_count=len(edges),
             skipped_relation_count=skipped,
             warnings=tuple(warnings[:50]),
+            failure_log_documents=materialize_failure_log_documents(snapshot),
         )
 
 
