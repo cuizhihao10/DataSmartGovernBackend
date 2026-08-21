@@ -343,7 +343,13 @@ class BusinessGraphBuilder:
                      section="dependencies", record=item, index=index, source_kind="TASK", target_kind="TASK")
 
         if skipped:
-            raise BusinessGraphBuildError("业务图谱快照存在无法解析的关系端点，拒绝生成可审批候选。")
+            # 把缺失关系所在 section 和关系类型保留在低敏错误摘要中，便于真实 E2E 定位快照合同问题；
+            # 这里不会输出名称、SQL、日志正文或样本值。没有诊断上下文时，运维只能看到“构建失败”，
+            # 很难区分是表 ID、任务版本 ID 还是错误实体没有进入同一份快照。
+            diagnostics = "；".join(warnings[:8])
+            raise BusinessGraphBuildError(
+                f"业务图谱快照存在无法解析的关系端点，拒绝生成可审批候选。诊断={diagnostics}"
+            )
 
         metadata = {
             "sourceStatus": source_status,

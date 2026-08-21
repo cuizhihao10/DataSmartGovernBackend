@@ -1126,8 +1126,9 @@ function Invoke-AgentGraphRecoveryE2E {
         $env:DATASMART_GRAPH_FACT_MINIO_ACCESS_KEY = $previousMinioAccessKey
         $env:DATASMART_GRAPH_FACT_MINIO_SECRET_KEY = $previousMinioSecretKey
     }
+    Add-Check -Name "实时业务图谱构建器进程" -Status ($(if ($graphBuild.ExitCode -eq 0) { "PASS" } else { "FAIL" })) -Detail ("exitCode={0}，outputLines={1}" -f $graphBuild.ExitCode, @($graphBuild.Output).Count)
     if ($graphBuild.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $graphOutput)) {
-        Fail-Step -Name "实时业务图谱事实包" -Detail "GraphRAG 构建器未能从 data-sync 实时快照生成事实包，具体响应正文不打印"
+        Fail-Step -Name "实时业务图谱事实包" -Detail ("GraphRAG 构建器未能从 data-sync 实时快照生成事实包，exitCode={0}，outputLines={1}；具体响应正文不打印" -f $graphBuild.ExitCode, @($graphBuild.Output).Count)
     }
     $buildSummary = $graphBuild.Output | Where-Object { $_ -match '"factBundleUri"' } | Select-Object -Last 1
     if ([string]::IsNullOrWhiteSpace($buildSummary)) {

@@ -246,14 +246,16 @@ public class DataSyncExecutionController {
         List<Map<String, Object>> fields = new ArrayList<>();
         List<Map<String, Object>> constraints = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        List<String> advisories = new ArrayList<>();
         discoverSide("SOURCE", definition.getSourceDatasourceId(), definition.getSourceConnectorType(),
                 definition.getSourceSchemaName(), definition.getSourceObjectName(), task, context,
-                schemas, tables, fields, constraints, warnings);
+                schemas, tables, fields, constraints, warnings, advisories);
         discoverSide("TARGET", definition.getTargetDatasourceId(), definition.getTargetConnectorType(),
                 definition.getTargetSchemaName(), definition.getTargetObjectName(), task, context,
-                schemas, tables, fields, constraints, warnings);
+                schemas, tables, fields, constraints, warnings, advisories);
         return fact("schemas", schemas, "tables", tables, "fields", fields,
-                "constraints", constraints, "metadataWarnings", warnings);
+                "constraints", constraints, "metadataWarnings", warnings,
+                "metadataAdvisories", advisories);
     }
 
     /** 单侧元数据查询的低敏投影；异常只降级为 warning，保留任务与执行事实。 */
@@ -268,7 +270,8 @@ public class DataSyncExecutionController {
                               List<Map<String, Object>> tables,
                               List<Map<String, Object>> fields,
                               List<Map<String, Object>> constraints,
-                              List<String> warnings) {
+                              List<String> warnings,
+                              List<String> advisories) {
         if (datasourceId == null || tableName == null || tableName.isBlank()) {
             warnings.add(side + "_METADATA_SCOPE_INCOMPLETE");
             return;
@@ -290,10 +293,21 @@ public class DataSyncExecutionController {
                 schemas.add(fact("id", side + ":" + datasourceId + ":schema:" + schema,
                         "dataSourceId", datasourceId, "name", safe(schema)));
             }
+            // MySQL 的 JDBC metadata 通常不返回 PostgreSQL 意义上的 schema 列，但任务定义仍保存了
+            // 实际 database/schema 名称。为了让 table -> schema 关系拥有可解析端点，这里在驱动省略
+            // schema 时用受信任务定义中的 schemaName 补齐一个低敏 schema 实体。
+            if (schemaName != null && !schemaName.isBlank()
+                    && schemas.stream().noneMatch(item -> (side + ":" + datasourceId + ":schema:" + schemaName)
+                    .equals(String.valueOf(item.get("id"))))) {
+                schemas.add(fact("id", side + ":" + datasourceId + ":schema:" + schemaName,
+                        "dataSourceId", datasourceId, "name", safe(schemaName)));
+            }
             for (SyncTaskMetadataDiscoveryResponse.TableObject table :
                     response.getTables() == null ? List.<SyncTaskMetadataDiscoveryResponse.TableObject>of() : response.getTables()) {
-                String tableId = tableId(side, datasourceId, table.getSchemaName(), table.getTableName());
-                String schemaId = side + ":" + datasourceId + ":schema:" + safe(table.getSchemaName());
+                String resolvedSchemaName = table.getSchemaName() == null || table.getSchemaName().isBlank()
+                        ? schemaName : table.getSchemaName();
+                String tableId = tableId(side, datasourceId, resolvedSchemaName, table.getTableName());
+                String schemaId = side + ":" + datasourceId + ":schema:" + safe(resolvedSchemaName);
                 tables.add(fact("id", tableId, "schemaId", schemaId, "dataSourceId", datasourceId,
                         "name", safe(table.getTableName()), "tableType", safe(table.getTableType())));
                 for (SyncTaskMetadataDiscoveryResponse.FieldObject field :
@@ -317,11 +331,36 @@ public class DataSyncExecutionController {
                 }
             }
             if (response.getWarnings() != null) {
-                warnings.addAll(response.getWarnings().stream().map(item -> side + ":" + safe(item)).toList());
+                for (String item : response.getWarnings()) {
+                    String warning = side + ":" + safe(item);
+                    // 元数据服务会对“本次请求主动关闭的可选内容”返回提示，例如未请求视图、索引或样本。
+                    // 这些提示不影响表/字段/约束事实完整性，不能阻断业务图谱审批；真正的连接失败、目标
+                    // 表缺失和字段读取异常仍然进入 metadataWarnings，由 BusinessGraphBuilder fail-closed。
+                    if (isAdvisoryMetadataWarning(item)) {
+                        advisories.add(warning);
+                    } else {
+                        warnings.add(warning);
+                    }
+                }
             }
         } catch (RuntimeException exception) {
             warnings.add(side + "_METADATA_DISCOVERY_UNAVAILABLE");
         }
+    }
+
+    /**
+     * 判断元数据发现提示是否只是“可选投影未启用”的建议。
+     *
+     * <p>业务图谱当前需要表、字段、主键/唯一键/非空/外键等核心事实；视图、索引和样本值属于后续
+     * 丰富关系链的可选投影。把两者混为同一个 warnings 列表，会让真实表字段已经发现成功的任务被
+     * 错误标记为 INCOMPLETE，进而无法进入审批闭环。</p>
+     */
+    private boolean isAdvisoryMetadataWarning(String warning) {
+        String normalized = safe(warning);
+        return normalized.contains("未包含视图")
+                || normalized.contains("未返回索引信息")
+                || normalized.contains("未包含样本数据")
+                || normalized.contains("不使用 PostgreSQL 风格 schemaPattern");
     }
 
     /**
