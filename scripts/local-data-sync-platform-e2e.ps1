@@ -65,6 +65,13 @@ param(
     [switch]$IncludeAgentGraphRecoveryE2E,
     [switch]$Strict,
 
+    # 六动作黑盒矩阵入口。该参数只缩小本轮首次 AUTOPILOT 授权目录并选择独立验收单元；
+    # 预期动作仍通过公开 recovery 状态和 Java receipt 断言，绝不注入 Agent 模型响应。
+    [ValidateSet('', 'ROLLBACK_EXECUTION_POLICY', 'TUNE_EXECUTION_POLICY', 'REFRESH_METADATA',
+        'RESUME_FROM_CHECKPOINT', 'REPLAY_FAILED_SHARDS', 'REPAIR_FIELD_MAPPING')]
+    [string]$RepairMatrixAction = '',
+    [string]$RepairMatrixFailureCode = '',
+
     [string]$GatewayBaseUrl = "http://localhost:8080",
     [string]$AgentRuntimeBaseUrl = "http://localhost:8090",
     [string]$DatasourceManagementBaseUrl = "http://localhost:8082",
@@ -277,6 +284,103 @@ function Assert-SafeIdentifier {
     }
 }
 
+function Get-RepairMatrixFixtureSpec {
+    <#
+        为六类 repair 返回相互独立的 Docker 故障夹具合同。
+
+        夹具只操作本轮脚本生成的专用表，不直接写 data_sync 控制面状态。每个夹具都让真实
+        datasource-management/data-sync worker 首先观察到一种不同的故障事实；故障解除也通过
+        数据库自身的事务/sequence 语义完成，避免 PowerShell 在模型决策之后直接修复业务行。
+        这样模型收到的是可追溯的 errorCode、SQLState、对象账本和日志，而不是脚本硬编码的 recovery receipt。
+    #>
+    if ([string]::IsNullOrWhiteSpace($RepairMatrixAction)) {
+        return $null
+    }
+    $action = $RepairMatrixAction.Trim().ToUpperInvariant()
+    $failureCode = if ([string]::IsNullOrWhiteSpace($RepairMatrixFailureCode)) {
+        "REPAIR_MATRIX_$action"
+    } else {
+        $RepairMatrixFailureCode.Trim().ToUpperInvariant()
+    }
+    switch ($action) {
+        'ROLLBACK_EXECUTION_POLICY' {
+            return [pscustomobject]@{
+                Action = $action
+                FailureCode = $failureCode
+                FaultKind = 'POLICY_REGRESSION_TRANSIENT'
+                FaultDescription = '第一次写入触发策略回归 SQLState 57014；sequence 保证后续回放不再触发。'
+                TargetColumns = 'customer_name VARCHAR(128) NOT NULL, amount NUMERIC(18, 2) NOT NULL, region VARCHAR(32) NOT NULL'
+                TargetConstraint = 'CONSTRAINT ck_{0}_amount_non_negative CHECK (amount >= 0)' -f $TargetTable
+                TriggerSqlState = '57014'
+                TriggerMessage = 'execution policy regression: bounded timeout budget exhausted'
+            }
+        }
+        'TUNE_EXECUTION_POLICY' {
+            return [pscustomobject]@{
+                Action = $action
+                FailureCode = $failureCode
+                FaultKind = 'CONNECTOR_TIMEOUT_TRANSIENT'
+                FaultDescription = '目标端第一次写入返回 SQLState 57014 模拟连接器瞬态超时；sequence 保证有界调参后重跑可成功。'
+                TargetColumns = 'customer_name VARCHAR(128) NOT NULL, amount NUMERIC(18, 2) NOT NULL, region VARCHAR(32) NOT NULL'
+                TargetConstraint = 'CONSTRAINT ck_{0}_amount_non_negative CHECK (amount >= 0)' -f $TargetTable
+                TriggerSqlState = '57014'
+                TriggerMessage = 'connector timeout: transient target write budget exhausted'
+            }
+        }
+        'REFRESH_METADATA' {
+            return [pscustomobject]@{
+                Action = $action
+                FailureCode = $failureCode
+                FaultKind = 'STALE_METADATA_TRANSIENT'
+                FaultDescription = '第一次写入返回 SQLState 42703 模拟过期元数据缓存；强制刷新后同一表结构可继续执行。'
+                TargetColumns = 'customer_name VARCHAR(128) NOT NULL, amount NUMERIC(18, 2) NOT NULL, region VARCHAR(32) NOT NULL'
+                TargetConstraint = 'CONSTRAINT ck_{0}_amount_non_negative CHECK (amount >= 0)' -f $TargetTable
+                TriggerSqlState = '42703'
+                TriggerMessage = 'stale metadata: target column capability cache is outdated'
+            }
+        }
+        'RESUME_FROM_CHECKPOINT' {
+            return [pscustomobject]@{
+                Action = $action
+                FailureCode = $failureCode
+                FaultKind = 'WORKER_INTERRUPTED_CHECKPOINTED'
+                FaultDescription = '分片同步在已写入 checkpoint 后由 SQLState 57014 中断；checkpoint replay 后 sequence 不再中断。'
+                TargetColumns = 'customer_name VARCHAR(128) NOT NULL, amount NUMERIC(18, 2) NOT NULL, region VARCHAR(32) NOT NULL'
+                TargetConstraint = 'CONSTRAINT ck_{0}_amount_non_negative CHECK (amount >= 0)' -f $TargetTable
+                TriggerSqlState = '57014'
+                TriggerMessage = 'worker interrupted after durable checkpoint'
+            }
+        }
+        'REPLAY_FAILED_SHARDS' {
+            return [pscustomobject]@{
+                Action = $action
+                FailureCode = $failureCode
+                FaultKind = 'FAILED_PARTITION_SHARD_TRANSIENT'
+                FaultDescription = 'FAILED PARTITION_SHARD 夹具第一次返回 SQLState 23514；一次性 sequence 让受治理 failed-shard replay 在第二次执行成功。'
+                TargetColumns = 'customer_name VARCHAR(128) NOT NULL, amount NUMERIC(18, 2) NOT NULL'
+                TargetConstraint = 'CONSTRAINT ck_{0}_amount_non_negative CHECK (amount >= 0)' -f $TargetTable
+                TriggerSqlState = '23514'
+                TriggerMessage = 'failed partition shard: bounded shard write rejected'
+            }
+        }
+        'REPAIR_FIELD_MAPPING' {
+            return [pscustomobject]@{
+                Action = $action
+                FailureCode = $failureCode
+                FaultKind = 'FIELD_MAPPING_METADATA_DEFECT'
+                FaultDescription = '目标端使用 customer_name 而不是模型初始草案中的 name；Recovery 必须依据两端元数据唯一修复映射。'
+                TargetColumns = 'customer_name VARCHAR(128) NOT NULL, amount NUMERIC(18, 2) NOT NULL, region VARCHAR(32) NOT NULL'
+                TargetConstraint = ''
+                TriggerSqlState = '42703'
+                TriggerMessage = 'field mapping missing: target column name is not present in refreshed metadata'
+            }
+        }
+        default {
+            Fail-Step -Name 'Repair 矩阵故障夹具' -Detail "未知 repair action=$action"
+        }
+    }
+}
+
 function Test-TcpPort {
     param(
         [string]$HostName,
@@ -437,6 +541,134 @@ function Invoke-PostgresScalar {
     return (($postgresResult.Output | Select-Object -First 1) -as [string]).Trim()
 }
 
+function Initialize-RepairMatrixDatabase {
+    <#
+        创建一个 repair 单元专用的源表、目标表和最小故障注入器。
+
+        这里的“注入”只改变 Docker 测试数据库的结构或受控 sequence，不修改 data_sync 的任务、
+        execution、recovery case、Kafka outbox 或任何现有业务表。真正的失败状态、checkpoint、对象
+        账本和日志仍由公开 task/run/worker API 产生；一次性 trigger 使用 PostgreSQL sequence，
+        因为 sequence 不会随失败事务回滚，第二次受治理 replay 才能稳定观察到故障已经消退。
+    #>
+    $fixture = Get-RepairMatrixFixtureSpec
+    if ($null -eq $fixture) {
+        return $false
+    }
+    $faultSequence = "${TargetTable}_repair_fault_seq"
+    $faultFunction = "${TargetTable}_repair_fault_once"
+    $faultTrigger = "${TargetTable}_repair_fault_trigger"
+    foreach ($identifier in @($faultSequence, $faultFunction, $faultTrigger)) {
+        Assert-SafeIdentifier -Name 'RepairMatrixFixtureIdentifier' -Value $identifier
+    }
+
+    <#
+        源表的 20 条记录故意保持结构稳定。REPLAY_FAILED_SHARDS 使用一次性 SQLState 23514
+        trigger 表示失败分片写入拒绝，避免把该动作退化为普通整表脏数据隔离；其它单元使用各自
+        独立 SQLState/消息夹具。所有值均为本轮随机表名下的合成数据，不打印到输出。
+    #>
+    $sourceRows = if ($false) {
+        @"
+(1, 'Customer-1', 101.00, 'EAST'),
+(2, 'Customer-2', 102.00, 'EAST'),
+(3, 'Customer-3', 103.00, 'EAST'),
+(4, 'Customer-4', 104.00, 'EAST'),
+(5, 'Customer-5', 105.00, 'EAST'),
+(6, 'Customer-6', 106.00, 'EAST'),
+(7, 'Customer-7', 107.00, 'EAST'),
+(8, 'Customer-8', 108.00, 'EAST'),
+(9, 'Customer-9', 109.00, 'EAST'),
+(10, 'Customer-10', 110.00, 'EAST'),
+(11, 'Customer-11', -111.00, 'EAST'),
+(12, 'Customer-12', -112.00, 'EAST'),
+(13, 'Customer-13', -113.00, 'EAST'),
+(14, 'Customer-14', -114.00, 'EAST'),
+(15, 'Customer-15', -115.00, 'EAST'),
+(16, 'Customer-16', 116.00, 'EAST'),
+(17, 'Customer-17', 117.00, 'EAST'),
+(18, 'Customer-18', 118.00, 'EAST'),
+(19, 'Customer-19', 119.00, 'EAST'),
+(20, 'Customer-20', 120.00, 'EAST')
+"@
+    } else {
+        @"
+(1, 'Customer-1', 101.00, 'EAST'),
+(2, 'Customer-2', 102.00, 'EAST'),
+(3, 'Customer-3', 103.00, 'EAST'),
+(4, 'Customer-4', 104.00, 'EAST'),
+(5, 'Customer-5', 105.00, 'EAST'),
+(6, 'Customer-6', 106.00, 'EAST'),
+(7, 'Customer-7', 107.00, 'EAST'),
+(8, 'Customer-8', 108.00, 'EAST'),
+(9, 'Customer-9', 109.00, 'EAST'),
+(10, 'Customer-10', 110.00, 'EAST'),
+(11, 'Customer-11', 111.00, 'EAST'),
+(12, 'Customer-12', 112.00, 'EAST'),
+(13, 'Customer-13', 113.00, 'EAST'),
+(14, 'Customer-14', 114.00, 'EAST'),
+(15, 'Customer-15', 115.00, 'EAST'),
+(16, 'Customer-16', 116.00, 'EAST'),
+(17, 'Customer-17', 117.00, 'EAST'),
+(18, 'Customer-18', 118.00, 'EAST'),
+(19, 'Customer-19', 119.00, 'EAST'),
+(20, 'Customer-20', 120.00, 'EAST')
+"@
+    }
+    $mysqlSql = @"
+DROP TABLE IF EXISTS $SourceTable;
+CREATE TABLE $SourceTable (
+    id BIGINT PRIMARY KEY,
+    customer_name VARCHAR(128) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+INSERT INTO $SourceTable (id, customer_name, amount, region) VALUES
+$sourceRows;
+"@
+    $targetConstraint = if ([string]::IsNullOrWhiteSpace($fixture.TargetConstraint)) {
+        ''
+    } else {
+        ",`n    $($fixture.TargetConstraint)"
+    }
+    $postgresSql = @"
+CREATE SCHEMA IF NOT EXISTS $TargetSchema;
+DROP TABLE IF EXISTS $TargetSchema.$TargetTable;
+DROP SEQUENCE IF EXISTS $faultSequence CASCADE;
+DROP FUNCTION IF EXISTS $faultFunction() CASCADE;
+CREATE TABLE $TargetSchema.$TargetTable (
+    id BIGINT PRIMARY KEY,
+    $($fixture.TargetColumns)$targetConstraint
+);
+"@
+    if (-not [string]::IsNullOrWhiteSpace($fixture.TriggerSqlState)) {
+        # PowerShell 双引号 here-string 会把 $$ 解析成自身的自动变量，最终把 PostgreSQL
+        # 的 PL/pgSQL 函数体定界符删除。这里用字符码拼接美元符号，让发送到 psql 的 SQL
+        # 保留标准的 AS $$ ... $$ 定界符，同时继续允许表名、sequence 和故障信息插值。
+        $postgresDollarDelimiter = [string][char]36 + [string][char]36
+        $postgresSql += @"
+CREATE SEQUENCE $faultSequence;
+CREATE OR REPLACE FUNCTION $faultFunction() RETURNS trigger
+LANGUAGE plpgsql AS ${postgresDollarDelimiter}
+DECLARE
+    invocation BIGINT;
+BEGIN
+    invocation := nextval('$faultSequence');
+    IF invocation = 1 THEN
+        RAISE EXCEPTION '$($fixture.TriggerMessage)' USING ERRCODE = '$($fixture.TriggerSqlState)';
+    END IF;
+    RETURN NEW;
+END;
+${postgresDollarDelimiter};
+CREATE TRIGGER $faultTrigger
+BEFORE INSERT OR UPDATE ON $TargetSchema.$TargetTable
+FOR EACH ROW EXECUTE FUNCTION $faultFunction();
+"@
+    }
+    Invoke-MySqlNonQuery -Sql $mysqlSql
+    Invoke-PostgresNonQuery -Sql $postgresSql
+    Add-Check -Name "Repair 矩阵故障夹具: $($fixture.Action)" -Status 'PASS' -Detail "$($fixture.FaultKind)：$($fixture.FaultDescription)"
+    return $true
+}
+
 function Initialize-E2EDatabase {
     if ($SkipDatabasePrepare) {
         Add-Check -Name "E2E 表准备" -Status "WARN" -Detail "已通过 -SkipDatabasePrepare 跳过，要求外部已准备源表和目标表"
@@ -446,6 +678,11 @@ function Initialize-E2EDatabase {
     Assert-SafeIdentifier -Name "SourceTable" -Value $SourceTable
     Assert-SafeIdentifier -Name "TargetSchema" -Value $TargetSchema
     Assert-SafeIdentifier -Name "TargetTable" -Value $TargetTable
+
+    if (-not [string]::IsNullOrWhiteSpace($RepairMatrixAction)) {
+        Initialize-RepairMatrixDatabase | Out-Null
+        return
+    }
 
     <#
         源端数据设计：
@@ -1439,7 +1676,8 @@ function Invoke-GovernedAutopilotRecoveryE2E {
     try {
         $requestId = "platform-autopilot-$script:RunId"
         $objective = "使用当前项目已授权的数据源，把 MySQL 表 $SourceTable 全量同步到 PostgreSQL $TargetSchema.$TargetTable。"
-        $objective += "源数据包含真实 NOT NULL/CHECK 约束故障；请在首次授权范围内自主诊断、按需检索、"
+        $failureCode = if ([string]::IsNullOrWhiteSpace($RepairMatrixFailureCode)) { "CONSTRAINT_VIOLATION" } else { $RepairMatrixFailureCode.Trim().ToUpperInvariant() }
+        $objective += "源数据包含真实 NOT NULL/CHECK 约束故障（低敏分类=$failureCode）；请在首次授权范围内自主诊断、按需检索、"
         $objective += "由 Java 执行可逆隔离或其它低风险修复并重跑，最后完成 PRECHECK、MONITOR 和执行验证。"
         # 恢复后的 execution 可能只重跑失败对象，不能把本轮 read/write 计数误当成目标表总行数。
         # 子脚本仍要求正数读写和 failedRecordCount=0，最终 14 行总量由本脚本直接查询目标表验证。
@@ -1458,7 +1696,7 @@ function Invoke-GovernedAutopilotRecoveryE2E {
                 -ActorId ([string]$ActorId) `
                 -TaskId ([string]$TaskId) `
                 -ExecutionId ([string]$ExecutionId) `
-                -FailureCode "CONSTRAINT_VIOLATION" `
+                -FailureCode $failureCode `
                 -FailureReference ("datasync://tasks/{0}/executions/{1}/diagnosis" -f $TaskId, $ExecutionId) `
                 -SourceDatasourceName $SourceDatasourceName `
                 -TargetDatasourceName $TargetDatasourceName `
@@ -1475,6 +1713,7 @@ function Invoke-GovernedAutopilotRecoveryE2E {
                 -ExecutionTimeoutSeconds $StartupTimeoutSeconds `
                 -TimeoutSeconds ([Math]::Max(180, $StartupTimeoutSeconds)) `
                 -RequestId $requestId `
+                -ExpectedRecoveryAction $RepairMatrixAction `
                 -Objective $objective
         }
     } finally {
@@ -1533,6 +1772,112 @@ WHERE trace_id LIKE '$escapedTracePrefix%'
         Fail-Step -Name "permission-admin 授权审计" -Detail "gateway 模式未查到本轮 trace 的权限判定审计；请确认 gateway authorization.enabled=true 且 permission-admin 可达"
     }
     Add-Check -Name "permission-admin 授权审计" -Status "PASS" -Detail "已查到 $actual 条本轮 gateway 授权判定审计，证明 permission-admin 参与了写链路"
+}
+
+function Invoke-RepairMatrixAgentAutopilotLifecycleE2E {
+    <#
+    .SYNOPSIS
+        为单个 repair 矩阵单元启动真实 Agent 生命周期并等待自治恢复闭环。
+
+    .DESCRIPTION
+        矩阵单元必须通过 Gateway 的六专业 Agent Success 路径创建任务、显式确认首次授权、
+        由真实 worker 产生失败 execution，再由 Kafka -> agent-runtime -> data-sync 的 Autopilot
+        恢复链路完成动作、重跑和最终验证。这里传入的动作只会缩小首次授权上限，便于把六类动作
+        分成互不污染的 Docker 单元；脚本不会向模型注入 repair receipt、action fingerprint 或执行结果。
+        若模型没有依据真实失败事实提出该动作，子脚本会 fail-closed，矩阵单元不得被标成通过。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDatasourceName,
+        [Parameter(Mandatory = $true)][long]$SourceDatasourceId,
+        [Parameter(Mandatory = $true)][string]$TargetDatasourceName,
+        [Parameter(Mandatory = $true)][long]$TargetDatasourceId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RepairMatrixAction)) {
+        return
+    }
+    if ($UseDirectServiceUrls) {
+        Fail-Step -Name "Repair 矩阵 Gateway 边界" -Detail "六类 repair 黑盒矩阵必须经过 Gateway、Keycloak 与 permission-admin"
+    }
+
+    $autopilotScript = Join-Path $script:RepoRoot "scripts/local-six-agent-governed-e2e.ps1"
+    if (-not (Test-Path -LiteralPath $autopilotScript)) {
+        Fail-Step -Name "Repair 矩阵 Agent 脚本" -Detail "未找到六专业 Agent 黑盒脚本"
+    }
+    $failureCode = if ([string]::IsNullOrWhiteSpace($RepairMatrixFailureCode)) {
+        "REPAIR_MATRIX_$RepairMatrixAction"
+    } else {
+        $RepairMatrixFailureCode.Trim().ToUpperInvariant()
+    }
+    $scenarioGuidance = switch ($RepairMatrixAction) {
+        'ROLLBACK_EXECUTION_POLICY' { '运行策略回归：应读取最近成功 execution 的策略快照并回滚后重排失败对象。' }
+        'TUNE_EXECUTION_POLICY' { '并发/批量或连接超时故障：只能在 Java 白名单内有界调低负载或增加受限超时。' }
+        'REFRESH_METADATA' { '元数据缓存过期：应强制刷新源端和目标端元数据，再按当前真实结构重跑。' }
+        'RESUME_FROM_CHECKPOINT' { 'worker 中断且已有持久 checkpoint：应绑定最近 checkpoint 创建 replay execution。' }
+        'REPLAY_FAILED_SHARDS' { '幂等写策略下存在 FAILED PARTITION_SHARD：应只重排失败分片，不重跑成功分片。' }
+        'REPAIR_FIELD_MAPPING' { '字段映射可由两端唯一元数据证明：应只修复映射配置并重跑，不改 DDL 或数据。' }
+        default { '依据真实失败日志和控制面事实选择已授权的低风险 repair。' }
+    }
+    # 不把测试期望动作写成自然语言中的 ``action=...`` 键值对。模型只能根据真实失败事实
+    # 自主提出动作；把该键名塞进 prompt 会增加模型把控制字段回显到 DATA_SYNC 配置里的概率，
+    # 从而触发专业 Agent 的 fail-closed 副作用安全门。期望值只在脚本外层读取公开 recoveryAction
+    # 时断言，绝不作为模型输入合同。
+    $objective = "六类 repair 黑盒矩阵单元，失败分类=$failureCode。"
+    $objective += "$scenarioGuidance "
+    $objective += "请先读取真实失败日志并由模型自主判断 SEARCH/SKIP；仅在证据支持时选择 knowledge.rag.query，"
+    # DATA_SYNC_AGENT 与主控共享 objective，但它的职责边界只有“生成待校验草案”。如果把
+    # publish/run/repair 等控制动作写进自然语言，通用模型可能把这些词回显为配置字段，触发
+    # 专业 Agent 的副作用安全门。真正的保存、执行和 recovery 仍由脚本的显式确认与 Java 控制面完成。
+    $objective += "当前首轮只生成待校验的数据同步配置草案，禁止在配置中输出 action、publish、run、persist、taskId 或 executionId；"
+    $objective += "后续保存、授权、repair、重跑、PRECHECK、MONITOR 和最终验证由已授权 Java 控制面按公开回执完成。"
+
+    $previousPassword = $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD
+    if ([string]::IsNullOrWhiteSpace($previousPassword)) {
+        $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD = $UserAccountPassword
+    }
+    try {
+        $run = Invoke-NativeCommandSafely -Name "Repair 矩阵 $RepairMatrixAction Docker 黑盒单元" -Command {
+            # MySQL database 是 catalog；省略 SourceSchemaName 让 datasource-management 按真实
+            # catalog 返回的空 schema 语义匹配对象元数据，避免把 catalog 名误当 PostgreSQL schema。
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $autopilotScript `
+                -Execute `
+                -ConfirmAndExecute `
+                -EnableAutopilot `
+                -Scenario Success `
+                -GatewayBaseUrl $GatewayBaseUrl `
+                -KeycloakBaseUrl $KeycloakBaseUrl `
+                -KeycloakUsername $UserAccountUsername `
+                -TenantId $TenantId `
+                -ProjectId $ProjectId `
+                -ActorId ([string]$ActorId) `
+                -SourceDatasourceName $SourceDatasourceName `
+                -TargetDatasourceName $TargetDatasourceName `
+                -SourceDatasourceId ([string]$SourceDatasourceId) `
+                -TargetDatasourceId ([string]$TargetDatasourceId) `
+                -SourceConnectorType "MYSQL" `
+                -TargetConnectorType "POSTGRESQL" `
+                -SourceObjectName $SourceTable `
+                -TargetSchemaName $TargetSchema `
+                -TargetObjectName $TargetTable `
+                -WriteStrategy "UPDATE" `
+                -AllowedRecoveryActions @($RepairMatrixAction) `
+                -ExpectedRecoveryAction $RepairMatrixAction `
+                -ExecutionTimeoutSeconds ([Math]::Max(300, $StartupTimeoutSeconds)) `
+                -TimeoutSeconds ([Math]::Max(240, $TimeoutSeconds)) `
+                -RequestId ("repair-matrix-{0}-{1}" -f $RepairMatrixAction.ToLowerInvariant(), $script:RunId) `
+                -Objective $objective
+        }
+    } finally {
+        $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD = $previousPassword
+    }
+    if ($run.ExitCode -ne 0) {
+        $diagnostics = @($run.Output | ForEach-Object { [string]$_ } |
+            Where-Object { $_ -match '\[(FAIL|WARN)\]|stopped|未收敛|异常|exception|error' } |
+            Select-Object -Last 8)
+        $detail = if ($diagnostics.Count -gt 0) { $diagnostics -join ' | ' } else { '子脚本未返回低敏失败摘要' }
+        Fail-Step -Name "Repair 矩阵 $RepairMatrixAction" -Detail ("独立 Docker 单元未通过，exitCode={0}；{1}" -f $run.ExitCode, $detail)
+    }
+    Add-Check -Name "Repair 矩阵 $RepairMatrixAction" -Status "PASS" -Detail "真实 Agent/Java/data-sync recovery 链路已完成该动作的重跑和最终验证"
 }
 
 function Assert-HumanRoleCannotCallInternalSyncProtocols {
@@ -2469,6 +2814,17 @@ function Main {
     Assert-DatasourceConnectionTestSuccess `
         -ConnectionTestData (Get-EnvelopeData -Response $targetConnectionTestResponse -Name "目标数据源连接测试 envelope") `
         -Name "目标数据源连接测试结果"
+
+    if (-not [string]::IsNullOrWhiteSpace($RepairMatrixAction)) {
+        # Repair 矩阵单元由 Agent Success + AUTOPILOT 生命周期创建真实任务和 execution；
+        # 不再额外创建一个平台脚本任务，避免“脚本先造任务、Agent 又造任务”造成恢复 case 归属混淆。
+        Invoke-RepairMatrixAgentAutopilotLifecycleE2E `
+            -SourceDatasourceName $sourceDatasourceName `
+            -SourceDatasourceId $sourceDatasourceId `
+            -TargetDatasourceName $targetDatasourceName `
+            -TargetDatasourceId $targetDatasourceId
+        return
+    }
 
     $fieldMappingConfig = @(
         @{ sourceField = "id"; targetField = "id" },

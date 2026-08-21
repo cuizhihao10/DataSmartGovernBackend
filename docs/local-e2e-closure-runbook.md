@@ -756,6 +756,12 @@ task `118` 是必须保留的失败证据：旧实现更新任务定义时使用
 
 本次演练后的完整重复门禁结果为：JDK 21 Reactor `1563 tests / 0 failures / 0 errors / 9 skipped`，Python `1178 passed / 1 skipped`，Frontend 六项合同、lint 和 build 全部通过，离线 E2E 退出码合同全部通过，严格只读 smoke 为 `PASS=89 / WARN=0 / FAIL=0`。这些数字应和演练 task/execution/case 标识一并记录，不能只保留“测试通过”的笼统结论。
 
+### 8.9.1 2026-08-21 六类 repair 独立 Docker 黑盒矩阵
+
+六类 repair 已使用 `scripts/local-six-repair-action-matrix-e2e.ps1 -Execute` 分成六个互不复用源表、目标表、故障夹具和任务执行上下文的 Docker 单元。每个单元都由真实 worker 先产生失败 execution，再由模型读取结构化日志并自主决定 `SEARCH`/`SKIP`，随后通过 Java recovery、Kafka/outbox、受治理 repair、重跑和最终验证收敛；脚本只在外层缩小首次授权动作目录，并从公开 recovery 状态断言实际 `recoveryAction`，不会注入模型输出或伪造 receipt。
+
+本轮六个单元全部通过：`ROLLBACK_EXECUTION_POLICY`、`TUNE_EXECUTION_POLICY`、`REFRESH_METADATA`、`RESUME_FROM_CHECKPOINT`、`REPLAY_FAILED_SHARDS`、`REPAIR_FIELD_MAPPING`。每个单元均同时验证了 `PRECHECK`、`MONITOR`、Kafka/outbox consumer、repair receipt、重跑 execution 和最终成功状态。该矩阵关闭的是本地隔离环境的功能黑盒门禁；客户预生产环境的 Secret 管理、容量压测、备份恢复、镜像签名和发布故障演练仍需独立执行。
+
 ### 8.10 统一全链路状态图验收
 
 查询某次已授权可见的 execution：

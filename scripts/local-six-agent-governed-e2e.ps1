@@ -137,6 +137,29 @@ param(
     [string]$FailureCode = '',
     [string]$FailureReference = '',
 
+    # 黑盒 repair 矩阵可以要求本轮最终 recovery case 必须落到某个动作。
+    # 该参数只用于验收断言，不会写入 Agent 请求，也不会替模型选择动作；模型仍须根据真实失败事实自主决策。
+    [ValidateSet('', 'RETRY_EXECUTION', 'APPLY_QUARANTINE', 'ROLLBACK_EXECUTION_POLICY',
+        'TUNE_EXECUTION_POLICY', 'REFRESH_METADATA', 'RESUME_FROM_CHECKPOINT',
+        'REPLAY_FAILED_SHARDS', 'REPAIR_FIELD_MAPPING')]
+    [string]$ExpectedRecoveryAction = '',
+
+    # 首次 AUTOPILOT 授权允许的动作上限。默认保留完整目录；黑盒矩阵可以为每个独立故障单元
+    # 缩小到一个动作，验证模型仍然必须提出真实目录内动作，Java 仍然负责最终授权和执行校验。
+    [ValidateSet('RETRY_EXECUTION', 'APPLY_QUARANTINE', 'ROLLBACK_EXECUTION_POLICY',
+        'TUNE_EXECUTION_POLICY', 'REFRESH_METADATA', 'RESUME_FROM_CHECKPOINT',
+        'REPLAY_FAILED_SHARDS', 'REPAIR_FIELD_MAPPING')]
+    [string[]]$AllowedRecoveryActions = @(
+        'RETRY_EXECUTION',
+        'APPLY_QUARANTINE',
+        'ROLLBACK_EXECUTION_POLICY',
+        'TUNE_EXECUTION_POLICY',
+        'REFRESH_METADATA',
+        'RESUME_FROM_CHECKPOINT',
+        'REPLAY_FAILED_SHARDS',
+        'REPAIR_FIELD_MAPPING'
+    ),
+
     # Agent 规划是长耗时操作，超时只影响本脚本等待，不会中止服务端已经提交的控制面事实。
     [ValidateRange(10, 1800)]
     [int]$TimeoutSeconds = 180,
@@ -528,6 +551,14 @@ function Assert-BasicInputs {
     if ($EnableAutopilot -and (-not $Execute -or -not $ConfirmAndExecute -or $Scenario -ne 'Success')) {
         Stop-E2E -Name 'Autopilot 首次授权边界' -Detail '-EnableAutopilot 只能用于 Success 场景的 -Execute -ConfirmAndExecute；它不能在恢复请求中补授或扩大权限。'
     }
+    $normalizedAllowedActions = @($AllowedRecoveryActions |
+        ForEach-Object { ([string]$_).Trim().ToUpperInvariant() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique)
+    if ($normalizedAllowedActions.Count -le 0) {
+        Stop-E2E -Name 'Autopilot 动作目录' -Detail 'AllowedRecoveryActions 至少需要一个受治理动作。'
+    }
+    $script:AllowedRecoveryActions = $normalizedAllowedActions
     if ($TenantId -le 0 -or $ProjectId -le 0 -or [string]::IsNullOrWhiteSpace($ActorId)) {
         Stop-E2E -Name '租户项目上下文' -Detail 'TenantId、ProjectId 和 ActorId 必须是非空的合法上下文。'
     }
@@ -1350,16 +1381,7 @@ function Invoke-ConfirmedAgentRun {
             # 目录中的八个动作都已有受治理执行器；它们只是用户在首次确认时授予的上限，不代表一定执行。
             # 后续每轮仍由模型基于结构化诊断选择一个动作，再由 Agent Runtime 和 data-sync 使用当前事实、
             # 双主体、项目权限、风险、指纹、幂等回执与循环预算重新校验。凭据、DDL、删除、覆盖和扩域不在目录内。
-            allowedRecoveryActions = @(
-                'RETRY_EXECUTION',
-                'APPLY_QUARANTINE',
-                'ROLLBACK_EXECUTION_POLICY',
-                'TUNE_EXECUTION_POLICY',
-                'REFRESH_METADATA',
-                'RESUME_FROM_CHECKPOINT',
-                'REPLAY_FAILED_SHARDS',
-                'REPAIR_FIELD_MAPPING'
-            )
+            allowedRecoveryActions = @($script:AllowedRecoveryActions)
             requireApprovalFor = @(
                 'CHANGE_SCHEMA',
                 'CHANGE_CREDENTIAL',
@@ -1507,16 +1529,7 @@ function Assert-ConfirmedAutopilotSnapshot {
         }
         $allowedActions.Add($action) | Out-Null
     }
-    $requiredAllowedActions = @(
-        'RETRY_EXECUTION',
-        'APPLY_QUARANTINE',
-        'ROLLBACK_EXECUTION_POLICY',
-        'TUNE_EXECUTION_POLICY',
-        'REFRESH_METADATA',
-        'RESUME_FROM_CHECKPOINT',
-        'REPLAY_FAILED_SHARDS',
-        'REPAIR_FIELD_MAPPING'
-    )
+    $requiredAllowedActions = @($script:AllowedRecoveryActions)
     if ($allowedActions.Count -ne $requiredAllowedActions.Count -or
         @($requiredAllowedActions | Where-Object { -not $allowedActions.Contains($_) }).Count -gt 0) {
         Stop-E2E -Name 'Autopilot 首次授权盒' -Detail '公开授权盒没有严格保留当前服务端可兑现的八项受治理低风险动作目录。'
@@ -2186,6 +2199,36 @@ function Assert-AutopilotPreviewAndQuarantineReceipts {
     return $true
 }
 
+function Assert-ExpectedRecoveryAction {
+    <#
+    .SYNOPSIS
+        断言黑盒矩阵单元实际执行了预期的受治理 repair action。
+
+    .DESCRIPTION
+        recoveryAction 来自 data-sync 持久化 case，是 Java 控制面经过授权、指纹和幂等校验后的事实。
+        本断言只读取公开状态投影，不把期望动作注入模型请求，避免测试脚本把“期望”伪装成“模型决定”。
+        未配置期望动作时保持既有通用 E2E 行为；配置后若动作缺失或不匹配立即 fail-closed。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][string]$ExpectedAction
+    )
+
+    $expected = $ExpectedAction.Trim().ToUpperInvariant()
+    if ([string]::IsNullOrWhiteSpace($expected)) {
+        return
+    }
+    $actual = Get-SafeStatusToken -Text (Get-FieldValue -Object $Snapshot -Names @('recoveryAction')) -Fallback 'UNKNOWN'
+    if ($actual -eq 'UNKNOWN') {
+        # 异步 case 刚创建时 action 可能尚未投影；调用方会继续轮询，不能把中间状态误判为动作错误。
+        return
+    }
+    if ($actual -ne $expected) {
+        Stop-E2E -Name 'Repair 矩阵动作断言' -Detail "模型/控制面实际动作=$actual，期望动作=$expected；拒绝把其他动作当作本矩阵单元通过。"
+    }
+    Add-Check -Name 'Repair 矩阵动作断言' -Status 'PASS' -Detail "公开 recovery case 已确认实际动作=$expected。"
+}
+
 function Assert-AutopilotFailedObjectRetry {
     <#
     .SYNOPSIS
@@ -2269,11 +2312,13 @@ function Assert-AutopilotRecoverySnapshot {
     #>
     param(
         [Parameter(Mandatory = $true)][object]$Snapshot,
-        [AllowNull()][object]$AuthorizationSnapshot
+        [AllowNull()][object]$AuthorizationSnapshot,
+        [string]$ExpectedAction = ''
     )
 
     $case = Get-AutopilotRecoveryCase -Snapshot $Snapshot
     $caseState = Get-AutopilotRecoveryStatus -Snapshot $Snapshot
+    Assert-ExpectedRecoveryAction -Snapshot $Snapshot -ExpectedAction $ExpectedAction
     if ($null -eq $case) {
         if (Get-AutopilotAttentionRequiredStatus -Snapshot $Snapshot) {
             # 只有 callback 的有界停止仍属于公开恢复结果。接受停止前必须校验扁平 SEARCH/SKIP 投影，
@@ -2418,7 +2463,8 @@ function Wait-AutopilotRecoveryResult {
         [Parameter(Mandatory = $true)][string]$AccessToken,
         [Parameter(Mandatory = $true)][long]$TaskId,
         [Parameter(Mandatory = $true)][long]$ExecutionId,
-        [Parameter(Mandatory = $true)][object]$AuthorizationSnapshot
+        [Parameter(Mandatory = $true)][object]$AuthorizationSnapshot,
+        [string]$ExpectedAction = ''
     )
 
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($ExecutionTimeoutSeconds)
@@ -2426,7 +2472,7 @@ function Wait-AutopilotRecoveryResult {
     $seenRecoveryOutcome = $false
     do {
         $snapshot = Get-AutopilotRecoverySnapshot -AccessToken $AccessToken -TaskId $TaskId -ExecutionId $ExecutionId
-        $summary = Assert-AutopilotRecoverySnapshot -Snapshot $snapshot -AuthorizationSnapshot $AuthorizationSnapshot
+        $summary = Assert-AutopilotRecoverySnapshot -Snapshot $snapshot -AuthorizationSnapshot $AuthorizationSnapshot -ExpectedAction $ExpectedAction
         $lastSummary = $summary
         if (-not $summary.HasCase -and -not $summary.IsTerminal) {
             Start-Sleep -Seconds 2
@@ -2483,7 +2529,8 @@ function Invoke-AutopilotSuccessRecoveryFlow {
         [Parameter(Mandatory = $true)][object]$AuthorizationSnapshot,
         [Parameter(Mandatory = $true)][scriptblock]$WaitTerminal,
         [Parameter(Mandatory = $true)][scriptblock]$AssertSucceeded,
-        [Parameter(Mandatory = $true)][scriptblock]$WaitRecovery
+        [Parameter(Mandatory = $true)][scriptblock]$WaitRecovery,
+        [string]$ExpectedAction = ''
     )
 
     $initialTerminal = & $WaitTerminal $ExecutionId '等待首次同步 execution 终态'
@@ -2504,7 +2551,7 @@ function Invoke-AutopilotSuccessRecoveryFlow {
     }
 
     Add-Check -Name 'Autopilot 恢复分流' -Status 'PASS' -Detail "首次 execution 状态=$($initialTerminal.State)，开始轮询受治理恢复结果。"
-    $recoverySummary = & $WaitRecovery $AuthorizationSnapshot
+    $recoverySummary = & $WaitRecovery $AuthorizationSnapshot $ExpectedAction
     if ($null -eq $recoverySummary) {
         Stop-E2E -Name 'Autopilot recovery 轮询' -Detail '自治恢复轮询没有返回公开收敛摘要。'
     }
@@ -4376,13 +4423,15 @@ try {
                         -Execution $candidateExecution
                 } `
                 -WaitRecovery {
-                    param([object]$authorization)
+                    param([object]$authorization, [string]$expectedAction)
                     Wait-AutopilotRecoveryResult `
                         -AccessToken $accessToken `
                         -TaskId $lifecycle.TaskId `
                         -ExecutionId $lifecycle.ExecutionId `
-                        -AuthorizationSnapshot $authorization
-                }
+                        -AuthorizationSnapshot $authorization `
+                        -ExpectedAction $expectedAction
+                } `
+                -ExpectedAction $ExpectedRecoveryAction
             $executionSummary = $autopilotFlow.ExecutionSummary
         }
     } elseif ($Scenario -eq 'Success') {
