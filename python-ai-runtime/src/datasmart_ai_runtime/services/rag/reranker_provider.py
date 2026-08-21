@@ -98,7 +98,12 @@ class RagRerankerProviderSettings:
     max_document_chars: int = 6000
     max_attempts: int = 3
     retry_base_delay_ms: int = 250
-    retrieval_prior_weight: float = 0.0
+    # 远端分数只表达第二阶段的“查询-正文相关性”。默认保留少量第一阶段信号，避免 Cross-Encoder
+    # 在相近候选上偶然换序时把 Embedding 独有证据完全抹掉；调用方仍可显式设为 0 做纯模型基线。
+    retrieval_prior_weight: float = 0.2
+    # 远端窗口至少给向量独有候选留出一个有界名额。该比例只作用于已经通过本地范围和召回过滤的
+    # 候选，不会扩大知识库扫描或敏感正文外发范围。
+    vector_recall_reserve_ratio: float = 0.25
     approved_sensitivity_levels: tuple[str, ...] = ()
     synthetic_only_evaluation: bool = False
 
@@ -269,6 +274,32 @@ class SiliconFlowRagReranker:
             # 保持一致，确保“本地看见了目标”与“远端实际看见了目标”不会出现两套标准。
             append_unique(_facet_routing_reserves(candidates, query), one_per_document=True)
 
+        # 向量独有候选不能等到最后的普通 round-robin 才“碰运气”。如果词法/职责候选已经占据前面
+        # 的窗口，vector-only chunk 会在实际 HTTP 请求前消失，导致评测误以为 Embedding 没召回。
+        # 这里在精确和职责保护之后预留有限名额：至少一条，通常不超过窗口的配置比例；同一文档仍
+        # 只占一个名额，避免把向量保留退化成重复 chunk 保留。
+        vector_only_candidates = tuple(
+            sorted(
+                (
+                    item
+                    for item in candidates
+                    if float(item.vector_score) > 0.0 and float(item.lexical_score) <= 0.0
+                ),
+                key=lambda item: (float(item.vector_score), float(item.fused_score)),
+                reverse=True,
+            )
+        )
+        if vector_only_candidates and len(selected) < limit:
+            reserve_ratio = max(
+                0.0,
+                min(1.0, float(self._settings.vector_recall_reserve_ratio)),
+            )
+            reserve_count = min(
+                limit - len(selected),
+                max(1, int(math.ceil(limit * reserve_ratio))),
+            )
+            append_unique(vector_only_candidates[:reserve_count], one_per_document=True)
+
         # 第一轮每篇文档只取一个最佳 chunk，先让 Reranker 比较尽可能多的独立资料。后续轮次才允许
         # 同一文档补充第二、第三个 chunk；这既保留长文档内部的多 facet 证据，也避免它挤掉其他文档。
         remaining = [item for item in candidates if item.chunk.chunk_id not in selected_ids]
@@ -314,14 +345,23 @@ class SiliconFlowRagReranker:
             for index, item in enumerate(submitted)
         }
         denominator = max(1, len(submitted) - 1)
+        retrieval_signals = {
+            item.chunk.chunk_id: _retrieval_signal(item, submitted)
+            for item in submitted
+        }
         blended: list[RagScoredChunk] = []
         for candidate in reranked:
             chunk_id = candidate.chunk.chunk_id
             remote_rank_score = 1.0 - remote_rank[chunk_id] / denominator
+            # 只按 RRF rank 会丢掉“同为第 5 名但向量分差很大”的信息。这里把稳定的原始融合分和
+            # 向量分归一化后组成 retrieval signal，再与 rank 平均，既保留第一阶段可解释性，又不
+            # 让不同索引/不同模型的绝对分数直接互相比较。
             retrieval_rank_score = 1.0 - original_rank[chunk_id] / denominator
+            retrieval_score = retrieval_signals.get(chunk_id, retrieval_rank_score)
+            retrieval_prior = 0.5 * retrieval_rank_score + 0.5 * retrieval_score
             final_score = (
                 (1.0 - weight) * remote_rank_score
-                + weight * retrieval_rank_score
+                + weight * retrieval_prior
             )
             blended.append(
                 RagScoredChunk(
@@ -425,6 +465,7 @@ class SiliconFlowRagReranker:
                 "maxAttempts": self._settings.max_attempts,
                 "retryBaseDelayMs": self._settings.retry_base_delay_ms,
                 "retrievalPriorWeight": self._settings.retrieval_prior_weight,
+                "vectorRecallReserveRatio": self._settings.vector_recall_reserve_ratio,
                 "approvedSensitivityLevels": self._approved_sensitivity_levels,
                 "syntheticOnlyEvaluation": self._synthetic_only_evaluation,
                 "externalBodyFailClosed": True,
@@ -592,7 +633,11 @@ def rag_reranker_provider_settings_from_env(
         ),
         retrieval_prior_weight=_bounded_float(
             source.get("DATASMART_RAG_RERANK_RETRIEVAL_PRIOR_WEIGHT"),
-            0.0,
+            0.2,
+        ),
+        vector_recall_reserve_ratio=_bounded_float(
+            source.get("DATASMART_RAG_RERANK_VECTOR_RECALL_RESERVE_RATIO"),
+            0.25,
         ),
         approved_sensitivity_levels=normalize_external_text_sensitivity_levels(
             source.get("DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS"),
@@ -629,6 +674,42 @@ def _bounded_metadata_value(value: str) -> str:
 
     normalized = " ".join(str(value).split())
     return normalized[:256]
+
+
+def _retrieval_signal(
+    candidate: RagScoredChunk,
+    submitted: tuple[RagScoredChunk, ...],
+) -> float:
+    """把第一阶段的融合分和向量分归一化为 0 到 1 的先验信号。
+
+    lexical、vector 和 RRF 的绝对尺度会随着语料、Embedding 模型和候选窗口变化；直接把它们
+    加到供应商分数上会产生不可控的权重。这里仅在本批候选内部归一化，使用 ``max-min`` 保持
+    相对证据强弱，并在没有有效区间时退回 0.5，避免常量分把重排结果推向某一端。
+    """
+
+    fused_values = [float(item.fused_score) for item in submitted if math.isfinite(float(item.fused_score))]
+    vector_values = [float(item.vector_score) for item in submitted if math.isfinite(float(item.vector_score))]
+
+    def normalized(value: float, values: list[float]) -> float:
+        if not values:
+            return 0.5
+        minimum = min(values)
+        maximum = max(values)
+        if maximum <= minimum:
+            return 0.5
+        return max(0.0, min(1.0, (value - minimum) / (maximum - minimum)))
+
+    candidate_fused = float(candidate.fused_score)
+    candidate_vector = float(candidate.vector_score)
+    fused_signal = normalized(
+        candidate_fused if math.isfinite(candidate_fused) else 0.0,
+        fused_values,
+    )
+    vector_signal = normalized(
+        candidate_vector if math.isfinite(candidate_vector) else 0.0,
+        vector_values,
+    )
+    return 0.5 * fused_signal + 0.5 * vector_signal
 
 
 def _provider_type(value: str | None) -> RagRerankerProviderType:

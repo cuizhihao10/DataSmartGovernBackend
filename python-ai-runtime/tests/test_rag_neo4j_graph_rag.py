@@ -88,7 +88,7 @@ class _FakeSession:
         """记录查询并返回模拟 Record 映射。"""
 
         self.calls.append((statement, parameters))
-        if "RETURN properties(entity) AS entity" in statement:
+        if "RETURN properties(entity) AS entity" in statement and "$lookup_alias IN" in statement:
             lookup = str(parameters["lookup_alias"])
             return [
                 {"entity": value}
@@ -99,6 +99,8 @@ class _FakeSession:
                     *(str(alias).casefold() for alias in value["aliases"]),
                 }
             ]
+        if "RETURN properties(entity) AS entity" in statement:
+            return [{"entity": value} for value in self.entities.values()]
         if "RETURN properties(source) AS source" in statement:
             source_id = str(parameters["source_id"])
             return [
@@ -281,6 +283,52 @@ class Neo4jGraphRagProviderTest(unittest.TestCase):
         ))
         self.assertEqual(GraphRagResultStatus.SUCCESS.value, result.status)
         self.assertEqual("目标客户编号", result.answer)
+
+    def test_semantic_entity_fallback_is_scoped_and_unique(self) -> None:
+        """Neo4j 精确别名未命中时，受控候选解析应能处理词序变化。"""
+
+        entities = {
+            "task-orders": {
+                **_entity("task-orders", "订单同步任务", ("订单数据同步",)),
+                "application": "app-a",
+            },
+            "source-orders": {
+                **_entity("source-orders", "订单库"),
+                "application": "app-a",
+            },
+        }
+        edges = [
+            {
+                **_edge("task-orders", "source-orders", "doc-task-source", "chunk-1"),
+                "relation": "TASK_USES_DATASOURCE",
+                "application": "app-a",
+            }
+        ]
+        provider = Neo4jGraphRagProvider(
+            _FakeDriver(entities, edges),
+            GraphRagNeo4jSettings(
+                provider_type="neo4j",
+                uri="bolt://neo4j:7687",
+                username="neo4j",
+                password="secret",
+            ),
+        )
+
+        result = provider.query(
+            GraphRagQuery(
+                question="同步订单任务使用哪些数据源",
+                tenant="tenant-a",
+                application="app-a",
+                project="project-a",
+                workspace="workspace-a",
+                sensitivity="internal",
+                as_of=AS_OF,
+            )
+        )
+
+        self.assertEqual(GraphRagResultStatus.SUCCESS.value, result.status)
+        self.assertEqual("semantic", result.entity_resolution)
+        self.assertEqual("订单库", result.answer)
 
     def test_provider_factory_is_disabled_by_default_and_fail_closed_when_incomplete(self) -> None:
         """未显式启用时不连接 Neo4j，启用但缺配置时返回稳定拒答 Provider。"""

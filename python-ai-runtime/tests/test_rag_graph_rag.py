@@ -170,6 +170,61 @@ class InMemoryGraphRagTest(unittest.TestCase):
         self.assertEqual("doc-report-2", serialized["path"][1]["source_document_id"])
         self.assertEqual("2026-01-01T00:00:00+00:00", serialized["path"][0]["time"]["effective_at"])
 
+    def test_controlled_semantic_alias_resolution_handles_token_order_change(self) -> None:
+        """实体简称或词序变化只在高置信且唯一时进入图遍历。"""
+
+        graph = InMemoryGraphRag(
+            entities=(
+                entity("task-orders", "订单同步任务", aliases=("订单数据同步",)),
+                entity("source-orders", "订单库"),
+            ),
+            edges=(edge("task-orders", "source-orders", "doc-task-source", relation="TASK_USES_DATASOURCE"),),
+        )
+
+        result = graph.query(
+            GraphRagQuery(
+                question="同步订单任务使用哪些数据源",
+                tenant="tenant-a",
+                project="project-a",
+                workspace="workspace-a",
+                sensitivity="internal",
+                as_of=AS_OF,
+            )
+        )
+
+        self.assertEqual(GraphRagResultStatus.SUCCESS.value, result.status)
+        self.assertEqual("semantic", result.entity_resolution)
+        self.assertEqual("订单库", result.answer)
+
+    def test_semantic_alias_tie_is_refused_instead_of_guessing(self) -> None:
+        """两个实体拥有同等语义候选时必须返回歧义，而不是按插入顺序选一个。"""
+
+        graph = InMemoryGraphRag(
+            entities=(
+                entity("task-a", "订单同步任务", aliases=("订单数据同步",)),
+                entity("task-b", "订单同步作业", aliases=("订单数据同步",)),
+                entity("source", "订单库"),
+            ),
+            edges=(
+                edge("task-a", "source", "doc-a", relation="TASK_USES_DATASOURCE"),
+                edge("task-b", "source", "doc-b", relation="TASK_USES_DATASOURCE"),
+            ),
+        )
+
+        result = graph.query(
+            GraphRagQuery(
+                question="订单数据同步使用哪些数据源",
+                tenant="tenant-a",
+                project="project-a",
+                workspace="workspace-a",
+                sensitivity="internal",
+                as_of=AS_OF,
+            )
+        )
+
+        self.assertEqual(GraphRagResultStatus.REFUSAL.value, result.status)
+        self.assertEqual(GraphRagReasonCode.AMBIGUOUS_ALIAS.value, result.reason_code)
+
     def test_cross_tenant_entity_is_invisible_before_alias_resolution(self) -> None:
         """其他租户的实体和边不能参与别名解析，也不能泄露其存在。"""
 

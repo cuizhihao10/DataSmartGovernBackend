@@ -31,6 +31,8 @@ from datasmart_ai_runtime.services.rag.graph_rag import (
     GraphRagResult,
     GraphRagResultStatus,
     InMemoryGraphRag,
+    _normalize_alias,
+    _semantic_alias_score,
     parse_graph_rag_question,
 )
 
@@ -135,6 +137,18 @@ class Neo4jGraphRagProvider:
     LIMIT 20
     """
 
+    # 精确别名没有命中时，读取授权范围内的有限实体候选供 Python 侧严格消歧。关系边仍按逐跳
+    # 查询，不会因为自然语言简称而展开整张图；LIMIT 同时约束延迟和内存占用。
+    _ENTITY_CANDIDATES_CYPHER = """
+    MATCH (entity:GraphEntity)
+    WHERE entity.tenant IN [$tenant, '*']
+      AND entity.application IN [$application, '*']
+      AND entity.project IN [$project, '*']
+      AND coalesce(entity.sensitivity_rank, 1) <= $sensitivity_rank
+    RETURN properties(entity) AS entity
+    LIMIT 200
+    """
+
     _OUTGOING_EDGE_CYPHER = """
     MATCH (source:GraphEntity)-[relationship:GRAPH_RELATION]->(target:GraphEntity)
     WHERE source.standard_id = $source_id
@@ -232,6 +246,11 @@ class Neo4jGraphRagProvider:
                 requested_hops=parsed.hops,
                 relation=parsed.relation,
             )
+
+        entity_resolution = "exact" if any(
+            _normalize_alias(alias) == _normalize_alias(lookup_subject)
+            for alias in next(iter(by_id.values())).aliases_for_lookup()
+        ) else "semantic"
 
         current = next(iter(by_id.values()))
         path: list[GraphRagPathStep] = []
@@ -335,6 +354,7 @@ class Neo4jGraphRagProvider:
             message="已根据当前有效关系和完整来源路径回答。",
             requested_hops=parsed.hops,
             relation=parsed.relation,
+            entity_resolution=entity_resolution,
         )
 
     def retrieve(self, query: GraphRagQuery) -> GraphRagResult:
@@ -441,22 +461,47 @@ class Neo4jGraphRagProvider:
     ) -> tuple[GraphRagEntity, ...]:
         """只在已经授权的图范围内按标准 ID/规范名/别名查找实体。"""
 
+        parameters = {
+            "lookup_alias": _normalize_lookup(subject),
+            "tenant": tenant,
+            "application": application,
+            "project": project,
+            "sensitivity_rank": _sensitivity_rank(sensitivity),
+        }
         rows = self._run_read(
             self._ENTITY_BY_ALIAS_CYPHER,
-            {
-                "lookup_alias": _normalize_lookup(subject),
-                "tenant": tenant,
-                "application": application,
-                "project": project,
-                "sensitivity_rank": _sensitivity_rank(sensitivity),
-            },
+            parameters,
         )
         entities: dict[str, GraphRagEntity] = {}
         for row in rows:
             entity = _entity_from_mapping(_record_value(row, "entity"))
             if entity is not None:
                 entities[entity.standard_id] = entity
-        return tuple(entities.values())
+        if entities:
+            return tuple(entities.values())
+
+        candidate_rows = self._run_read(
+            self._ENTITY_CANDIDATES_CYPHER,
+            {key: value for key, value in parameters.items() if key != "lookup_alias"},
+        )
+        scored: list[tuple[float, GraphRagEntity]] = []
+        for row in candidate_rows:
+            entity = _entity_from_mapping(_record_value(row, "entity"))
+            if entity is None:
+                continue
+            score = _semantic_alias_score(_normalize_alias(subject), entity.aliases_for_lookup())
+            if score >= 0.75:
+                scored.append((score, entity))
+        scored.sort(key=lambda item: (item[0], item[1].standard_id), reverse=True)
+        if not scored:
+            return ()
+        best_score = scored[0][0]
+        # 保留近似并列候选，让 query() 统一返回 AMBIGUOUS_ALIAS，不能在 Adapter 内按数据库顺序猜测。
+        return tuple(
+            entity
+            for score, entity in scored
+            if best_score - score < 0.10
+        )[:20]
 
     def _find_outgoing_edges(
         self,

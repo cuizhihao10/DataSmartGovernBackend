@@ -245,9 +245,10 @@ class RagCitation:
 class RagPipelineResult:
     """RAG 管线最终结果。
 
-    ``retrieved_chunks`` 与 ``reranker_input_chunks`` 是仅供安全评测和内部审计使用的阶段快照，证明范围
-    过滤发生在外部模型之前。``to_summary`` 不序列化它们，避免把未被最终证据门禁选中的文档 ID、标题
-    或片段暴露给普通 API 调用方。
+    ``retrieved_chunks``、``reranker_input_chunks``、``reranked_chunks`` 和 ``gated_chunks`` 是仅供安全
+    评测和内部审计使用的阶段快照，证明范围过滤发生在外部模型之前，并可以定位向量候选在哪一层
+    消失。``to_summary`` 不序列化它们，避免把未被最终证据门禁选中的文档 ID、标题或片段暴露给普通
+    API 调用方。
     """
 
     answer: str
@@ -259,6 +260,8 @@ class RagPipelineResult:
     generated: bool = False
     retrieved_chunks: tuple[RagScoredChunk, ...] = ()
     reranker_input_chunks: tuple[RagScoredChunk, ...] = ()
+    reranked_chunks: tuple[RagScoredChunk, ...] = ()
+    gated_chunks: tuple[RagScoredChunk, ...] = ()
     # GraphRAG 使用结构化关系边作为证据，不会伪造 RagScoredChunk。以下三个字段只在
     # `retrievalMode=graph` 时填充，普通 RAG 响应保持原有形状。
     graph_path: tuple[dict[str, Any], ...] = ()

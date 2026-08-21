@@ -318,6 +318,57 @@ class RagRerankerProviderTest(unittest.TestCase):
         self.assertEqual(16, len(prepared))
         self.assertIn("responsibility-doc-16", {item.chunk.document_id for item in prepared})
 
+    def test_vector_only_candidate_enters_real_window_even_when_lexical_chunks_fill_prefix(self) -> None:
+        """Embedding 独有命中必须进入真实 Provider 窗口，不能被词法前缀静默截掉。"""
+
+        def make_candidate(index: int, *, lexical: float, vector: float) -> RagScoredChunk:
+            return RagScoredChunk(
+                chunk=RagChunk(
+                    chunk_id=f"vector-reserve-{index}",
+                    document_id=f"vector-reserve-doc-{index}",
+                    chunk_index=0,
+                    title=f"候选资料 {index}",
+                    text=f"候选正文 {index}，用于验证真实重排窗口。",
+                    source_uri=f"test://vector-reserve/{index}",
+                    tenant_id="*",
+                    project_id="*",
+                    workspace_key="*",
+                    source_type=RagChunkSourceType.DOCUMENT,
+                    metadata={"category": "general_reference", "contentFormat": "txt"},
+                ),
+                lexical_score=lexical,
+                vector_score=vector,
+                fused_score=1.0 - index / 100.0,
+            )
+
+        candidates = tuple(
+            make_candidate(index, lexical=0.8, vector=0.0)
+            for index in range(20)
+        ) + (make_candidate(20, lexical=0.0, vector=0.94),)
+        settings = RagRerankerProviderSettings(
+            **{**self._settings().__dict__, "max_documents": 16, "vector_recall_reserve_ratio": 0.25}
+        )
+        reranker = SiliconFlowRagReranker(
+            settings,
+            urlopen=FakeUrlOpen({"results": [{"index": index, "relevance_score": 0.5} for index in range(16)]}),
+        )
+
+        prepared = reranker.prepare_candidates(candidates, query=self._query())
+
+        prepared_ids = {item.chunk.document_id for item in prepared}
+        self.assertEqual(16, len(prepared))
+        self.assertIn("vector-reserve-doc-20", prepared_ids)
+
+    def test_default_retrieval_prior_is_enabled_but_can_be_disabled_for_baseline(self) -> None:
+        """默认启用小幅召回先验，同时保留显式 0 权重的纯远端基线。"""
+
+        self.assertEqual(0.2, RagRerankerProviderSettings().retrieval_prior_weight)
+        self.assertEqual(0.25, RagRerankerProviderSettings().vector_recall_reserve_ratio)
+        configured = rag_reranker_provider_settings_from_env(
+            {"DATASMART_RAG_RERANK_RETRIEVAL_PRIOR_WEIGHT": "0"}
+        )
+        self.assertEqual(0.0, configured.retrieval_prior_weight)
+
     def test_incomplete_or_duplicate_result_indices_are_rejected(self) -> None:
         """缺失、重复或越界索引会破坏候选映射，必须整体拒绝而不是猜测顺序。"""
 

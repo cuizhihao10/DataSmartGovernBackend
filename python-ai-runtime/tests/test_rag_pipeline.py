@@ -148,6 +148,79 @@ class RagPipelineTest(unittest.TestCase):
         self.assertEqual(("recovery-ledger",), tuple(item.chunk.document_id for item in selected))
         self.assertEqual("recovery-ledger#semantic", selected[0].chunk.chunk_id)
 
+    def test_vector_stage_metrics_explain_candidate_survival_without_exposing_bodies(self) -> None:
+        """结果应报告向量候选经过窗口、门禁和选择的数量，方便定位后续丢失层。"""
+
+        pipeline = self._pipeline(minimum_vector_score=-1.0)
+        result = pipeline.answer(
+            RagQuery(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="owner-a",
+                workspace_key="workspace-a",
+                question="数据质量规则生成应该考虑哪些内容？",
+                top_k=2,
+                generate_answer=False,
+            )
+        )
+
+        metrics = result.retrieval_summary["vectorStageMetrics"]
+        self.assertGreaterEqual(metrics["vectorRetrievedCount"], metrics["vectorInRerankerCount"])
+        self.assertGreaterEqual(metrics["vectorRerankedCount"], metrics["vectorAcceptedCount"])
+        self.assertGreaterEqual(metrics["vectorAcceptedCount"], metrics["vectorSelectedCount"])
+        self.assertIn("vectorRerankerWindowCoverage", metrics)
+        self.assertNotIn("text", metrics)
+
+    def test_high_confidence_vector_only_evidence_survives_rerank_relative_pruning(self) -> None:
+        """高置信度语义候选即使远端分数偏低，也不能被相对裁剪无条件吞掉。"""
+
+        def make_candidate(document_id: str, *, vector: float, final: float) -> RagScoredChunk:
+            return RagScoredChunk(
+                chunk=RagChunk(
+                    chunk_id=f"{document_id}#0",
+                    document_id=document_id,
+                    chunk_index=0,
+                    title=f"语义证据 {document_id}",
+                    text="字段映射恢复需要查看失败日志、补齐默认值并完成最终验证。",
+                    source_uri=f"test://{document_id}",
+                    tenant_id="*",
+                    project_id="*",
+                    workspace_key="*",
+                    source_type=RagChunkSourceType.RUNBOOK,
+                    metadata={"category": "field_mapping_recovery", "contentFormat": "md"},
+                ),
+                lexical_score=0.0,
+                vector_score=vector,
+                rerank_score=final,
+                final_score=final,
+            )
+
+        query = RagQuery(
+            tenant_id="*",
+            project_id="*",
+            workspace_key="*",
+            actor_id="owner-a",
+            question="如何依据失败日志完成字段恢复和最终验证？",
+            generate_answer=False,
+        )
+        candidates = (
+            make_candidate("primary", vector=0.60, final=1.0),
+            make_candidate("semantic-recovery", vector=0.90, final=0.20),
+        )
+        gated = tuple(
+            item
+            for item in candidates
+            if rag_pipeline._has_sufficient_evidence(item, RagPipelineSettings(), query)
+        )
+
+        selected = rag_pipeline._prune_redundant_reranked_evidence(
+            gated,
+            RagPipelineSettings(minimum_relative_rerank_score=0.82),
+            query=query,
+        )
+
+        self.assertIn("semantic-recovery", {item.chunk.document_id for item in selected})
+
     def test_query_intent_prior_cannot_overwrite_remote_reranker_order(self) -> None:
         """职责先验只能打破近似平分，不能盖过真实 Cross-Encoder 的相关性排序。"""
 

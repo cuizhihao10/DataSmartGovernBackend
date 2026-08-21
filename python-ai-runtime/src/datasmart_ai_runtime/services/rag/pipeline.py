@@ -395,6 +395,8 @@ class RagPipeline:
         retrieval_summary = self._retrieval_summary(
             query=query,
             retrieved=retrieved,
+            reranker_input=reranker_input,
+            reranked=reranked,
             gated=gated,
             selected=selected,
             compressed_context=compressed_context,
@@ -411,6 +413,8 @@ class RagPipeline:
                 generated=False,
                 retrieved_chunks=retrieved,
                 reranker_input_chunks=reranker_input,
+                reranked_chunks=reranked,
+                gated_chunks=gated,
             )
         if not query.generate_answer:
             return RagPipelineResult(
@@ -423,6 +427,8 @@ class RagPipeline:
                 generated=False,
                 retrieved_chunks=retrieved,
                 reranker_input_chunks=reranker_input,
+                reranked_chunks=reranked,
+                gated_chunks=gated,
             )
         answer, model_summary = self._generate_answer(query, compressed_context, citations)
         return RagPipelineResult(
@@ -435,6 +441,8 @@ class RagPipeline:
             generated=not bool(model_summary.get("errorCode")),
             retrieved_chunks=retrieved,
             reranker_input_chunks=reranker_input,
+            reranked_chunks=reranked,
+            gated_chunks=gated,
         )
 
     def _answer_hybrid_graph(
@@ -510,6 +518,7 @@ class RagPipeline:
                 "graphReasonCode": graph_result.retrieval_summary.get("graphReasonCode"),
                 "graphRequestedHops": graph_result.retrieval_summary.get("graphRequestedHops"),
                 "graphHopCount": graph_result.retrieval_summary.get("graphHopCount", 0),
+                "graphEntityResolution": graph_result.retrieval_summary.get("graphEntityResolution"),
                 "graphPath": graph_result.graph_path,
                 "graphCitations": graph_result.graph_citations,
                 "graphEvidenceCount": len(graph_citations),
@@ -543,6 +552,8 @@ class RagPipeline:
                 generated=False,
                 retrieved_chunks=document_result.retrieved_chunks,
                 reranker_input_chunks=document_result.reranker_input_chunks,
+                reranked_chunks=document_result.reranked_chunks,
+                gated_chunks=document_result.gated_chunks,
                 graph_path=graph_result.graph_path,
                 graph_citations=graph_result.graph_citations,
                 graph_refusal_reason=graph_reason,
@@ -559,6 +570,8 @@ class RagPipeline:
             generated=not bool(model_summary.get("errorCode")),
             retrieved_chunks=document_result.retrieved_chunks,
             reranker_input_chunks=document_result.reranker_input_chunks,
+            reranked_chunks=document_result.reranked_chunks,
+            gated_chunks=document_result.gated_chunks,
             graph_path=graph_result.graph_path,
             graph_citations=graph_result.graph_citations,
             graph_refusal_reason=graph_reason,
@@ -659,6 +672,7 @@ class RagPipeline:
                 "graphReasonCode": graph_result.reason_code,
                 "graphRequestedHops": graph_result.requested_hops,
                 "graphHopCount": graph_result.hop_count,
+                "graphEntityResolution": graph_result.entity_resolution,
                 "graphPath": graph_path,
                 "graphCitations": graph_citations,
             }
@@ -803,6 +817,8 @@ class RagPipeline:
         gated: tuple[RagScoredChunk, ...],
         selected: tuple[RagScoredChunk, ...],
         compressed_context: str,
+        reranker_input: tuple[RagScoredChunk, ...] = (),
+        reranked: tuple[RagScoredChunk, ...] = (),
     ) -> dict[str, Any]:
         """构建低敏检索摘要。"""
 
@@ -850,6 +866,13 @@ class RagPipeline:
         evidence_digest = "sha256:" + hashlib.sha256(
             "|".join(str(record["evidenceId"]) for record in evidence_records).encode("utf-8")
         ).hexdigest()
+        stage_metrics = _vector_stage_metrics(
+            retrieved=retrieved,
+            reranker_input=reranker_input,
+            reranked=reranked,
+            gated=gated,
+            selected=selected,
+        )
         return {
             "candidateCount": len(retrieved),
             "evidenceAcceptedCount": len(gated),
@@ -872,6 +895,7 @@ class RagPipeline:
             "evidenceDigest": evidence_digest,
             "evidenceCount": len(evidence_records),
             "evidenceSourceTypes": tuple(sorted(source_type_counts)),
+            "vectorStageMetrics": stage_metrics,
             "scope": {
                 "tenantId": query.tenant_id,
                 "projectId": query.project_id,
@@ -879,6 +903,85 @@ class RagPipeline:
             },
             "payloadPolicy": "LOW_SENSITIVE_RAG_RETRIEVAL_SUMMARY_ONLY",
         }
+
+
+def _vector_stage_metrics(
+    *,
+    retrieved: tuple[RagScoredChunk, ...],
+    reranker_input: tuple[RagScoredChunk, ...],
+    reranked: tuple[RagScoredChunk, ...],
+    gated: tuple[RagScoredChunk, ...],
+    selected: tuple[RagScoredChunk, ...],
+) -> dict[str, int | float]:
+    """计算向量证据在各阶段的存活情况。
+
+    仅调 Embedding 的 ``top-k`` 或阈值无法解释“向量已经找到但引用没有出现”。这里把每个阶段
+    都按 chunk ID 做集合比较：``retrieved`` 表示召回器事实，``rerankerInput`` 表示真正发送给
+    Reranker 的窗口，``reranked`` 表示供应商返回的完整候选，``gated`` 表示通过回答前证据门禁，
+    ``selected`` 表示最终进入 MMR/引用的候选。vector-only 定义为携带向量分且没有词法分的候选，
+    正好对应“Embedding 独有命中”这个排障目标。指标只保存数量和比例，不保存正文、问题或凭据。
+    """
+
+    def vector_ids(items: tuple[RagScoredChunk, ...]) -> set[str]:
+        return {
+            item.chunk.chunk_id
+            for item in items
+            if float(item.vector_score) != 0.0
+        }
+
+    def vector_only_ids(items: tuple[RagScoredChunk, ...]) -> set[str]:
+        return {
+            item.chunk.chunk_id
+            for item in items
+            if float(item.vector_score) != 0.0 and float(item.lexical_score) <= 0.0
+        }
+
+    retrieved_vector = vector_ids(retrieved)
+    retrieved_vector_only = vector_only_ids(retrieved)
+    stage_values = {
+        "retrieved": retrieved_vector,
+        "rerankerInput": vector_ids(reranker_input),
+        "reranked": vector_ids(reranked),
+        "gated": vector_ids(gated),
+        "selected": vector_ids(selected),
+    }
+    vector_only_values = {
+        "retrieved": retrieved_vector_only,
+        "rerankerInput": vector_only_ids(reranker_input),
+        "reranked": vector_only_ids(reranked),
+        "gated": vector_only_ids(gated),
+        "selected": vector_only_ids(selected),
+    }
+
+    def ratio(numerator: int, denominator: int) -> float:
+        # 没有向量候选时返回 0，而不是把“没有观测对象”伪装成 100% 覆盖；这样聚合评测不会被
+        # lexical-only 用例抬高 vector survival 指标。
+        return round(numerator / denominator, 6) if denominator else 0.0
+
+    return {
+        "vectorRetrievedCount": len(retrieved_vector),
+        "vectorOnlyRetrievedCount": len(retrieved_vector_only),
+        "vectorInRerankerCount": len(stage_values["rerankerInput"]),
+        "vectorOnlyInRerankerCount": len(vector_only_values["rerankerInput"]),
+        "vectorRerankedCount": len(stage_values["reranked"]),
+        "vectorOnlyRerankedCount": len(vector_only_values["reranked"]),
+        "vectorAcceptedCount": len(stage_values["gated"]),
+        "vectorOnlyAcceptedCount": len(vector_only_values["gated"]),
+        "vectorSelectedCount": len(stage_values["selected"]),
+        "vectorOnlySelectedCount": len(vector_only_values["selected"]),
+        "vectorRerankerWindowCoverage": ratio(
+            len(stage_values["rerankerInput"]), len(retrieved_vector)
+        ),
+        "vectorOnlyRerankerWindowCoverage": ratio(
+            len(vector_only_values["rerankerInput"]), len(retrieved_vector_only)
+        ),
+        "vectorAcceptanceRate": ratio(
+            len(stage_values["gated"]), len(stage_values["reranked"])
+        ),
+        "vectorSelectionRate": ratio(
+            len(stage_values["selected"]), len(stage_values["gated"])
+        ),
+    }
 
 
 def _rag_evidence_confidence(item: RagScoredChunk) -> float:
@@ -1314,8 +1417,68 @@ def _prune_redundant_reranked_evidence(
             query,
             settings,
         )
+    # 单问题也可能由 Embedding 找到一份不复用原问题词汇、但职责明确的资料。只按远端分数的相对
+    # 阈值会把这类“互补语义证据”全部删掉，造成召回阶段和最终引用之间的断层。候选必须已经通过
+    # evidence gate，并同时满足高向量分或明确职责先验；每个文档最多保留一份，最多补回一份，避免
+    # 为了保护向量信号而牺牲引用精确率和上下文预算。
+    if query is not None:
+        pruned = _reserve_vector_semantic_evidence(
+            pruned or document_candidates[:1],
+            document_candidates,
+            query,
+            settings,
+        )
     # 第一名已经通过上游证据门禁；浮点边界异常时仍保留它，避免裁剪层制造无证据假象。
     return pruned or document_candidates[:1]
+
+
+def _reserve_vector_semantic_evidence(
+    selected: tuple[RagScoredChunk, ...],
+    candidates: tuple[RagScoredChunk, ...],
+    query: RagQuery,
+    settings: RagPipelineSettings,
+) -> tuple[RagScoredChunk, ...]:
+    """在重排相对裁剪后有限保留高价值 vector-only 证据。
+
+    ``vector_score`` 不是答案可信度，不能单独绕过证据门禁；本函数只处理已经进入 ``candidates`` 的
+    候选，并要求它是词法独有、达到正常向量门槛且满足以下任一条件：高于“无锚点”门槛，或具备
+    明确的资料职责先验。职责先验仍需与正文词法/向量信号共同存在，避免 category 标签单独放行。
+    这样可以修复 Reranker 分数尺度与 Embedding 信号不一致导致的丢证据，同时把新增引用数锁为一条。
+    """
+
+    if not candidates:
+        return selected
+    selected_ids = {item.chunk.document_id for item in selected}
+    vector_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.chunk.document_id not in selected_ids
+        and float(candidate.vector_score) >= float(settings.minimum_vector_score)
+        and float(candidate.lexical_score) <= 0.0
+    ]
+    if not vector_candidates:
+        return selected
+    threshold = max(
+        float(settings.minimum_vector_score),
+        float(settings.minimum_unanchored_vector_score),
+    )
+    protected = [
+        candidate
+        for candidate in vector_candidates
+        if float(candidate.vector_score) >= threshold
+        or rag_query_document_intent_score(query.question, candidate.chunk)
+        >= max(
+            _MULTI_EVIDENCE_RESPONSIBILITY_INTENT_THRESHOLD,
+            float(settings.multi_evidence_responsibility_intent_threshold),
+        )
+    ]
+    if not protected:
+        return selected
+    best = max(
+        protected,
+        key=lambda item: (float(item.vector_score), float(item.final_score)),
+    )
+    return tuple((*selected, best))
 
 
 def _restrict_to_declared_responsibility(

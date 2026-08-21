@@ -172,6 +172,22 @@ Provider 还受 ``DATASMART_RAG_RERANK_MAX_DOCUMENTS`` 约束；管线会在调�
 这是一种有界的运行时 fan-out：不会重新扫描知识库、扩大权限范围、绕过 ``sourceStatus``/时效过滤，
 也不会把候选总数扩到供应商上限之外。单一事实查询仍保持原始候选顺序，精确资料码仍优先。
 
+本轮还固定了两个容易被误判成“Embedding 失效”的结构性问题：
+
+* ``DATASMART_RAG_RERANK_VECTOR_RECALL_RESERVE_RATIO`` 默认 ``0.25``。在精确资料和职责 facet 保留
+  后，Provider 至少为 vector-only 候选预留一个名额；因此词法候选填满前缀时，Embedding 已召回的
+  互补资料仍会进入真实 ``/v1/rerank`` 请求。该配置只作用于已授权、已召回集合，不扩大扫描范围。
+* ``DATASMART_RAG_RERANK_RETRIEVAL_PRIOR_WEIGHT`` 默认 ``0.2``。Reranker 的远端排序仍是主要信号，
+  但会与本批次归一化的 fused/vector 先验做小幅融合；设置为 ``0`` 可复现纯远端模型基线。最终
+  相对裁剪仅对已经通过证据门禁的高置信 vector-only 资料有限补回一条，不能绕过权限或拒答门禁。
+
+每次普通 RAG 结果的内部评测快照还会写入 ``vectorStageMetrics``，包括
+``vectorRetrievedCount``、``vectorInRerankerCount``、``vectorAcceptedCount`` 和
+``vectorSelectedCount``，以及 vector-only 对应计数和窗口覆盖率。评测报告只保留数量和比例，不保存
+问题、正文、Endpoint 或密钥；对 GraphRAG 则额外记录 ``graphEntityResolution``，区分精确别名与
+受控语义消歧。若实体候选分数不够高或两个候选过近，GraphRAG 返回 ``ALIAS_NOT_FOUND``/
+``AMBIGUOUS_ALIAS``，不会把普通 Embedding 近邻直接当作关系事实。
+
 因此重现多文档窗口问题时应显式固定上限，例如：
 
 ```powershell

@@ -271,6 +271,8 @@ class RagEvaluationRunner:
         execution_errors = 0
         graph_path_expected_count = 0
         graph_path_pass_count = 0
+        graph_entity_resolution_counts: dict[str, int] = {}
+        vector_stage_values: dict[str, list[float]] = {}
 
         for golden_case in self._dataset.cases:
             case_started_at = perf_counter()
@@ -286,9 +288,13 @@ class RagEvaluationRunner:
 
             citations = tuple(result.citations) if result is not None else ()
             evidence_records = _safe_evidence_records(result)
+            for metric_name, metric_value in _safe_vector_stage_metrics(result).items():
+                vector_stage_values.setdefault(metric_name, []).append(float(metric_value))
             actual_document_ids = _unique_tuple(citation.document_id for citation in citations)
             retrieved_document_ids = _stage_document_ids(result, "retrieved_chunks")
             reranker_input_document_ids = _stage_document_ids(result, "reranker_input_chunks")
+            reranked_document_ids = _stage_document_ids(result, "reranked_chunks")
+            gated_document_ids = _stage_document_ids(result, "gated_chunks")
             observed_document_ids = _unique_tuple(
                 (*retrieved_document_ids, *reranker_input_document_ids, *actual_document_ids)
             )
@@ -299,6 +305,18 @@ class RagEvaluationRunner:
                 if result is not None and result.graph_refusal_reason
                 else None
             )
+            if result is not None:
+                graph_resolution = str(
+                    result.retrieval_summary.get("graphEntityResolution") or ""
+                ).strip().lower()
+                if graph_resolution:
+                    graph_entity_resolution_counts[graph_resolution] = (
+                        graph_entity_resolution_counts.get(graph_resolution, 0) + 1
+                    )
+            if actual_graph_reason_code:
+                graph_entity_resolution_counts[actual_graph_reason_code.lower()] = (
+                    graph_entity_resolution_counts.get(actual_graph_reason_code.lower(), 0) + 1
+                )
             expected_relevance = {
                 item.document_id: item.relevance for item in golden_case.relevant_documents
             }
@@ -442,6 +460,9 @@ class RagEvaluationRunner:
                     "forbiddenHitDocumentIds": forbidden_hits,
                     "retrievedDocumentIds": retrieved_document_ids,
                     "rerankerInputDocumentIds": reranker_input_document_ids,
+                    "rerankedDocumentIds": reranked_document_ids,
+                    "gatedDocumentIds": gated_document_ids,
+                    "vectorStageMetrics": _safe_vector_stage_metrics(result),
                     "scopeLeakageDocumentIds": scope_leakage_ids,
                     "rerankerInputScopeLeakageDocumentIds": reranker_scope_leakage_ids,
                     "evidenceRecords": evidence_records,
@@ -491,9 +512,18 @@ class RagEvaluationRunner:
                 _safe_ratio(graph_path_pass_count, graph_path_expected_count, empty_value=1.0),
                 6,
             ),
+            "graphEntityResolutionExactCount": graph_entity_resolution_counts.get("exact", 0),
+            "graphEntityResolutionSemanticCount": graph_entity_resolution_counts.get("semantic", 0),
+            "graphAmbiguousAliasCount": graph_entity_resolution_counts.get("ambiguous_alias", 0),
+            "graphAliasNotFoundCount": graph_entity_resolution_counts.get("alias_not_found", 0),
             "latencyP50Ms": _percentile(latencies, 0.50),
             "latencyP95Ms": _percentile(latencies, 0.95),
         }
+        # 阶段指标按用例求均值，帮助评测直接回答“向量候选是在 Provider 窗口还是证据门禁丢失”。
+        # 这些是诊断指标，不参与旧黄金集质量门禁，避免新增观测字段改变历史验收结论。
+        for metric_name, values in sorted(vector_stage_values.items()):
+            if values:
+                metrics[f"{metric_name}Mean"] = round(sum(values) / len(values), 6)
         answerable_case_count = sum(1 for item in self._dataset.cases if not item.should_refuse)
         refusal_case_count = len(self._dataset.cases) - answerable_case_count
         failures = _quality_gate_failures(
@@ -937,12 +967,17 @@ def _stage_document_ids(
 ) -> tuple[str, ...]:
     """提取内部阶段快照的文档 ID，不复制标题、片段、查询或模型正文。
 
-    评测器只允许读取 ``retrieved_chunks`` 和 ``reranker_input_chunks`` 两个固定字段，避免调用方用任意
+    评测器只允许读取固定的内部阶段字段，避免调用方用任意
     属性名扩大低敏报告范围。未知对象或非法条目按空集合处理，实际越权候选则会通过稳定文档 ID 进入
     scope/forbidden 指标。
     """
 
-    if result is None or field_name not in {"retrieved_chunks", "reranker_input_chunks"}:
+    if result is None or field_name not in {
+        "retrieved_chunks",
+        "reranker_input_chunks",
+        "reranked_chunks",
+        "gated_chunks",
+    }:
         return ()
     raw_chunks = getattr(result, field_name, ())
     if not isinstance(raw_chunks, (list, tuple)):
@@ -952,6 +987,26 @@ def _stage_document_ids(
         for item in raw_chunks
         if isinstance(item, RagScoredChunk) and str(item.chunk.document_id).strip()
     )
+
+
+def _safe_vector_stage_metrics(result: RagPipelineResult | None) -> dict[str, int | float]:
+    """读取管线生成的低敏向量存活指标，评测报告不复制候选正文。"""
+
+    if result is None:
+        return {}
+    raw_summary = result.retrieval_summary.get("vectorStageMetrics")
+    if not isinstance(raw_summary, Mapping):
+        return {}
+    safe: dict[str, int | float] = {}
+    for key, value in raw_summary.items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        safe[key[:96]] = value
+    return safe
 
 
 def _runtime_retrieval_mode(value: str) -> str:

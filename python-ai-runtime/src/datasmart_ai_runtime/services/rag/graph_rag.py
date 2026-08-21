@@ -146,6 +146,29 @@ def _normalize_alias(value: Any) -> str:
     return normalized.strip("\u3002，,：:；;！？?!、\"'“”‘’()（）[]【】")
 
 
+def _semantic_alias_score(subject: str, aliases: Sequence[str]) -> float:
+    """计算受控实体候选的 token 重叠分。
+
+    GraphRAG 的实体解析不能像普通文本 RAG 那样把任意近邻当作答案。该函数只为“订单同步任务”
+    与“同步订单任务”这类稳定词集合重排候选；单 token 查询不做语义猜测，中文字符和 ASCII
+    标识符分别拆成可审计的最小 token，分数使用交并比，避免长别名仅靠一个公共词获得高分。
+    """
+
+    subject_tokens = set(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]", _normalize_alias(subject)))
+    if len(subject_tokens) < 2:
+        return 0.0
+    best = 0.0
+    for alias in aliases:
+        alias_tokens = set(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]", _normalize_alias(alias)))
+        if len(alias_tokens) < 2:
+            continue
+        overlap = len(subject_tokens & alias_tokens)
+        union = len(subject_tokens | alias_tokens)
+        if overlap and union:
+            best = max(best, overlap / union)
+    return best
+
+
 def _normalize_relation(value: Any) -> str:
     """把关系枚举、英文名称和中文关系词统一成标准关系 ID。"""
 
@@ -986,6 +1009,9 @@ class GraphRagResult:
     requested_hops: int | None = None
     relation: str | None = None
     conflicting_target_ids: tuple[str, ...] = ()
+    # 只记录起点实体是通过精确别名还是受控语义候选解析得到的，便于 GraphRAG 评测区分实体解析
+    # 命中率和关系遍历命中率。该字段不改变答案内容，也不允许模糊候选绕过拒答边界。
+    entity_resolution: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in {item.value for item in GraphRagResultStatus}:
@@ -1036,6 +1062,7 @@ class GraphRagResult:
             "hop_count": self.hop_count,
             "relation": self.relation,
             "conflicting_target_ids": self.conflicting_target_ids,
+            "entity_resolution": self.entity_resolution,
             "path": tuple(step.to_dict() for step in self.path),
         }
 
@@ -1231,6 +1258,16 @@ class InMemoryGraphRag:
                 relation=parsed.relation,
             )
 
+        normalized_subject = _normalize_alias(query.start_entity or parsed.subject)
+        entity_resolution = (
+            "exact"
+            if any(
+                _normalize_alias(alias) == normalized_subject
+                for alias in start_entity.aliases_for_lookup()
+            )
+            else "semantic"
+        )
+
         entity_by_id = {entity.standard_id: entity for entity in visible_entities}
         adjacency = self._build_adjacency(visible_edges)
         current = start_entity
@@ -1320,6 +1357,7 @@ class InMemoryGraphRag:
             message="已根据当前有效关系和完整来源路径回答。",
             requested_hops=parsed.hops,
             relation=parsed.relation,
+            entity_resolution=entity_resolution,
         )
 
     def retrieve(self, query: GraphRagQuery) -> GraphRagResult:
@@ -1427,11 +1465,30 @@ class InMemoryGraphRag:
         for entity in visible_entities:
             if any(_normalize_alias(alias) == normalized_subject for alias in entity.aliases_for_lookup()):
                 candidates[entity.standard_id] = entity
-        if not candidates:
+        if candidates:
+            if len(candidates) > 1:
+                return None, GraphRagReasonCode.AMBIGUOUS_ALIAS
+            return next(iter(candidates.values())), None
+
+        # 精确别名没有命中时，只允许在已经完成范围过滤的实体快照中做一轮严格的 token overlap。
+        # 这是对自然语言简称、词序变化和下划线/中文混写的受控补救，不是“最相似就猜一个”：
+        # 起点至少要有两个稳定 token，最高分必须达到 0.75，且与第二名保持 0.10 的间隔；否则
+        # 返回 ALIAS_NOT_FOUND 或 AMBIGUOUS_ALIAS，让上层拒答而不是凭模糊实体继续遍历关系。
+        semantic_matches = sorted(
+            (
+                (_semantic_alias_score(normalized_subject, entity.aliases_for_lookup()), entity)
+                for entity in visible_entities
+            ),
+            key=lambda item: (item[0], item[1].standard_id),
+            reverse=True,
+        )
+        semantic_matches = [item for item in semantic_matches if item[0] >= 0.75]
+        if not semantic_matches:
             return None, GraphRagReasonCode.ALIAS_NOT_FOUND
-        if len(candidates) > 1:
+        best_score, best_entity = semantic_matches[0]
+        if len(semantic_matches) > 1 and best_score - semantic_matches[1][0] < 0.10:
             return None, GraphRagReasonCode.AMBIGUOUS_ALIAS
-        return next(iter(candidates.values())), None
+        return best_entity, None
 
     @staticmethod
     def _result(
