@@ -336,7 +336,7 @@ def _build_pipeline(
                 ),
                 retrieval_prior_weight=_float_environment(
                     "DATASMART_RAG_RERANK_RETRIEVAL_PRIOR_WEIGHT",
-                    0.0,
+                    0.2,
                 ),
                 approved_sensitivity_levels=evaluation_approved_levels,
                 synthetic_only_evaluation=True,
