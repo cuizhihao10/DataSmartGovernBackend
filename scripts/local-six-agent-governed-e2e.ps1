@@ -2211,7 +2211,13 @@ function Assert-AutopilotFailedObjectRetry {
         Add-Check -Name 'Autopilot failed-object retry' -Status 'PASS' -Detail '公开消费者结果证明失败对象重试已排队。'
         return $true
     }
-    if ($CaseState -in @('RECOVERY_STARTED', 'RECOVERED')) {
+    if ($CaseState -eq 'RECOVERED') {
+        # recovery case 的 RECOVERED 更新与 trigger outbox 的 consumerResult 更新可能不在同一
+        # 数据库事务中提交。公开 GET 若先看到 RECOVERED、后看到 RECOVERY_STARTED 回执，
+        # 只能视为尚未补齐的中间快照；轮询器会继续等待，不能把最终证据门禁放宽。
+        return $null
+    }
+    if ($CaseState -eq 'RECOVERY_STARTED') {
         Stop-E2E -Name 'Autopilot failed-object retry' -Detail "公开消费者结果不能证明失败对象已重试排队：status=$status、reason=$reasonCode。"
     }
     return $false
@@ -2344,9 +2350,44 @@ function Assert-AutopilotRecoverySnapshot {
         Stop-E2E -Name 'Autopilot recovery 状态' -Detail "首次 AUTOPILOT 授权后的恢复进入非自动终点=$caseState；本 E2E 只接受 RECOVERED 或有界 ATTENTION_REQUIRED。"
     }
 
+    # RECOVERY_STARTED 是异步 consumer 已接单、模型结果尚未物化的中间状态。
+    # 不能因为这一瞬间尚未有 retrievalStrategy/evidenceCount 就把真实恢复判成失败；
+    # 终态 RECOVERED/ATTENTION_REQUIRED 仍必须经过 Assert-AutopilotModelEvidence，确保
+    # 最终证据包含模型 SEARCH/SKIP 和对应的 RAG 摘要计数。这样轮询器只等待缺失的
+    # 中间事实，而不会放宽最终自治决策门禁。
+    $retrievalStrategyValue = Get-FieldValue -Object $Snapshot -Names @('retrievalStrategy')
+    $retrievalEvidenceCountValue = Get-FieldValue -Object $Snapshot -Names @('retrievalEvidenceCount')
+    $hasRetrievalProjection = (-not [string]::IsNullOrWhiteSpace([string]$retrievalStrategyValue)) -and
+        ($null -ne $retrievalEvidenceCountValue)
+    if (-not $hasRetrievalProjection -and $caseState -in @('RECOVERY_STARTED', 'AUTO_APPROVED', 'RECOVERED', 'ATTENTION_REQUIRED')) {
+        return [pscustomobject]@{
+            HasCase = $true
+            State = $caseState
+            Cycle = $cycle
+            MaxCycles = $caseMaxCycles
+            # case 状态和 outbox consumer projection 由两个受控写入点产生；在事务提交边界
+            # 短暂交错时，RECOVERED 可能先可读而 retrieval 字段尚未可读。把它视为“待补齐
+            # 公开证据”的中间快照，轮询器会继续读取；只有拿到 retrieval projection 后，
+            # 才允许最终 RECOVERED/ATTENTION_REQUIRED 通过模型证据断言。
+            IsTerminal = $false
+        }
+    }
     $decision = Assert-AutopilotModelEvidence -Snapshot $Snapshot
     $quarantineApplied = if ($caseState -eq 'ATTENTION_REQUIRED') { $false } else { Assert-AutopilotPreviewAndQuarantineReceipts -Snapshot $Snapshot }
     $retryQueued = if ($caseState -eq 'ATTENTION_REQUIRED') { $false } else { Assert-AutopilotFailedObjectRetry -Snapshot $Snapshot -CaseState $caseState }
+    if ($caseState -eq 'RECOVERED' -and $null -eq $retryQueued) {
+        return [pscustomobject]@{
+            HasCase = $true
+            State = $caseState
+            Cycle = $cycle
+            MaxCycles = $caseMaxCycles
+            RetrievalDecision = $decision
+            QuarantineApplied = $quarantineApplied
+            RetryQueued = $false
+            WorkerTerminal = $false
+            IsTerminal = $false
+        }
+    }
     $workerTerminal = if ($caseState -eq 'ATTENTION_REQUIRED') { $false } else { Assert-AutopilotWorkerTerminal -Snapshot $Snapshot -CaseState $caseState }
     return [pscustomobject]@{
         HasCase = $true
@@ -2388,6 +2429,13 @@ function Wait-AutopilotRecoveryResult {
         $summary = Assert-AutopilotRecoverySnapshot -Snapshot $snapshot -AuthorizationSnapshot $AuthorizationSnapshot
         $lastSummary = $summary
         if (-not $summary.HasCase -and -not $summary.IsTerminal) {
+            Start-Sleep -Seconds 2
+            continue
+        }
+        # case 状态先提交、consumerResult 后提交时，Assert-AutopilotRecoverySnapshot 会返回
+        # 同名但 IsTerminal=false 的“待补齐”快照。不能在这里把 RECOVERED 提前当成终态，
+        # 否则会在 retry receipt 尚未可读的几秒窗口内误报失败。
+        if ($summary.State -in @('RECOVERED', 'ATTENTION_REQUIRED') -and -not $summary.IsTerminal) {
             Start-Sleep -Seconds 2
             continue
         }

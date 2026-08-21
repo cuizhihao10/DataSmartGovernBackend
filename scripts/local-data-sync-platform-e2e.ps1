@@ -923,6 +923,54 @@ function Get-PageRecords {
     return @($PageData.records)
 }
 
+function ConvertFrom-JsonTextSafely {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$JsonText,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    <#
+        Windows PowerShell 5.1 在管道中处理大体积、非 ASCII 的 JSON 时，可能把多行
+        字符串拆成多个 pipeline item，进而把合法事实包误报为“':' or '}' expected”。
+        图事实包虽然是低敏数据，但包含实体/关系数组，必须按完整 UTF-8 文本一次性解析；
+        这里显式使用 ConvertFrom-Json -InputObject，避免管道枚举造成偶发解析失败。
+    #>
+    if ([string]::IsNullOrWhiteSpace($JsonText)) {
+        Fail-Step -Name $Name -Detail "JSON 文本为空，拒绝继续"
+    }
+    try {
+        return ConvertFrom-Json -InputObject $JsonText -ErrorAction Stop
+    } catch {
+        Fail-Step -Name $Name -Detail "JSON 摘要解析失败；响应正文未打印，请检查对应 traceId 和临时文件"
+    }
+}
+
+function Read-JsonFileSafely {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    <#
+        事实包由 Python 以 UTF-8 写入，PowerShell 读取时不能依赖系统默认代码页。
+        通过 .NET 显式指定 UTF-8，并按完整字符串交给 ConvertFrom-Json，保证中文标题、
+        sourceUri 和关系数组不会在 Windows PowerShell 的管道转换中被截断或重新编码。
+    #>
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Fail-Step -Name $Name -Detail "JSON 文件不存在"
+    }
+    try {
+        $jsonText = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    } catch {
+        Fail-Step -Name $Name -Detail "JSON 文件读取失败"
+    }
+    return ConvertFrom-JsonTextSafely -JsonText $jsonText -Name $Name
+}
+
 function Invoke-AgentGraphRecoveryE2E {
     param(
         [object]$ApiRoots,
@@ -1134,12 +1182,12 @@ function Invoke-AgentGraphRecoveryE2E {
     if ([string]::IsNullOrWhiteSpace($buildSummary)) {
         Fail-Step -Name "业务图谱 MinIO 上传" -Detail "GraphRAG 构建器没有返回 MinIO 上传摘要，拒绝把本地临时文件当成生产事实包"
     }
-    try { $buildInfo = $buildSummary | ConvertFrom-Json } catch { Fail-Step -Name "业务图谱 MinIO 上传" -Detail "GraphRAG 构建器上传摘要不是合法 JSON" }
+    $buildInfo = ConvertFrom-JsonTextSafely -JsonText ([string]$buildSummary) -Name "业务图谱 MinIO 上传摘要"
     $factBundleUri = [string]$buildInfo.factBundleUri
     if ($factBundleUri -notmatch ('^s3://' + [regex]::Escape($MinioBucket) + '/')) {
         Fail-Step -Name "业务图谱 MinIO URI" -Detail "事实包 URI 不是当前固定 bucket 的 s3:// 地址"
     }
-    $graphFacts = Get-Content -LiteralPath $graphOutput -Raw | ConvertFrom-Json
+    $graphFacts = Read-JsonFileSafely -Path $graphOutput -Name "业务图谱事实包 JSON"
     $graphDocument = @($graphFacts.documents) | Select-Object -First 1
     if ([string]$graphFacts.schemaVersion -ne "datasmart.graph-facts.v1" -or [string]$graphDocument.applicationId -ne [string]$ApplicationId) {
         Fail-Step -Name "业务图谱 applicationId 范围" -Detail "事实包 schema 或 applicationId 范围不符合当前任务上下文"
@@ -1378,6 +1426,7 @@ function Invoke-GovernedAutopilotRecoveryE2E {
     if ([string]::IsNullOrWhiteSpace($previousPassword)) {
         $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD = $UserAccountPassword
     }
+    $autopilotOutputPath = Join-Path ([System.IO.Path]::GetTempPath()) ("datasmart-autopilot-" + $script:RunId + ".log")
     try {
         $requestId = "platform-autopilot-$script:RunId"
         $objective = "使用当前项目已授权的数据源，把 MySQL 表 $SourceTable 全量同步到 PostgreSQL $TargetSchema.$TargetTable。"
@@ -1385,6 +1434,9 @@ function Invoke-GovernedAutopilotRecoveryE2E {
         $objective += "由 Java 执行可逆隔离或其它低风险修复并重跑，最后完成 PRECHECK、MONITOR 和执行验证。"
         # 恢复后的 execution 可能只重跑失败对象，不能把本轮 read/write 计数误当成目标表总行数。
         # 子脚本仍要求正数读写和 failedRecordCount=0，最终 14 行总量由本脚本直接查询目标表验证。
+        # MySQL 的 database 是 catalog，不需要传空 SourceSchemaName。Windows PowerShell
+        # 在嵌套 -File 调用中可能丢弃显式空字符串，进而把下一个 token 误绑定为
+        # SourceSchemaName 的值并报 MissingArgument；省略该可选参数由子脚本默认值表达。
         $autopilotRun = Invoke-NativeCommandSafely -Name "六 Agent 受治理 Autopilot E2E" -Command {
             & powershell -NoProfile -ExecutionPolicy Bypass -File $autopilotScript `
                 -Execute `
@@ -1402,7 +1454,6 @@ function Invoke-GovernedAutopilotRecoveryE2E {
                 -TargetDatasourceId ([string]$TargetDatasourceId) `
                 -SourceConnectorType "MYSQL" `
                 -TargetConnectorType "POSTGRESQL" `
-                -SourceSchemaName "" `
                 -SourceObjectName $SourceTable `
                 -TargetSchemaName $TargetSchema `
                 -TargetObjectName $TargetTable `
@@ -1417,8 +1468,25 @@ function Invoke-GovernedAutopilotRecoveryE2E {
     } finally {
         $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD = $previousPassword
     }
+    # 子脚本自己遵守低敏输出约束，但此前平台脚本完全丢弃了它的诊断，导致只剩一个
+    # “未收敛”的笼统结论。把已经生成的低敏行保存到临时文件，并只提取 FAIL/WARN/终态
+    # 摘要用于本轮验收；不把完整子流程输出写入仓库，也不把 token、密码或响应正文带入日志。
+    try {
+        $autopilotLines = @($autopilotRun.Output | ForEach-Object { [string]$_ })
+        [System.IO.File]::WriteAllLines($autopilotOutputPath, $autopilotLines, [System.Text.Encoding]::UTF8)
+    } catch {
+        $autopilotLines = @()
+    }
     if ($autopilotRun.ExitCode -ne 0) {
-        Fail-Step -Name "六 Agent 受治理 Autopilot E2E" -Detail "Autopilot 未在有界时间内收敛；子脚本正文不在平台摘要中重复输出"
+        $autopilotDiagnostics = @($autopilotLines |
+            Where-Object { $_ -match '\[(FAIL|WARN)\]|stopped|未收敛|异常|exception|error' } |
+            Select-Object -Last 6)
+        $diagnosticText = if ($autopilotDiagnostics.Count -gt 0) {
+            ($autopilotDiagnostics -join ' | ')
+        } else {
+            "未找到低敏失败摘要；子脚本输出已保存到临时诊断文件"
+        }
+        Fail-Step -Name "六 Agent 受治理 Autopilot E2E" -Detail ("Autopilot 未在有界时间内收敛，exitCode={0}；{1}" -f $autopilotRun.ExitCode, $diagnosticText)
     }
     Add-Check -Name "六 Agent 受治理 Autopilot E2E" -Status "PASS" -Detail "模型检索决策、Java 修复回执、重跑、PRECHECK/MONITOR 和最终 execution 验证均已通过"
     Assert-GovernedAutopilotTargetResult
@@ -2535,6 +2603,14 @@ try {
     Main
 } catch {
     if ($Strict) {
+        # Strict 模式之前只返回退出码，导致 CI/本地验收只能看到“失败”而不知道停在
+        # 图谱摘要解析、审批登记还是 receipt 等哪一个门禁。这里仅输出异常的低敏消息和
+        # 已完成检查摘要；调用方仍然看不到 token、SQL、完整响应正文或业务样本。
+        Write-Host ""
+        Write-Host ("Platform API E2E stopped in strict mode: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        if ($script:Checks.Count -gt 0) {
+            $script:Checks | Format-Table -AutoSize
+        }
         exit 1
     }
     Write-Host ""
