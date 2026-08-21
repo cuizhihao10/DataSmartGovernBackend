@@ -76,6 +76,22 @@ class GraphFactApprovalServiceImplTest {
         verify(approvalFactService, never()).register(any());
     }
 
+    /** 非对象存储 URI 必须在 approval fact 与 outbox 写入之前失败关闭。 */
+    @Test
+    void factBundleUriMustRejectHttpSchemeBeforeRegisteringApproval() {
+        AgentToolActionApprovalFactService approvalFactService = mock(AgentToolActionApprovalFactService.class);
+        GraphFactApprovalEventPublisher eventPublisher = mock(GraphFactApprovalEventPublisher.class);
+        GraphFactApprovalServiceImpl service = new GraphFactApprovalServiceImpl(approvalFactService, eventPublisher);
+        GraphFactApprovalRegisterRequest request = request("APPROVED");
+        request.setFactBundleUri("https://object-store.example/facts/business-sync-001.json");
+
+        assertThatThrownBy(() -> service.register(request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("s3://");
+        verify(approvalFactService, never()).register(any());
+        verify(eventPublisher, never()).publish(any());
+    }
+
     private static GraphFactApprovalRegisterRequest request(String status) {
         GraphFactApprovalRegisterRequest request = new GraphFactApprovalRegisterRequest();
         request.setApprovalFactId("approval-1");

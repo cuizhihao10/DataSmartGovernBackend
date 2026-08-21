@@ -10,7 +10,9 @@ ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm
 
 FROM ${PYTHON_IMAGE} AS builder
 
-ARG PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis,postgresql,mcp
+# 默认镜像包含对象存储 SDK；这样 Helm/外部镜像构建即使没有显式复写 extras，
+# 图事实 worker 也能按 s3://合同读取 MinIO，而不会等到 Kafka 消费时才暴露缺依赖。
+ARG PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis,postgresql,object-store,mcp
 # Python 包下载与 Docker 基础镜像是两条链路：基础镜像走 DaoCloud，pip 默认走可覆盖的国内 PyPI 镜像。
 # 企业环境可以在 Compose/build pipeline 中把该参数替换为内网制品库，不需要修改 Dockerfile。
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple

@@ -49,7 +49,13 @@ public class GraphFactApprovalController {
     @PostMapping("/evaluate")
     public PlatformApiResponse<AgentToolActionApprovalFactEvaluationView> evaluate(
             @RequestBody GraphFactApprovalEvaluateRequest request,
+            @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService,
+            @RequestHeader(value = PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, required = false) String internalToken,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        // 摄取 worker 的 evaluate 回查同样属于内部控制面，不应允许普通浏览器伪造审批事实绑定。
+        // 登记接口负责“谁能写入”，这里负责“谁能读取用于执行前授权”；两边都要求来源服务和共享令牌，
+        // 才能保证 Kafka 消息不能被外部客户端直接变成 Neo4j 写权限。
+        trustedRegistrationGuard.requireTrusted(sourceService, internalToken);
         return PlatformApiResponse.success("图事实审批评估完成",
                 graphFactApprovalService.evaluate(request), traceId);
     }

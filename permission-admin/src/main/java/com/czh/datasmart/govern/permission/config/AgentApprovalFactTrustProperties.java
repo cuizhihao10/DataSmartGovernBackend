@@ -33,7 +33,7 @@ public class AgentApprovalFactTrustProperties {
      * <p>服务名不区分大小写，但仍需同时匹配共享凭据，单独伪造来源 Header 不会获得权限。</p>
      */
     private Set<String> allowedSourceServices = new LinkedHashSet<>(
-            Set.of("agent-runtime", "approval-service", "permission-admin"));
+            Set.of("agent-runtime", "approval-service", "permission-admin", "python-ai-runtime"));
 
     /**
      * 可以作出最终审批决定的受信服务白名单。

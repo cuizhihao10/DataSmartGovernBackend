@@ -10,7 +10,7 @@ Kafka、HTTP internal worker 或本地回放脚本都可以复用 ``GraphFactApp
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from datasmart_ai_runtime.services.rag.graph_ingestion import ControlledGraphRagIngestor
@@ -49,6 +49,13 @@ class GraphFactApprovalEvent:
     tenant_id: str
     application_id: str
     project_id: str
+    user_id: str
+    actor_id: str
+    agent_id: str
+    session_id: str
+    run_id: str
+    delegation_id: str
+    command_id: str
     entity_count: int
     edge_count: int
     policy_version: str | None = None
@@ -71,6 +78,13 @@ class GraphFactApprovalEvent:
             tenant_id=_required(value, "tenantId", "tenant_id"),
             application_id=_required(value, "applicationId", "application_id"),
             project_id=_required(value, "projectId", "project_id"),
+            user_id=_required(value, "userId", "user_id"),
+            actor_id=_required(value, "actorId", "actor_id"),
+            agent_id=_required(value, "agentId", "agent_id"),
+            session_id=_required(value, "sessionId", "session_id"),
+            run_id=_required(value, "runId", "run_id"),
+            delegation_id=_required(value, "delegationId", "delegation_id"),
+            command_id=_required(value, "commandId", "command_id"),
             entity_count=_non_negative_int(value.get("entityCount", value.get("entity_count"))),
             edge_count=_non_negative_int(value.get("edgeCount", value.get("edge_count"))),
             policy_version=_optional(value, "policyVersion", "policy_version"),
@@ -89,6 +103,13 @@ class GraphFactApprovalEvent:
             "tenantId": self.tenant_id,
             "applicationId": self.application_id,
             "projectId": self.project_id,
+            "userId": self.user_id,
+            "actorId": self.actor_id,
+            "agentId": self.agent_id,
+            "sessionId": self.session_id,
+            "runId": self.run_id,
+            "delegationId": self.delegation_id,
+            "commandId": self.command_id,
             "entityCount": self.entity_count,
             "edgeCount": self.edge_count,
             "policyVersion": self.policy_version,
@@ -160,8 +181,13 @@ class GraphFactApprovalConsumer:
             ):
                 raise GraphFactApprovalConsumerError("事实包范围与审批事件范围不一致。")
 
+        # MinIO 中保存的是审批前不可变的 PROPOSED 事实包。Kafka payload 中即使出现 APPROVED 也不能
+        # 被直接信任；只有上面的服务端 evaluate 返回 approved=true 后，consumer 才在进程内复制文档，
+        # 覆盖授权元数据并绑定权威 approvalFactId。审批字段不参与事实指纹，因此这一步不会把审批后
+        # 的内容替换伪装成原候选，同时也避免为了改一个状态而覆盖对象存储中的原始审计证据。
+        authorized_documents = tuple(_bind_authoritative_approval(document, parsed.approval_fact_id) for document in documents)
         result = self._ingestor.ingest(
-            documents,
+            authorized_documents,
             provider,
             expected_fingerprint=parsed.fact_fingerprint,
             authoritative_approval_fact_id=parsed.approval_fact_id,
@@ -176,6 +202,22 @@ class GraphFactApprovalConsumer:
             entity_count=result.entity_count,
             edge_count=result.edge_count,
         )
+
+
+def _bind_authoritative_approval(document: RagDocument, approval_fact_id: str) -> RagDocument:
+    """把服务端已通过的审批事实绑定到一份不可变来源文档副本。"""
+
+    return replace(
+        document,
+        metadata={
+            **dict(document.metadata),
+            "graphIngestionApproval": {
+                "status": "APPROVED",
+                "approvalId": approval_fact_id,
+                "authority": "permission-admin-evaluate",
+            },
+        },
+    )
 
 
 def _required(value: Mapping[str, Any], *keys: str) -> str:

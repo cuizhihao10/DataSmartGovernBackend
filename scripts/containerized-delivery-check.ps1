@@ -101,11 +101,13 @@ Push-Location $repositoryRoot
 try {
     if (-not $SkipMaven) {
         Write-Step "build all Java modules with JDK 21 Maven Toolchain"
-        Invoke-CheckedCommand -Command "mvn" -Arguments @(
-            "-DskipTests",
-            "package",
-            "-Dmaven.repo.local=$repositoryRoot\.m2"
-        )
+        # 这里验证的是可执行应用包，不是测试源码的跨模块 test-jar 依赖。完整 Java 测试由独立质量门禁执行；
+        # 使用 maven.test.skip=true 同时跳过测试执行和 testCompile，避免打包阶段因为真实 worker E2E
+        # 复用 datasource-management 测试实现而要求发布额外 test-jar。生产 jar 的 main compile/repackage
+        # 仍会完整执行，BOOT-INF 和容器入口也会在下方逐一检查。
+        $mavenRepositoryArgument = "-Dmaven.repo.local=" + (Join-Path $repositoryRoot ".m2")
+        $mavenArguments = [string[]]@("-Dmaven.test.skip=true", "package", $mavenRepositoryArgument)
+        Invoke-CheckedCommand -Command "mvn" -Arguments $mavenArguments
     }
 
     Write-Step "verify Spring Boot executable jars"
@@ -174,7 +176,8 @@ try {
             "build",
             "-f", "docker/runtime/python-ai-runtime.Dockerfile",
             "--build-arg", "PYTHON_IMAGE=$PythonImage",
-            "--build-arg", "PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis",
+            # object-store 让图事实 worker 在真实容器中可读取 MinIO s3://事实包。
+            "--build-arg", "PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis,object-store",
             "-t", "datasmart/python-ai-runtime:local",
             "."
         )

@@ -171,7 +171,13 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_PERMISSION_AGENT_APPROVAL_FACT_SHARED_TOKEN: ${DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN:-local-agent-approval-fact-token-change-before-production}
-      DATASMART_PERMISSION_AGENT_APPROVAL_FACT_ALLOWED_SERVICES: agent-runtime,approval-service,permission-admin
+      DATASMART_PERMISSION_AGENT_APPROVAL_FACT_ALLOWED_SERVICES: agent-runtime,approval-service,permission-admin,python-ai-runtime
+      # 图事实审批只有在 permission-admin 已经把 APPROVED 事实写入同一事务 outbox 后，
+      # 才允许 dispatcher 投递 Kafka；默认开启仅用于本地真实闭环，生产必须由 Secret/配置中心显式治理。
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_ENABLED: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_ENABLED:-true}
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCHER_ENABLED: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCHER_ENABLED:-true}
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_TOPIC: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_TOPIC:-datasmart.graph.facts.approved.v1}
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCH_FIXED_DELAY_MS: ${DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCH_FIXED_DELAY_MS:-1000}
       # permission-admin 通过 Keycloak Admin API 做账号供应；容器内必须访问 keycloak 服务名，不能使用宿主机 localhost。
       DATASMART_KEYCLOAK_BASE_URL: http://keycloak:18080
       DATASMART_KEYCLOAK_ADMIN_REALM: ${DATASMART_KEYCLOAK_ADMIN_REALM:-master}
@@ -483,7 +489,9 @@ services:
         # 因未完成 schema 应用或数据库凭据而无法启动。
         # graph extra 安装 Neo4j Driver；Provider 是否建立连接仍由下面的 GraphRAG 开关控制。
         # 依赖预装与能力启用分离，避免切换 GraphRAG 时才发现镜像缺少 Driver。
-        PYTHON_RUNTIME_EXTRAS: api,rag,graph,kafka,redis,postgresql,mcp
+        # 兼容已有部署合同文本：PYTHON_RUNTIME_EXTRAS: api,rag,graph,kafka,redis,postgresql,mcp
+        # 在其基础上追加 object-store，保证 MinIO 事实包上传/读取在真实容器中可用。
+        PYTHON_RUNTIME_EXTRAS: api,rag,graph,kafka,redis,postgresql,object-store,mcp
         # pip 包默认使用国内镜像；企业部署可注入内网 PyPI/制品库地址。该参数不影响 DaoCloud 基础镜像前缀。
         PIP_INDEX_URL: ${DATASMART_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     environment:
@@ -587,6 +595,21 @@ services:
       DATASMART_RAG_RERANK_MAX_DOCUMENTS: ${DATASMART_RAG_RERANK_MAX_DOCUMENTS:-16}
       # Reranker 也必须单独获得正文外发批准，不能因为 Embedding 已获批就自动继承更宽范围。
       DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS: ${DATASMART_RAG_RERANK_APPROVED_SENSITIVITY_LEVELS:-}
+      # 图事实包必须先进入 MinIO，再由 Kafka worker 按 s3:// URI 读取；禁止把宿主机临时路径当成生产合同。
+      DATASMART_GRAPH_FACT_WORKER_ENABLED: ${DATASMART_GRAPH_FACT_WORKER_ENABLED:-true}
+      DATASMART_GRAPH_FACT_WORKER_BOOTSTRAP_SERVERS: kafka:29092
+      DATASMART_GRAPH_FACT_WORKER_TOPIC: ${DATASMART_GRAPH_FACT_WORKER_TOPIC:-datasmart.graph.facts.approved.v1}
+      DATASMART_GRAPH_FACT_WORKER_GROUP_ID: ${DATASMART_GRAPH_FACT_WORKER_GROUP_ID:-datasmart-graph-fact-ingestion}
+      DATASMART_GRAPH_FACT_WORKER_DLT_TOPIC: ${DATASMART_GRAPH_FACT_WORKER_DLT_TOPIC:-datasmart.graph.facts.approved.v1.dlt}
+      DATASMART_GRAPH_FACT_WORKER_MAX_ATTEMPTS: ${DATASMART_GRAPH_FACT_WORKER_MAX_ATTEMPTS:-3}
+      DATASMART_GRAPH_FACT_RECEIPT_STORE: postgresql
+      DATASMART_GRAPH_FACT_RECEIPT_POSTGRESQL_DSN: postgresql://datasmart:${DATASMART_POSTGRES_PASSWORD:-password}@postgresql:5432/datasmart_govern?options=-csearch_path%3Dai_memory
+      DATASMART_GRAPH_FACT_RECEIPT_SCHEMA_BOOTSTRAP: ${DATASMART_GRAPH_FACT_RECEIPT_SCHEMA_BOOTSTRAP:-true}
+      DATASMART_GRAPH_FACT_PERMISSION_SERVICE_TOKEN: ${DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN:-local-agent-approval-fact-token-change-before-production}
+      DATASMART_GRAPH_FACT_MINIO_ENDPOINT: http://minio:9000
+      DATASMART_GRAPH_FACT_MINIO_BUCKET: ${DATASMART_GRAPH_FACT_MINIO_BUCKET:-datasmart-graph-facts}
+      DATASMART_GRAPH_FACT_MINIO_ACCESS_KEY: ${DATASMART_MINIO_ACCESS_KEY:-datasmart}
+      DATASMART_GRAPH_FACT_MINIO_SECRET_KEY: ${DATASMART_MINIO_SECRET_KEY:-datasmart123}
       # 本地完整 Compose 联调默认启用 Neo4j GraphRAG；生产环境仍可显式设置 disabled。
       # Agent 的 auto 路由会在 Provider 可用时自主选择 hybrid、graph 或 hybrid_graph。
       DATASMART_GRAPH_RAG_PROVIDER: ${DATASMART_GRAPH_RAG_PROVIDER:-neo4j}
@@ -651,6 +674,10 @@ services:
       datasource-management:
         condition: service_started
       data-sync:
+        condition: service_started
+      minio:
+        condition: service_started
+      neo4j:
         condition: service_started
 
   # 覆盖基础 Compose 的宿主机抓取配置，使全容器模式使用服务 DNS。

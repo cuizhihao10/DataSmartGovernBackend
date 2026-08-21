@@ -32,6 +32,8 @@ class GraphApprovalConsumerTest(unittest.TestCase):
         self.snapshot = {
             "schemaVersion": "datasmart.business-graph-snapshot.v1",
             "snapshotId": "approval-snapshot-001",
+            "sourceStatus": "COMPLETE",
+            "metadataWarnings": [],
             "scope": {"tenantId": "tenant-10", "applicationId": "app-20", "projectId": "project-30"},
             "applications": [{"id": "app-20", "name": "FlashSync"}],
             "projects": [{"id": "project-30", "name": "项目", "applicationId": "app-20"}],
@@ -54,6 +56,13 @@ class GraphApprovalConsumerTest(unittest.TestCase):
             "tenantId": "tenant-10",
             "applicationId": "app-20",
             "projectId": "project-30",
+            "userId": "user-1",
+            "actorId": "actor-1",
+            "agentId": "graph-ingestion-agent",
+            "sessionId": "session-1",
+            "runId": "run-1",
+            "delegationId": "delegation-1",
+            "commandId": "graph-ingestion:approval-snapshot-001",
             "entityCount": self.built.entity_count,
             "edgeCount": self.built.edge_count,
         }
@@ -87,6 +96,38 @@ class GraphApprovalConsumerTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "指纹"):
             consumer.handle(event, _Writer())
+
+    def test_missing_dual_subject_binding_fails_before_evaluation(self) -> None:
+        """Kafka 事件缺少双主体/委托绑定时，不能调用 permission-admin 更不能写图。"""
+
+        event = self.event()
+        event.pop("delegationId")
+        called = False
+
+        def evaluator(current):
+            nonlocal called
+            called = True
+            return {"approved": True, "approvalFactId": "approval-1"}
+
+        consumer = GraphFactApprovalConsumer(
+            approval_evaluator=evaluator,
+            bundle_loader=lambda uri: (self.built.document,),
+        )
+        with self.assertRaisesRegex(GraphFactApprovalConsumerError, "delegationId"):
+            consumer.handle(event, _Writer())
+        self.assertFalse(called)
+
+    def test_proposed_bundle_is_authorized_only_after_server_evaluation(self) -> None:
+        """对象存储中的候选保持 PROPOSED，权威 evaluate 通过后才能在内存绑定审批并写图。"""
+
+        writer = _Writer()
+        consumer = GraphFactApprovalConsumer(
+            approval_evaluator=lambda event: {"approved": True, "approvalFactId": "approval-1"},
+            bundle_loader=lambda uri: (self.built.document,),
+        )
+        result = consumer.handle(self.event(), writer)
+        self.assertEqual("INGESTED", result.status)
+        self.assertEqual(self.built.entity_count, len(writer.entities))
 
 
 if __name__ == "__main__":

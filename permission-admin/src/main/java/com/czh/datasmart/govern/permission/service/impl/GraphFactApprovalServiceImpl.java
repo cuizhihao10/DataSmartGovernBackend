@@ -35,7 +35,7 @@ import java.util.regex.Pattern;
 public class GraphFactApprovalServiceImpl implements GraphFactApprovalService {
 
     private static final Pattern SHA256 = Pattern.compile("[0-9a-fA-F]{64}");
-    private static final Pattern URI = Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*://[^\\s]{1,512}");
+    private static final Pattern MINIO_URI = Pattern.compile("s3://[A-Za-z0-9][A-Za-z0-9.-]{1,62}/[^\\s?#]{1,480}");
 
     private final AgentToolActionApprovalFactService approvalFactService;
     private final GraphFactApprovalEventPublisher eventPublisher;
@@ -44,6 +44,13 @@ public class GraphFactApprovalServiceImpl implements GraphFactApprovalService {
     @Transactional
     public GraphFactApprovalRegisterResponse register(GraphFactApprovalRegisterRequest request) {
         validate(request);
+        // 图事实摄取没有浏览器侧 commandId 时，使用事实指纹生成稳定命令定位符。这里必须把
+        // 解析后的值回写到原请求，因为同一对象随后还会进入 outbox publisher；若只给通用
+        // approval fact DTO 赋默认值，Kafka 事件就会缺少 commandId，Python 回查时必然被
+        // permission-admin 判定为 SCOPE_MISMATCH。
+        if (request.getCommandId() == null || request.getCommandId().isBlank()) {
+            request.setCommandId("graph-ingestion:" + request.getFactFingerprint());
+        }
         AgentToolActionApprovalFactRegisterRequest factRequest = new AgentToolActionApprovalFactRegisterRequest();
         factRequest.setApprovalFactId(request.getApprovalFactId());
         factRequest.setTenantId(request.getTenantId());
@@ -55,8 +62,7 @@ public class GraphFactApprovalServiceImpl implements GraphFactApprovalService {
         factRequest.setSessionId(request.getSessionId());
         factRequest.setRunId(request.getRunId());
         factRequest.setDelegationId(request.getDelegationId());
-        factRequest.setCommandId(request.getCommandId() == null || request.getCommandId().isBlank()
-                ? "graph-ingestion:" + request.getFactFingerprint() : request.getCommandId());
+        factRequest.setCommandId(request.getCommandId());
         factRequest.setToolCode("graph.ingestion");
         factRequest.setPolicyVersion(request.getPolicyVersion());
         factRequest.setStatus(request.getStatus());
@@ -103,12 +109,18 @@ public class GraphFactApprovalServiceImpl implements GraphFactApprovalService {
         if (request.getFactFingerprint() == null || !SHA256.matcher(request.getFactFingerprint()).matches()) {
             throw new IllegalArgumentException("factFingerprint 必须是 64 位 SHA-256 十六进制摘要");
         }
-        if (request.getFactBundleUri() == null || !URI.matcher(request.getFactBundleUri()).matches()) {
-            throw new IllegalArgumentException("factBundleUri 必须是受控 URI");
+        // 当前异步 worker 只允许从部署时固定 bucket 的 MinIO/S3-compatible 对象读取事实包。
+        // permission-admin 必须在写 outbox 前先固定同一协议，不能先接受 file/http 等地址，等 Python
+        // consumer 再把一个注定失败的审批事件送进 DLT。
+        if (request.getFactBundleUri() == null) {
+            throw new IllegalArgumentException("factBundleUri 必须是无查询参数的 s3:// MinIO 对象 URI");
         }
         String lower = request.getFactBundleUri().toLowerCase(Locale.ROOT);
         if (lower.contains("password") || lower.contains("token") || lower.contains("select ")) {
             throw new IllegalArgumentException("factBundleUri 不能包含敏感凭据或 SQL 片段");
+        }
+        if (!MINIO_URI.matcher(request.getFactBundleUri()).matches()) {
+            throw new IllegalArgumentException("factBundleUri 必须是无查询参数的 s3:// MinIO 对象 URI");
         }
     }
 }

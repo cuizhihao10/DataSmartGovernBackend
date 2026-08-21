@@ -37,7 +37,13 @@ public class GraphFactApprovalEventPublisher {
     private final PermissionEventOutboxMapper eventOutboxMapper;
     private final ObjectMapper objectMapper;
 
-    /** 写入或幂等复用一条图事实审批事件。 */
+    /**
+     * 写入或幂等复用一条图事实审批事件。
+     *
+     * <p>事件 ID 绑定 approvalFactId 与事实指纹；双主体和运行定位字段则进入 payload，供 Python
+     * consumer 在写 Neo4j 前重新调用 permission-admin evaluate。这样 Kafka 消息只能作为“有一条
+     * 审批待消费”的通知，不能单独充当授权凭证。</p>
+     */
     public String publish(GraphFactApprovalRegisterRequest request) {
         String eventId = "graph-facts-approved:" + request.getApprovalFactId() + ":" + request.getFactFingerprint();
         PermissionEventOutbox existing = eventOutboxMapper.selectOne(new QueryWrapper<PermissionEventOutbox>()
@@ -74,6 +80,13 @@ public class GraphFactApprovalEventPublisher {
         payload.put("tenantId", request.getTenantId());
         payload.put("applicationId", request.getApplicationId());
         payload.put("projectId", request.getProjectId());
+        payload.put("userId", request.getUserId());
+        payload.put("actorId", request.getActorId());
+        payload.put("agentId", request.getAgentId());
+        payload.put("sessionId", request.getSessionId());
+        payload.put("runId", request.getRunId());
+        payload.put("delegationId", request.getDelegationId());
+        payload.put("commandId", request.getCommandId());
         payload.put("entityCount", request.getEntityCount());
         payload.put("edgeCount", request.getEdgeCount());
         payload.put("policyVersion", request.getPolicyVersion());

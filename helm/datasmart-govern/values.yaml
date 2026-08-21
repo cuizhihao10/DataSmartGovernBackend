@@ -45,6 +45,7 @@ secretContract:
     - ai-memory-postgresql-dsn
     - datasource-credential-master-key
     - model-api-key
+    - graph-fact-receipt-postgresql-dsn
 
 imagePullSecrets: []
 
@@ -139,7 +140,13 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=permission_admin&ApplicationName=datasmart-permission-admin
       SPRING_DATASOURCE_USERNAME: datasmart
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
-      DATASMART_PERMISSION_AGENT_APPROVAL_FACT_ALLOWED_SERVICES: agent-runtime,approval-service,permission-admin
+      DATASMART_PERMISSION_AGENT_APPROVAL_FACT_ALLOWED_SERVICES: agent-runtime,approval-service,permission-admin,python-ai-runtime
+      # APPROVED 图事实必须先写 permission-admin outbox，再由 dispatcher 投递 Kafka；生产可通过
+      # values 覆盖为 false 做分阶段上线，但不能绕过 Java 审批事实直接写 Neo4j。
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_ENABLED: "true"
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCHER_ENABLED: "true"
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_TOPIC: datasmart.graph.facts.approved.v1
+      DATASMART_PERMISSION_GRAPH_FACT_EVENTS_DISPATCH_FIXED_DELAY_MS: "1000"
     secretEnv:
       - name: SPRING_DATASOURCE_PASSWORD
         key: postgresql-password
@@ -395,6 +402,23 @@ services:
       DATASMART_LANGGRAPH_CHECKPOINT_FAIL_OPEN: "false"
       DATASMART_RAG_KNOWLEDGE_BASE: postgresql
       DATASMART_RAG_SCHEMA_CHECK_ON_STARTUP: "true"
+      # Python worker 只消费 permission-admin 已批准的 s3://事实包，receipt 落 PostgreSQL，
+      # 这样 Pod 重启和 Kafka 至少一次投递不会丢失 Neo4j 摄取状态。
+      DATASMART_GRAPH_FACT_WORKER_ENABLED: "true"
+      DATASMART_GRAPH_FACT_WORKER_BOOTSTRAP_SERVERS: kafka:9092
+      DATASMART_GRAPH_FACT_WORKER_TOPIC: datasmart.graph.facts.approved.v1
+      DATASMART_GRAPH_FACT_WORKER_GROUP_ID: datasmart-graph-fact-ingestion
+      DATASMART_GRAPH_FACT_WORKER_DLT_TOPIC: datasmart.graph.facts.approved.v1.dlt
+      DATASMART_GRAPH_FACT_WORKER_MAX_ATTEMPTS: "3"
+      DATASMART_GRAPH_FACT_RECEIPT_STORE: postgresql
+      DATASMART_GRAPH_FACT_RECEIPT_SCHEMA_BOOTSTRAP: "false"
+      DATASMART_GRAPH_FACT_MINIO_ENDPOINT: http://minio:9000
+      DATASMART_GRAPH_FACT_MINIO_BUCKET: datasmart-graph-facts
+      DATASMART_GRAPH_RAG_PROVIDER: neo4j
+      DATASMART_GRAPH_RAG_NEO4J_URI: bolt://neo4j:7687
+      DATASMART_GRAPH_RAG_NEO4J_USERNAME: neo4j
+      DATASMART_GRAPH_RAG_NEO4J_DATABASE: neo4j
+      DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA: "true"
       DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_ENABLED: "false"
       DATASMART_AGENT_REPOSITORY_ROOT_ALLOWLIST: /repositories/backend,/repositories/frontend
       DATASMART_AGENT_WORKSPACE_TEXT_SEARCH_MAX_QUERY_CHARS: "256"
@@ -425,6 +449,16 @@ services:
         key: ai-memory-postgresql-dsn
       - name: DATASMART_RAG_POSTGRESQL_DSN
         key: ai-memory-postgresql-dsn
+      - name: DATASMART_GRAPH_FACT_RECEIPT_POSTGRESQL_DSN
+        key: graph-fact-receipt-postgresql-dsn
+      - name: DATASMART_GRAPH_FACT_PERMISSION_SERVICE_TOKEN
+        key: agent-approval-fact-shared-token
+      - name: DATASMART_GRAPH_FACT_MINIO_ACCESS_KEY
+        key: minio-access-key
+      - name: DATASMART_GRAPH_FACT_MINIO_SECRET_KEY
+        key: minio-secret-key
+      - name: DATASMART_GRAPH_RAG_NEO4J_PASSWORD
+        key: neo4j-password
       - name: DATASMART_GATEWAY_SIGNATURE_SECRET
         key: gateway-signature-secret
       - name: DATASMART_AI_OPENAI_COMPATIBLE_API_KEY

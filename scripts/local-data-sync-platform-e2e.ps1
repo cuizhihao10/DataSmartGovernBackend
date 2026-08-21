@@ -23,10 +23,10 @@
     5. 创建任务并 run，触发 data-sync worker loop；
     6. worker 调用 datasource-management run-once，完成 MySQL -> PostgreSQL 真实写入；
     7. 故意让 id=11..15 因目标 CHECK 约束超过脏数据比例阈值，使对应分片失败；
-    8. 修复失败分片源数据后，只重试失败分片，不重跑已成功分片；
-    9. 故意让 id=7 因目标 NOT NULL 约束落为少量脏数据样本；
-    10. 修复 id=7 后，通过 PRIMARY_KEY_EQ dirty replay 只重放该坏行；
-    11. 最终断言 PostgreSQL 目标表包含 1..20 全量数据。
+    8. 读取真实诊断和日志，交给主 Agent 自主决定是否检索，并在选择 RAG 时由模型选择内部检索模式；
+    9. 将失败 execution 的真实恢复交给 Java Autopilot：预览/隔离、失败对象重排队、worker 重跑和持久回执；
+    10. 不在 PowerShell 中执行任何业务修复 SQL；脚本只注入故障并通过公开 API 验证最终事实；
+    11. 最终断言 PostgreSQL 目标表包含可同步的全量数据，且被治理隔离的脏样本不会被错误写入。
     12. 可选追加 -IncludeOfflineModeClosureE2E，继续验证 SCHEDULED_BATCH、CUSTOM_SQL_QUERY、SCHEMA_FULL
         三类离线模式的真实 API 创建、预检、审批确认、worker 执行和 PostgreSQL 行数断言。
     13. 可选追加 -IncludeTaskSchedulerWorkerLoopE2E，继续验证“任务级 scheduler 到期派发 execution，
@@ -46,8 +46,8 @@
     推荐用法：
     - 只查看计划，不启动容器、不写数据库、不调用 API：
       .\scripts\local-data-sync-platform-e2e.ps1 -PlanOnly
-    - 本地 Java 微服务已启动，直连微服务执行完整平台级 E2E：
-      .\scripts\local-data-sync-platform-e2e.ps1 -UseDirectServiceUrls
+    - 直连模式只适合排查数据源与同步控制面；当前完整 Autopilot 验收会 fail-closed，要求经过 Gateway：
+      .\scripts\local-data-sync-platform-e2e.ps1 -UseDirectServiceUrls -PlanOnly
     - 本地 gateway/Keycloak/permission-admin/Nacos/Java 服务全部启动后，通过 gateway 执行：
       .\scripts\local-data-sync-platform-e2e.ps1
     - 如果 Java 服务跑在 Docker 网络里：
@@ -70,7 +70,15 @@ param(
     [string]$DatasourceManagementBaseUrl = "http://localhost:8082",
     [string]$DataSyncBaseUrl = "http://localhost:8086",
     [string]$TaskManagementBaseUrl = "http://localhost:8081",
+    [string]$PermissionAdminBaseUrl = "http://localhost:8085",
     [string]$KeycloakBaseUrl = "http://localhost:18080",
+    [string]$MinioEndpoint = "http://localhost:9000",
+    [string]$MinioBucket = "datasmart-graph-facts",
+    [string]$MinioAccessKey = "",
+    [string]$MinioSecretKey = "",
+    [string]$Neo4jContainerName = "datasmart-neo4j",
+    [string]$Neo4jPassword = "",
+    [string]$GraphFactApprovalSharedToken = "",
 
     [string]$UserAccountUsername = "project-owner",
     [string]$UserAccountPassword = "DataSmart@123",
@@ -160,6 +168,22 @@ if ([string]::IsNullOrWhiteSpace($PostgresPassword)) {
         if ([string]::IsNullOrWhiteSpace($env:DATASMART_POSTGRES_PASSWORD)) { "password" } else { $env:DATASMART_POSTGRES_PASSWORD }
     } else {
         $env:DATASMART_E2E_POSTGRES_PASSWORD
+    }
+}
+if ([string]::IsNullOrWhiteSpace($MinioAccessKey)) {
+    $MinioAccessKey = if ([string]::IsNullOrWhiteSpace($env:DATASMART_MINIO_ACCESS_KEY)) { "datasmart" } else { $env:DATASMART_MINIO_ACCESS_KEY }
+}
+if ([string]::IsNullOrWhiteSpace($MinioSecretKey)) {
+    $MinioSecretKey = if ([string]::IsNullOrWhiteSpace($env:DATASMART_MINIO_SECRET_KEY)) { "datasmart123" } else { $env:DATASMART_MINIO_SECRET_KEY }
+}
+if ([string]::IsNullOrWhiteSpace($Neo4jPassword)) {
+    $Neo4jPassword = if ([string]::IsNullOrWhiteSpace($env:DATASMART_NEO4J_PASSWORD)) { "password" } else { $env:DATASMART_NEO4J_PASSWORD }
+}
+if ([string]::IsNullOrWhiteSpace($GraphFactApprovalSharedToken)) {
+    $GraphFactApprovalSharedToken = if ([string]::IsNullOrWhiteSpace($env:DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN)) {
+        $env:DATASMART_PERMISSION_AGENT_APPROVAL_FACT_SHARED_TOKEN
+    } else {
+        $env:DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN
     }
 }
 
@@ -290,7 +314,7 @@ function Wait-TcpPort {
 
 function Invoke-DependencyStart {
     if ($SkipDependencyStart) {
-        Add-Check -Name "基础依赖启动" -Status "WARN" -Detail "已通过 -SkipDependencyStart 跳过，要求外部环境已启动 MySQL/PostgreSQL"
+        Add-Check -Name "基础依赖启动" -Status "WARN" -Detail "已通过 -SkipDependencyStart 跳过，要求外部环境已启动 MySQL/PostgreSQL；图谱闭环还要求 Kafka、MinIO 与 Neo4j"
         return
     }
     if (-not (Test-CommandExists -CommandName "docker")) {
@@ -312,6 +336,9 @@ function Invoke-DependencyStart {
         $env:DATASMART_POSTGRES_PASSWORD = $PostgresPassword
 
         $services = @("postgresql", "mysql")
+        if ($IncludeAgentGraphRecoveryE2E) {
+            $services += @("zookeeper", "kafka", "minio", "neo4j")
+        }
         if (-not $UseDirectServiceUrls) {
             $services += @("keycloak-db-bootstrap", "keycloak")
         }
@@ -472,18 +499,6 @@ CREATE TABLE $TargetSchema.$TargetTable (
     Invoke-MySqlNonQuery -Sql $mysqlSql
     Invoke-PostgresNonQuery -Sql $postgresSql
     Add-Check -Name "E2E 表准备" -Status "PASS" -Detail "已创建专用 MySQL 源表和 PostgreSQL 目标表"
-}
-
-function Repair-FailedShardSourceRows {
-    $repairSql = "UPDATE $SourceTable SET amount = ABS(amount) WHERE id BETWEEN 11 AND 15;"
-    Invoke-MySqlNonQuery -Sql $repairSql
-    Add-Check -Name "失败分片源数据修复" -Status "PASS" -Detail "已修复 id=11..15 的源端金额，后续只重试失败分片"
-}
-
-function Repair-DirtySourceRow {
-    $repairSql = "UPDATE $SourceTable SET customer_name = 'Repaired-Customer-7' WHERE id = 7;"
-    Invoke-MySqlNonQuery -Sql $repairSql
-    Add-Check -Name "脏数据源行修复" -Status "PASS" -Detail "已修复 id=7 的源端姓名，后续通过 PRIMARY_KEY_EQ replay 精确重放"
 }
 
 function Initialize-OfflineModeE2EDatabase {
@@ -962,6 +977,10 @@ function Invoke-AgentGraphRecoveryE2E {
     foreach ($entry in $UserHeaders.GetEnumerator()) {
         $agentHeaders[$entry.Key] = $entry.Value
     }
+    # Gateway 对 Agent 请求会删除正文中的 project_id，并只接受经过权限校验的当前项目选择 Header
+    # 来重建 Python AgentRequest。平台级 E2E 必须模拟真实前端的项目切换动作，否则会在模型调用前
+    # 得到 project_id 为空的 400；该 Header 不是绕过权限，而是 Gateway 的授权输入。
+    $agentHeaders["X-DataSmart-Project-Id"] = [string]$ProjectId
     $agentPlanUrl = "$AgentRuntimeBaseUrl/agent/plans"
     $ragUrl = "$AgentRuntimeBaseUrl/agent/rag/query"
     if (-not $UseDirectServiceUrls) {
@@ -991,10 +1010,12 @@ function Invoke-AgentGraphRecoveryE2E {
         -Url $agentPlanUrl `
         -Headers $agentHeaders `
         -Body @{
-            tenantId = $TenantId
-            applicationId = $ApplicationId
-            projectId = $ProjectId
-            actorId = $ActorId
+            # /agent/plans 的领域请求合同使用 snake_case；applicationId 属于已签名的
+            # Gateway Header/受信变量范围，不是 AgentRequest 的根级字段。若把 camelCase
+            # 控制面字段直接放在根级，Python API 会按未知字段返回 400，模型根本不会开始规划。
+            tenant_id = [string]$TenantId
+            project_id = [string]$ProjectId
+            actor_id = [string]$ActorId
             objective = $objective
             variables = @{
                 taskId = $TaskId
@@ -1011,13 +1032,29 @@ function Invoke-AgentGraphRecoveryE2E {
     if ($null -eq $plan) {
         Fail-Step -Name "主 Agent 故障检索决策" -Detail "Agent Runtime 响应缺少 plan，无法验证 native tool call 决策"
     }
-    $planningSummary = $plan.modelInteractionSummary.planning
+    # Python Runtime 的 AgentPlan 响应由 dataclass 统一序列化为 snake_case；planning 摘要内部
+    # 仍保持对外低敏 camelCase 字段。这里同时兼容历史 camelCase 版本，避免 E2E 因字段命名差异
+    # 在模型已经完成决策后误报“没有检索摘要”。
+    $interactionSummary = if ($null -ne $plan.model_interaction_summary) {
+        $plan.model_interaction_summary
+    } else {
+        $plan.modelInteractionSummary
+    }
+    $planningSummary = $interactionSummary.planning
     $retrievalDecision = [string]$planningSummary.retrievalDecision
     if ($retrievalDecision -notin @("SEARCH", "SKIP", "NOT_APPLICABLE", "UNAVAILABLE")) {
         Fail-Step -Name "主 Agent native 检索决策" -Detail "Agent 响应没有可审计的 SEARCH/SKIP 检索决策摘要"
     }
-    $toolPlans = @($plan.toolPlans)
-    $ragPlans = @($toolPlans | Where-Object { $_.toolName -eq "knowledge.rag.query" })
+    if ($Strict -and $retrievalDecision -notin @("SEARCH", "SKIP")) {
+        # Strict 模式是“真实自治闭环”门禁：模型未被调用或路由不可用时，只能算降级诊断，
+        # 不能把 NOT_APPLICABLE/UNAVAILABLE 当成 AI 已自主判断 SEARCH/SKIP。
+        Fail-Step -Name "主 Agent native 检索决策" -Detail ("严格模式要求真实模型返回 SEARCH 或 SKIP，当前决策={0}；请修复 reasoning Provider 后重试" -f $retrievalDecision)
+    }
+    $toolPlans = if ($null -ne $plan.tool_plans) { @($plan.tool_plans) } else { @($plan.toolPlans) }
+    $ragPlans = @($toolPlans | Where-Object {
+        $toolName = if ($null -ne $_.tool_name) { $_.tool_name } else { $_.toolName }
+        $toolName -eq "knowledge.rag.query"
+    })
     if ($retrievalDecision -eq "SKIP" -and $ragPlans.Count -gt 0) {
         Fail-Step -Name "主 Agent RAG 路由一致性" -Detail "模型摘要为 SKIP，但响应仍包含 knowledge.rag.query，说明规则层把 RAG 补回了计划"
     }
@@ -1052,6 +1089,8 @@ function Invoke-AgentGraphRecoveryE2E {
         Add-Check -Name "RAG 内部模型模式选择" -Status "PASS" -Detail "主 Agent 未选择 knowledge.rag.query，因此没有进入 RAG 内部，也没有人为补回"
     }
 
+    # 本地文件只作为构建器的短暂中间产物；真正提交审批的 URI 必须是 MinIO 中不可变对象，
+    # 否则容器内 Python worker 无法读取 Windows 临时目录，审批→Kafka→Neo4j 只能是假闭环。
     $graphOutput = Join-Path ([System.IO.Path]::GetTempPath()) ("datasmart-graph-facts-" + $script:RunId + ".json")
     $graphScript = Join-Path $script:RepoRoot "scripts/rag-business-graph-build.py"
     $graphToken = [string]$env:DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN
@@ -1062,7 +1101,11 @@ function Invoke-AgentGraphRecoveryE2E {
         Fail-Step -Name "Python GraphRAG 构建器" -Detail "未发现 python 命令，无法从真实 data-sync 快照构建业务事实包"
     }
     $previousGraphToken = $env:DATASMART_GRAPH_SOURCE_TOKEN
+    $previousMinioAccessKey = $env:DATASMART_GRAPH_FACT_MINIO_ACCESS_KEY
+    $previousMinioSecretKey = $env:DATASMART_GRAPH_FACT_MINIO_SECRET_KEY
     $env:DATASMART_GRAPH_SOURCE_TOKEN = $graphToken
+    $env:DATASMART_GRAPH_FACT_MINIO_ACCESS_KEY = $MinioAccessKey
+    $env:DATASMART_GRAPH_FACT_MINIO_SECRET_KEY = $MinioSecretKey
     try {
         $graphBuild = Invoke-NativeCommandSafely -Name "实时业务图谱事实包" -Command {
             python $graphScript `
@@ -1073,13 +1116,27 @@ function Invoke-AgentGraphRecoveryE2E {
                 --application-id $ApplicationId `
                 --project-id $ProjectId `
                 --actor-id $ActorId `
-                --output $graphOutput
+                --output $graphOutput `
+                --upload-minio `
+                --minio-endpoint $MinioEndpoint `
+                --minio-bucket $MinioBucket
         }
     } finally {
         $env:DATASMART_GRAPH_SOURCE_TOKEN = $previousGraphToken
+        $env:DATASMART_GRAPH_FACT_MINIO_ACCESS_KEY = $previousMinioAccessKey
+        $env:DATASMART_GRAPH_FACT_MINIO_SECRET_KEY = $previousMinioSecretKey
     }
     if ($graphBuild.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $graphOutput)) {
         Fail-Step -Name "实时业务图谱事实包" -Detail "GraphRAG 构建器未能从 data-sync 实时快照生成事实包，具体响应正文不打印"
+    }
+    $buildSummary = $graphBuild.Output | Where-Object { $_ -match '"factBundleUri"' } | Select-Object -Last 1
+    if ([string]::IsNullOrWhiteSpace($buildSummary)) {
+        Fail-Step -Name "业务图谱 MinIO 上传" -Detail "GraphRAG 构建器没有返回 MinIO 上传摘要，拒绝把本地临时文件当成生产事实包"
+    }
+    try { $buildInfo = $buildSummary | ConvertFrom-Json } catch { Fail-Step -Name "业务图谱 MinIO 上传" -Detail "GraphRAG 构建器上传摘要不是合法 JSON" }
+    $factBundleUri = [string]$buildInfo.factBundleUri
+    if ($factBundleUri -notmatch ('^s3://' + [regex]::Escape($MinioBucket) + '/')) {
+        Fail-Step -Name "业务图谱 MinIO URI" -Detail "事实包 URI 不是当前固定 bucket 的 s3:// 地址"
     }
     $graphFacts = Get-Content -LiteralPath $graphOutput -Raw | ConvertFrom-Json
     $graphDocument = @($graphFacts.documents) | Select-Object -First 1
@@ -1087,6 +1144,87 @@ function Invoke-AgentGraphRecoveryE2E {
         Fail-Step -Name "业务图谱 applicationId 范围" -Detail "事实包 schema 或 applicationId 范围不符合当前任务上下文"
     }
     Add-Check -Name "实时业务图谱事实包" -Status "PASS" -Detail ("已从真实 data-sync 快照生成 applicationId={0} 的待审批事实包，正文未打印" -f $ApplicationId)
+
+    $approvalToken = $GraphFactApprovalSharedToken
+    if ([string]::IsNullOrWhiteSpace($approvalToken)) {
+        Fail-Step -Name "图事实审批内部令牌" -Detail "需要 DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN；脚本不会接受空令牌"
+    }
+    $approvalHeaders = @{
+        "Accept" = "application/json"
+        "Content-Type" = "application/json; charset=utf-8"
+        "X-DataSmart-Source-Service" = "permission-admin"
+        "X-DataSmart-Internal-Service-Token" = $approvalToken
+        "X-DataSmart-Trace-Id" = (New-TraceId "graph-approval")
+    }
+    $approvalFactId = "graph-e2e:{0}" -f $script:RunId
+    $approvalRequest = @{
+        approvalFactId = $approvalFactId
+        tenantId = $TenantId
+        applicationId = $ApplicationId
+        projectId = $ProjectId
+        userId = "agent-runtime"
+        actorId = [string]$ActorId
+        agentId = "MASTER_AGENT"
+        sessionId = "platform-e2e-$script:RunId"
+        runId = "platform-e2e-$script:RunId"
+        delegationId = "delegation:{0}" -f $script:RunId
+        commandId = "graph-ingestion:$($buildInfo.fingerprint)"
+        policyVersion = "datasmart.graph.approval.v1"
+        status = "APPROVED"
+        approvedByActorId = [string]$ActorId
+        reasonCodes = @("BUSINESS_GRAPH_E2E")
+        evidenceCodes = @("DATA_SYNC_LIVE_SNAPSHOT", "APPLICATION_SCOPE_VERIFIED")
+        factBundleUri = $factBundleUri
+        factFingerprint = [string]$buildInfo.fingerprint
+        entityCount = [int]$buildInfo.entityCount
+        edgeCount = [int]$buildInfo.edgeCount
+    }
+    $approvalResponse = Invoke-Api -Name "permission-admin 图事实 APPROVED 登记" -Method "POST" -Url "$PermissionAdminBaseUrl/permissions/agent/graph-facts/approvals" -Headers $approvalHeaders -Body $approvalRequest
+    $approval = Get-EnvelopeData -Response $approvalResponse -Name "图事实审批登记 envelope"
+    if ([string]$approval.status -ne "APPROVED" -or [string]$approval.eventId -ne ("graph-facts-approved:{0}:{1}" -f $approvalFactId, $buildInfo.fingerprint)) {
+        Fail-Step -Name "图事实审批登记结果" -Detail "permission-admin 没有返回 APPROVED 和稳定 eventId"
+    }
+    Add-Check -Name "permission-admin 图事实审批" -Status "PASS" -Detail "已登记权威 APPROVED 事实；Kafka 事件仅引用 MinIO URI 和指纹"
+
+    $eventId = "graph-facts-approved:${approvalFactId}:$($buildInfo.fingerprint)"
+    $outboxSql = "SELECT COUNT(*) FROM permission_admin.permission_event_outbox WHERE event_type = 'GRAPH_FACTS_APPROVED' AND event_id = '$eventId' AND status = 'SENT';"
+    $outboxDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+    $outboxSent = 0
+    while ((Get-Date) -lt $outboxDeadline) {
+        $outboxSent = [int](Invoke-PostgresScalar -Sql $outboxSql)
+        if ($outboxSent -gt 0) { break }
+        Start-Sleep -Seconds 2
+    }
+    if ($outboxSent -le 0) {
+        Fail-Step -Name "permission-admin outbox -> Kafka" -Detail "图事实 outbox 在超时内没有进入 SENT；拒绝继续验证 Neo4j"
+    }
+    Add-Check -Name "permission-admin outbox -> Kafka" -Status "PASS" -Detail "图事实审批 outbox 已进入 SENT"
+
+    $receiptSql = "SELECT COUNT(*) FROM ai_memory.graph_fact_ingestion_receipt WHERE event_id = '$eventId' AND status = 'SUCCEEDED' AND application_id = '$ApplicationId' AND project_id = '$ProjectId';"
+    $receiptDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+    $receiptSucceeded = 0
+    while ((Get-Date) -lt $receiptDeadline) {
+        $receiptSucceeded = [int](Invoke-PostgresScalar -Sql $receiptSql)
+        if ($receiptSucceeded -gt 0) { break }
+        Start-Sleep -Seconds 2
+    }
+    if ($receiptSucceeded -le 0) {
+        Fail-Step -Name "Kafka -> Python GraphRAG receipt" -Detail "图事实 worker 没有写入 SUCCEEDED receipt；拒绝宣称 Neo4j 摄取完成"
+    }
+    Add-Check -Name "Kafka -> Python GraphRAG receipt" -Status "PASS" -Detail "worker 已写入 application/project 范围正确的 SUCCEEDED receipt"
+
+    if (-not (Test-DockerContainerExists -ContainerName $Neo4jContainerName)) {
+        Fail-Step -Name "Neo4j 图事实摄取" -Detail "未发现 Neo4j 容器，无法完成最终图节点/关系断言"
+    }
+    $neo4jCheck = "MATCH (n:GraphEntity) WHERE n.application = '$ApplicationId' AND n.project = '$ProjectId' RETURN count(n);"
+    $neo4jResult = Invoke-NativeCommandSafely -Name "Neo4j 图范围断言" -Command {
+        docker exec $Neo4jContainerName cypher-shell -u neo4j -p $Neo4jPassword $neo4jCheck
+    }
+    $neo4jCountLine = $neo4jResult.Output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1
+    if ($neo4jResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($neo4jCountLine) -or [int]$neo4jCountLine -le 0) {
+        Fail-Step -Name "Neo4j 图事实摄取" -Detail "Neo4j 没有查询到当前 applicationId/projectId 下的图实体"
+    }
+    Add-Check -Name "Neo4j 图事实摄取" -Status "PASS" -Detail "已查询到当前 applicationId/projectId 范围的图实体，且新链路未使用 Workspace 授权范围"
 }
 
 function Assert-DatasourceConnectionTestSuccess {
@@ -1190,13 +1328,99 @@ function Assert-TargetTableCount {
     Add-Check -Name "目标表行数断言: $Stage" -Status "PASS" -Detail "目标表达到预期行数 $Expected"
 }
 
-function Assert-ReplayedRow {
-    $nameSql = "SELECT name FROM $TargetSchema.$TargetTable WHERE id = 7;"
-    $actualName = Invoke-PostgresScalar -Sql $nameSql
-    if ($actualName -ne "Repaired-Customer-7") {
-        Fail-Step -Name "脏数据 replay 断言" -Detail "id=7 未按修复后的源端值写入目标端"
+function Assert-GovernedAutopilotTargetResult {
+    <#
+        Autopilot 的低风险恢复不会篡改源端业务值。对于本脚本注入的 NOT NULL 与 CHECK 约束故障，
+        合法自动路径是把精确 PRIMARY_KEY_EQ 样本写入隔离账本，再由 Java 重新排队失败对象。
+
+        因此最终业务断言不能再要求 20 行或某个“脚本修复后的值”；那会迫使 PowerShell 越过 Java
+        控制面直接 UPDATE 源库。这里改为验证 14 条合法记录全部落库，并确认六条故障样本没有被错误写入。
+        该断言只读取本脚本声明的 E2E 目标表，不读取或输出任意行内容。
+    #>
+    Assert-TargetCount -Expected 14 -Stage "Java Autopilot 隔离脏样本并完成失败对象重跑"
+    $invalidCountSql = "SELECT COUNT(*) FROM $TargetSchema.$TargetTable WHERE id IN (7, 11, 12, 13, 14, 15);"
+    $invalidCount = [int](Invoke-PostgresScalar -Sql $invalidCountSql)
+    if ($invalidCount -ne 0) {
+        Fail-Step -Name "Autopilot 隔离结果" -Detail "故障样本仍出现在目标表中，不能证明 Java 隔离与重跑边界生效"
     }
-    Add-Check -Name "脏数据 replay 断言" -Status "PASS" -Detail "id=7 已通过 PRIMARY_KEY_EQ replay 写入修复后的值"
+    Add-Check -Name "Autopilot 隔离结果" -Status "PASS" -Detail "六条约束失败样本均未写入目标表，源端数据未被脚本修改"
+}
+
+function Invoke-GovernedAutopilotRecoveryE2E {
+    param(
+        [string]$SourceDatasourceName,
+        [long]$SourceDatasourceId,
+        [string]$TargetDatasourceName,
+        [long]$TargetDatasourceId
+    )
+
+    <#
+        平台脚本只负责准备数据源和注入真实故障；恢复执行委托给已存在的六专业 Agent 黑盒脚本。
+        该脚本会通过 Gateway 建立首次 AUTOPILOT 授权盒，并验证：
+        - 模型根据结构化诊断自主选择 SEARCH 或 SKIP；
+        - 选择 SEARCH 时取得 RAG/GraphRAG 摘要证据；
+        - Python 只产生单一低风险候选，Java 重新校验权限、范围、风险、指纹与幂等回执；
+        - Java 应用 quarantine/repair，重新排队失败对象，并用公开 execution、PRECHECK、MONITOR 验证终态。
+
+        PowerShell 不提交 quarantine、repair、retry 或 replay 请求，更不会直接更新源表。子脚本只接收
+        数据源名称、公开 ID 和对象定位；Keycloak 密码通过临时环境变量传递，命令行和输出都不包含密码。
+    #>
+    if ($UseDirectServiceUrls) {
+        Fail-Step -Name "Autopilot Gateway 边界" -Detail "真实 Autopilot E2E 必须经过 Gateway、Keycloak 与 permission-admin，不能在直连模式绕过治理链"
+    }
+    $autopilotScript = Join-Path $script:RepoRoot "scripts/local-six-agent-governed-e2e.ps1"
+    if (-not (Test-Path -LiteralPath $autopilotScript)) {
+        Fail-Step -Name "六 Agent Autopilot 脚本" -Detail "未找到受治理 Autopilot 黑盒脚本"
+    }
+
+    $previousPassword = $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD
+    if ([string]::IsNullOrWhiteSpace($previousPassword)) {
+        $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD = $UserAccountPassword
+    }
+    try {
+        $requestId = "platform-autopilot-$script:RunId"
+        $objective = "使用当前项目已授权的数据源，把 MySQL 表 $SourceTable 全量同步到 PostgreSQL $TargetSchema.$TargetTable。"
+        $objective += "源数据包含真实 NOT NULL/CHECK 约束故障；请在首次授权范围内自主诊断、按需检索、"
+        $objective += "由 Java 执行可逆隔离或其它低风险修复并重跑，最后完成 PRECHECK、MONITOR 和执行验证。"
+        # 恢复后的 execution 可能只重跑失败对象，不能把本轮 read/write 计数误当成目标表总行数。
+        # 子脚本仍要求正数读写和 failedRecordCount=0，最终 14 行总量由本脚本直接查询目标表验证。
+        $autopilotRun = Invoke-NativeCommandSafely -Name "六 Agent 受治理 Autopilot E2E" -Command {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $autopilotScript `
+                -Execute `
+                -ConfirmAndExecute `
+                -EnableAutopilot `
+                -GatewayBaseUrl $GatewayBaseUrl `
+                -KeycloakBaseUrl $KeycloakBaseUrl `
+                -KeycloakUsername $UserAccountUsername `
+                -TenantId $TenantId `
+                -ProjectId $ProjectId `
+                -ActorId ([string]$ActorId) `
+                -SourceDatasourceName $SourceDatasourceName `
+                -TargetDatasourceName $TargetDatasourceName `
+                -SourceDatasourceId ([string]$SourceDatasourceId) `
+                -TargetDatasourceId ([string]$TargetDatasourceId) `
+                -SourceConnectorType "MYSQL" `
+                -TargetConnectorType "POSTGRESQL" `
+                -SourceSchemaName "" `
+                -SourceObjectName $SourceTable `
+                -TargetSchemaName $TargetSchema `
+                -TargetObjectName $TargetTable `
+                -WriteStrategy "UPDATE" `
+                -ExpectedObjectCount 1 `
+                -ExpectedRecordCount 0 `
+                -ExecutionTimeoutSeconds $StartupTimeoutSeconds `
+                -TimeoutSeconds ([Math]::Max(180, $StartupTimeoutSeconds)) `
+                -RequestId $requestId `
+                -Objective $objective
+        }
+    } finally {
+        $env:DATASMART_KEYCLOAK_LOCAL_USER_PASSWORD = $previousPassword
+    }
+    if ($autopilotRun.ExitCode -ne 0) {
+        Fail-Step -Name "六 Agent 受治理 Autopilot E2E" -Detail "Autopilot 未在有界时间内收敛；子脚本正文不在平台摘要中重复输出"
+    }
+    Add-Check -Name "六 Agent 受治理 Autopilot E2E" -Status "PASS" -Detail "模型检索决策、Java 修复回执、重跑、PRECHECK/MONITOR 和最终 execution 验证均已通过"
+    Assert-GovernedAutopilotTargetResult
 }
 
 function Assert-PermissionAuthorizationAudit {
@@ -1324,11 +1548,12 @@ function Write-ExecutionPlan {
     Write-PlatformPlanStage "Prepare dedicated E2E source/target tables with one dirty row and one failed shard scenario."
     Write-PlatformPlanStage "Create datasource records through API and test both connections."
     Write-PlatformPlanStage "Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync task definition and run precheck."
-    Write-PlatformPlanStage "Create task, run worker loop, retry only failed shard, then replay repaired dirty row."
+    Write-PlatformPlanStage "Create task and inject a real constraint failure; PowerShell does not repair source data."
     if ($IncludeAgentGraphRecoveryE2E) {
-        Write-PlatformPlanStage "Read bounded failure logs, let the model choose RAG auto mode, build an application-scoped graph snapshot, then continue repair/rerun verification."
+        Write-PlatformPlanStage "Read bounded failure logs, let the model choose tools and RAG auto mode, then build and approve an application-scoped graph snapshot."
     }
-    Write-PlatformPlanStage "Assert PostgreSQL target table reaches 20 complete rows."
+    Write-PlatformPlanStage "Delegate recovery to the six-Agent Autopilot path and verify Java repair receipts, rerun, PRECHECK/MONITOR, and final execution facts."
+    Write-PlatformPlanStage "Assert all 14 valid rows exist and six governed quarantine samples were not written."
     if (-not $UseDirectServiceUrls) {
         Write-PlatformPlanStage "Assert permission-admin authorization audit records exist for this gateway trace prefix."
         Write-PlatformPlanStage "Assert human-role calls to internal worker/scheduler protocols are denied with permission-admin DENIED audit."
@@ -2051,6 +2276,9 @@ function Main {
         Add-Check -Name "Plan only" -Status "PASS" -Detail "未启动容器、未写数据库、未调用 API"
         return
     }
+    if ($UseDirectServiceUrls) {
+        Fail-Step -Name "完整 Autopilot 治理入口" -Detail "执行模式必须经过 Gateway、Keycloak 与 permission-admin；直连模式仅允许 -PlanOnly 排查参数"
+    }
 
     Invoke-DependencyStart
     Wait-TcpPort -Name "MySQL" -HostName $MySqlHost -Port $MySqlPort | Out-Null
@@ -2095,6 +2323,8 @@ function Main {
     $targetJdbc = Resolve-TargetJdbcUrl
     Add-Check -Name "JDBC URL 解析" -Status "PASS" -Detail "已解析源端和目标端 JDBC URL，完整值不打印"
 
+    $sourceDatasourceName = "E2E MySQL source $script:RunId"
+    $targetDatasourceName = "E2E PostgreSQL target $script:RunId"
     $sourceDatasourceResponse = Invoke-Api `
         -Name "创建 MySQL 源数据源" `
         -Method "POST" `
@@ -2103,7 +2333,7 @@ function Main {
         -Body @{
             tenantId = $TenantId
             projectId = $ProjectId
-            name = "E2E MySQL source $script:RunId"
+            name = $sourceDatasourceName
             type = "MYSQL"
             # 数据源用途必须显式声明。SOURCE 只允许作为同步任务源端读取，
             # 避免源端只读账号被误放到目标端候选列表中。
@@ -2123,7 +2353,7 @@ function Main {
         -Body @{
             tenantId = $TenantId
             projectId = $ProjectId
-            name = "E2E PostgreSQL target $script:RunId"
+            name = $targetDatasourceName
             type = "POSTGRESQL"
             # 目标端必须显式保存为 TARGET。此前脚本未传该字段时会落到后端默认 SOURCE，
             # 导致新建任务页面按 usagePurpose=TARGET 查询不到目标端数据源。
@@ -2268,8 +2498,7 @@ function Main {
     if ($failedObjects.Count -eq 0) {
         Fail-Step -Name "失败分片账本" -Detail "未发现 FAILED 分片；预期 id=11..15 所在分片因 dirty ratio 超阈值失败"
     }
-    $failedOrdinal = [int]($failedObjects | Select-Object -First 1).objectOrdinal
-    Add-Check -Name "失败分片账本" -Status "PASS" -Detail "已发现 FAILED 分片，后续只重试该分片"
+    Add-Check -Name "失败分片账本" -Status "PASS" -Detail "已发现 FAILED 分片，后续恢复必须由受治理 Autopilot 处理"
 
     Invoke-AgentGraphRecoveryE2E `
         -ApiRoots $apiRoots `
@@ -2278,65 +2507,11 @@ function Main {
         -TaskId $taskId `
         -ExecutionId $firstExecutionId
 
-    Repair-FailedShardSourceRows
-
-    Invoke-Api `
-        -Name "选择性重试失败分片" `
-        -Method "POST" `
-        -Url "$($apiRoots.Sync)/sync-tasks/$taskId/executions/$firstExecutionId/objects/retry" `
-        -Headers $userHeaders `
-        -Body @{
-            objectOrdinals = @($failedOrdinal)
-            retryAttemptBudget = 3
-            resetAttemptCount = $true
-            reason = "local platform E2E repaired failed shard source rows"
-        } | Out-Null
-
-    Invoke-WorkerLoop -Stage "retry-failed-shard-only" -Headers $workerHeaders -SyncApiRoot $apiRoots.Sync | Out-Null
-    Assert-TargetCount -Expected 19 -Stage "failed shard retry completed and dirty row still pending replay"
-
-    $errorsResponse = Invoke-Api `
-        -Name "查询 retryable 脏数据样本" `
-        -Method "GET" `
-        -Url "$($apiRoots.Sync)/sync-tasks/$taskId/errors?executionId=$firstExecutionId&retryable=true&current=1&size=50" `
-        -Headers $userHeaders
-    $errorsPage = Get-EnvelopeData -Response $errorsResponse -Name "脏数据样本 envelope"
-    $errorSamples = Get-PageRecords -PageData $errorsPage
-    $dirtySample = $errorSamples |
-        Where-Object {
-            $sourceRecordKey = $_.sourceRecordKey -as [string]
-            $matchesPrimaryKeyValue = -not [string]::IsNullOrWhiteSpace($sourceRecordKey) -and
-                $sourceRecordKey.IndexOf("`"value`":7", [System.StringComparison]::Ordinal) -ge 0
-            $matchesPrimaryKeyValue -or $_.errorType -eq "NOT_NULL_VIOLATION"
-        } |
-        Select-Object -First 1
-    if ($null -eq $dirtySample) {
-        Fail-Step -Name "定位 id=7 脏数据样本" -Detail "未找到可 replay 的 id=7 脏数据样本"
-    }
-    Add-Check -Name "定位 id=7 脏数据样本" -Status "PASS" -Detail "已找到可按 PRIMARY_KEY_EQ replay 的低敏样本"
-
-    Repair-DirtySourceRow
-
-    $replayResponse = Invoke-Api `
-        -Name "发起 dirty record replay" `
-        -Method "POST" `
-        -Url "$($apiRoots.Sync)/sync-tasks/$taskId/errors/replay" `
-        -Headers $userHeaders `
-        -Body @{
-            executionId = $firstExecutionId
-            errorSampleIds = @([long]$dirtySample.id)
-            repairConfirmed = $true
-            repairStrategy = "MANUAL_FIXED_AND_REPLAY"
-            reason = "local platform E2E repaired source row and replays by PRIMARY_KEY_EQ"
-        }
-    $replay = Get-EnvelopeData -Response $replayResponse -Name "dirty replay envelope"
-    if ([long]$replay.replayExecutionId -le 0) {
-        Fail-Step -Name "dirty replay execution" -Detail "dirty replay 未创建有效 replay execution"
-    }
-
-    Invoke-WorkerLoop -Stage "dirty-record-primary-key-replay" -Headers $workerHeaders -SyncApiRoot $apiRoots.Sync | Out-Null
-    Assert-TargetCount -Expected 20 -Stage "dirty replay completed"
-    Assert-ReplayedRow
+    Invoke-GovernedAutopilotRecoveryE2E `
+        -SourceDatasourceName $sourceDatasourceName `
+        -SourceDatasourceId $sourceDatasourceId `
+        -TargetDatasourceName $targetDatasourceName `
+        -TargetDatasourceId $targetDatasourceId
     Invoke-OfflineModeClosureE2E `
         -ApiRoots $apiRoots `
         -UserHeaders $userHeaders `

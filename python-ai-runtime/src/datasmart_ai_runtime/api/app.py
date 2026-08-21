@@ -162,6 +162,13 @@ from datasmart_ai_runtime.services.rag import (
     graph_rag_provider_from_env,
     rag_embedding_provider_from_env,
     rag_answer_artifact_writer_from_env,
+    GraphFactApprovalConsumer,
+    build_kafka_graph_fact_approval_worker,
+    build_graph_fact_approval_receipt_store_from_env,
+    graph_fact_approval_worker_settings_from_env,
+    HttpPermissionAdminGraphFactEvaluator,
+    MinioGraphFactBundleLoader,
+    MinioGraphFactDocumentLoader,
 )
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
@@ -253,6 +260,36 @@ def create_app() -> Any:
     # 会明确返回 fail-closed 结果；配置 Neo4j 后由 Provider 自己执行范围过滤和有限逐跳查询。
     graph_rag_provider = graph_rag_provider_from_env()
     app.state.graph_rag_provider = graph_rag_provider
+    # 图事实审批 worker 默认关闭；显式打开后必须同时具备 permission-admin、MinIO、Kafka、receipt
+    # PostgreSQL 和 Neo4j 运行依赖。worker 只在 startup 生命周期启动，避免每个请求临时创建 consumer
+    # 或在单元测试导入 FastAPI 时连接外部中间件。
+    graph_fact_worker = None
+    graph_fact_worker_settings = graph_fact_approval_worker_settings_from_env()
+    if graph_fact_worker_settings.enabled:
+        graph_permission_base_url = os.getenv("DATASMART_PERMISSION_ADMIN_BASE_URL")
+        graph_permission_token = os.getenv("DATASMART_GRAPH_FACT_PERMISSION_SERVICE_TOKEN") or os.getenv(
+            "DATASMART_PERMISSION_AGENT_APPROVAL_FACT_SHARED_TOKEN"
+        )
+        graph_fact_bucket = os.getenv("DATASMART_GRAPH_FACT_MINIO_BUCKET", "datasmart-graph-facts")
+        if not graph_permission_base_url or not graph_permission_token:
+            raise RuntimeError("图事实 worker 已启用，但 permission-admin evaluate 地址或服务令牌未配置。")
+        graph_bundle_loader = MinioGraphFactDocumentLoader(
+            MinioGraphFactBundleLoader(configured_bucket=graph_fact_bucket)
+        )
+        graph_fact_consumer = GraphFactApprovalConsumer(
+            approval_evaluator=HttpPermissionAdminGraphFactEvaluator(
+                base_url=graph_permission_base_url,
+                service_token=graph_permission_token,
+            ),
+            bundle_loader=graph_bundle_loader,
+        )
+        graph_fact_worker = build_kafka_graph_fact_approval_worker(
+            approval_consumer=graph_fact_consumer,
+            provider=graph_rag_provider,
+            receipt_store=build_graph_fact_approval_receipt_store_from_env(),
+            settings=graph_fact_worker_settings,
+        )
+    app.state.graph_fact_approval_worker = graph_fact_worker
     rag_pipeline = build_default_governance_rag_pipeline(
         model_routes=model_route_registry,
         model_gateway=model_gateway,
@@ -738,6 +775,12 @@ def create_app() -> Any:
 
         memory_materialization_worker.start()
 
+    def _start_graph_fact_approval_worker() -> None:
+        """启动 Kafka 图事实审批摄取 worker。"""
+
+        if graph_fact_worker is not None:
+            graph_fact_worker.start()
+
     def _refresh_skill_publication_manifest_diagnostics() -> None:
         """FastAPI startup 生命周期中刷新 Skill 发布 Manifest 诊断。
 
@@ -768,16 +811,35 @@ def create_app() -> Any:
 
         memory_materialization_worker.stop()
 
+    def _stop_graph_fact_approval_worker() -> None:
+        """优雅停止图事实 consumer，确保进程退出前释放 Kafka group。"""
+
+        if graph_fact_worker is not None:
+            graph_fact_worker.stop()
+
     register_lifecycle_handler(app, "startup", _start_memory_materialization_worker)
+    register_lifecycle_handler(app, "startup", _start_graph_fact_approval_worker)
     register_lifecycle_handler(app, "startup", _refresh_skill_publication_manifest_diagnostics)
     register_lifecycle_handler(app, "startup", _probe_model_provider_health_on_startup)
     register_lifecycle_handler(app, "shutdown", _stop_memory_materialization_worker)
+    register_lifecycle_handler(app, "shutdown", _stop_graph_fact_approval_worker)
 
     @app.get("/agent/events/diagnostics")
     def runtime_event_diagnostics() -> dict[str, Any]:
         """查询实时事件组件诊断信息。"""
 
         return runtime_event_component_diagnostics(runtime_events)
+
+    @app.get("/agent/graph-facts/diagnostics")
+    @app.get("/api/agent/graph-facts/diagnostics")
+    def graph_fact_approval_worker_diagnostics() -> dict[str, Any]:
+        """查询图事实 worker 低敏诊断，不返回事实包 URI、实体正文或服务令牌。"""
+
+        return graph_fact_worker.diagnostics() if graph_fact_worker is not None else {
+            "enabled": False,
+            "running": False,
+            "reasonCode": "GRAPH_FACT_WORKER_DISABLED",
+        }
 
     @app.get("/agent/memory/write-candidates/diagnostics")
     def memory_write_candidate_store_diagnostics() -> dict[str, Any]:

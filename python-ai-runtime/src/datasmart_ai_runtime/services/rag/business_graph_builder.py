@@ -126,6 +126,15 @@ class BusinessGraphBuilder:
         as_of = str(snapshot.get("asOf") or snapshot.get("as_of") or _now()).strip()
         document_id = f"business-graph:{snapshot_id}"
 
+        # 只有 Java 控制面明确声明快照完整、且没有元数据/字段映射告警时，候选才允许进入审批。
+        # 这道门禁阻止“任务事实存在，但真实字段端点没有发现成功”的半成品图谱被误批准。
+        source_status = str(snapshot.get("sourceStatus") or "").strip().upper()
+        metadata_warnings = tuple(str(item).strip() for item in _sequence(snapshot.get("metadataWarnings")) if str(item).strip())
+        if source_status != "COMPLETE":
+            raise BusinessGraphBuildError("业务图谱快照 sourceStatus 不是 COMPLETE，拒绝生成可审批候选。")
+        if metadata_warnings:
+            raise BusinessGraphBuildError("业务图谱快照仍包含 metadataWarnings，拒绝生成可审批候选。")
+
         entities: dict[str, dict[str, Any]] = {}
         aliases: dict[str, str] = {}
         warnings: list[str] = []
@@ -322,6 +331,9 @@ class BusinessGraphBuilder:
             for action in _values(item, "actionId", "actionIds", "recommendedAction", "recommendedActions"):
                 relation(item, action, GraphRagRelation.RUNBOOK_RECOMMENDS_ACTION.value, section="runbooks", record=item,
                          index=index, source_kind="RUNBOOK", target_kind="RECOVERY_ACTION")
+            for error in _values(item, "errorId", "errorIds"):
+                relation(item, error, GraphRagRelation.RUNBOOK_ADDRESSES_ERROR.value, section="runbooks", record=item,
+                         index=index, source_kind="RUNBOOK", target_kind="ERROR")
         for index, item in enumerate(_sequence(snapshot.get("replays"))):
             for error in _values(item, "errorId", "errorIds"):
                 relation(item, error, GraphRagRelation.EXECUTION_REPLAYS_ERROR.value, section="replays", record=item,
@@ -330,8 +342,11 @@ class BusinessGraphBuilder:
             relation(item.get("taskId"), item.get("dependsOnTaskId"), GraphRagRelation.TASK_DEPENDS_ON_TASK.value,
                      section="dependencies", record=item, index=index, source_kind="TASK", target_kind="TASK")
 
+        if skipped:
+            raise BusinessGraphBuildError("业务图谱快照存在无法解析的关系端点，拒绝生成可审批候选。")
+
         metadata = {
-            "sourceStatus": str(snapshot.get("sourceStatus") or "COMPLETE"),
+            "sourceStatus": source_status,
             "graphIngestionApproval": {
                 "status": "PROPOSED",
                 "approvalId": str(snapshot.get("approvalFactId") or ""),

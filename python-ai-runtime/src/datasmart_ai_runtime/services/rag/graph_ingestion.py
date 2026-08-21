@@ -331,8 +331,23 @@ def load_graph_fact_documents(path: str | Path) -> tuple[RagDocument, ...]:
 
     resolved = Path(path).resolve()
     try:
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raw = resolved.read_bytes()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GraphRagIngestionError("图事实包无法读取或解析。") from exc
+    return load_graph_fact_documents_bytes(raw)
+
+
+def load_graph_fact_documents_bytes(payload_bytes: bytes) -> tuple[RagDocument, ...]:
+    """从已经由受控对象存储加载的 JSON 字节构造事实文档。
+
+    <p>Kafka consumer 不应把 MinIO 对象复制到宿主机长期目录，也不应把事实正文塞进 Kafka。
+    这个入口允许 worker 在内存中完成对象读取、schema 校验和后续指纹校验，保留对象存储作为
+    原始事实包的耐久证据源。</p>
+    """
+
+    try:
+        payload = json.loads(bytes(payload_bytes).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
         raise GraphRagIngestionError("图事实包无法读取或解析。") from exc
     if not isinstance(payload, Mapping) or payload.get("schemaVersion") != GRAPH_FACT_BUNDLE_SCHEMA_VERSION:
         raise GraphRagIngestionError("图事实包 schemaVersion 不受支持。")
@@ -512,4 +527,5 @@ __all__ = [
     "GraphRagIngestionError",
     "GraphRagIngestionResult",
     "load_graph_fact_documents",
+    "load_graph_fact_documents_bytes",
 ]

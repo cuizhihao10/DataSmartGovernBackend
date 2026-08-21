@@ -37,6 +37,7 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
             SELECT *
             FROM permission_event_outbox
             WHERE status IN ('PENDING', 'FAILED')
+              AND event_type <> 'GRAPH_FACTS_APPROVED'
               AND attempt_count < max_attempts
               AND (next_retry_time IS NULL OR next_retry_time <= CURRENT_TIMESTAMP)
             ORDER BY create_time ASC

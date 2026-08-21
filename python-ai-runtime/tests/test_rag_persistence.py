@@ -685,7 +685,7 @@ class RagPersistenceTest(unittest.TestCase):
         self.assertIn("DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA: ${DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA:-true}", compose)
         self.assertIn("DATASMART_GRAPH_RAG_PROVIDER=neo4j", env_example)
         self.assertIn("DATASMART_GRAPH_RAG_INITIALIZE_SCHEMA=true", env_example)
-        self.assertIn('"PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis"', delivery_check)
+        self.assertIn('"PYTHON_RUNTIME_EXTRAS=api,rag,graph,kafka,redis,object-store"', delivery_check)
 
     def test_application_compose_persists_langgraph_checkpoints_fail_closed(self) -> None:
         repository_root = Path(__file__).resolve().parents[2]

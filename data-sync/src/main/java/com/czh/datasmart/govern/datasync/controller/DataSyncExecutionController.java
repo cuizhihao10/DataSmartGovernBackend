@@ -54,6 +54,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -116,18 +117,25 @@ public class DataSyncExecutionController {
                 "sensitivityLevel", "internal"));
         snapshot.put("applications", List.of(fact("id", applicationId, "name", "application-" + applicationId)));
         snapshot.put("projects", List.of(fact("id", task.getProjectId(), "applicationId", applicationId, "name", "project-" + task.getProjectId())));
+        List<Map<String, Object>> errorFacts = errorFacts(diagnosis);
+        List<String> errorIds = errorFacts.stream().map(item -> String.valueOf(item.get("id"))).toList();
+        List<String> logIds = logs.stream().map(item -> String.valueOf(item.getId())).toList();
         snapshot.put("dataSources", dataSources(definition, task));
         snapshot.put("tasks", List.of(taskFact(task, definition)));
-        snapshot.put("taskVersions", List.of(taskVersionFact(definition)));
-        snapshot.put("executions", List.of(executionFact(diagnosis)));
-        snapshot.put("logs", logs.stream().map(this::logFact).toList());
-        snapshot.put("errors", diagnosis.errors() == null ? List.of() : diagnosis.errors().stream().map(this::errorFact).toList());
+        snapshot.put("taskVersions", List.of(taskVersionFact(task, definition)));
+        snapshot.put("executions", List.of(executionFact(diagnosis, errorIds, logIds)));
+        snapshot.put("logs", logs.stream().map(item -> logFact(item, errorIds)).toList());
+        snapshot.put("errors", errorFacts);
         Map<String, Object> metadataFacts = metadataFacts(definition, task, context);
         snapshot.putAll(metadataFacts);
-        snapshot.put("mappings", mappingFacts(definition));
-        snapshot.put("runbooks", List.of());
-        snapshot.put("incidents", diagnosis.similarCases() == null ? List.of() : diagnosis.similarCases().stream().map(this::caseFact).toList());
-        snapshot.put("sourceStatus", "COMPLETE");
+        @SuppressWarnings("unchecked")
+        List<String> metadataWarnings = (List<String>) metadataFacts.get("metadataWarnings");
+        snapshot.put("mappings", mappingFacts(definition, metadataWarnings));
+        snapshot.put("actions", recoveryActionFacts(diagnosis));
+        snapshot.put("runbooks", runbookFacts(diagnosis, errorIds));
+        snapshot.put("incidents", diagnosis.similarCases() == null ? List.of()
+                : diagnosis.similarCases().stream().map(item -> caseFact(item, errorIds)).toList());
+        snapshot.put("sourceStatus", metadataWarnings.isEmpty() ? "COMPLETE" : "INCOMPLETE");
         return PlatformApiResponse.success(snapshot, traceId);
     }
 
@@ -152,47 +160,81 @@ public class DataSyncExecutionController {
         value.put("state", task.getCurrentState());
         value.put("sourceDatasourceId", definition.getSourceDatasourceId());
         value.put("targetDatasourceId", definition.getTargetDatasourceId());
-        value.put("sourceTableId", definition.getSourceObjectName());
-        value.put("targetTableId", definition.getTargetObjectName());
+        value.put("sourceTableId", tableId("SOURCE", definition.getSourceDatasourceId(),
+                definition.getSourceSchemaName(), definition.getSourceObjectName()));
+        value.put("targetTableId", tableId("TARGET", definition.getTargetDatasourceId(),
+                definition.getTargetSchemaName(), definition.getTargetObjectName()));
         value.put("successfulVersionId", definition.getId());
         return value;
     }
 
     /** 任务定义版本只保留模式、策略、对象和映射声明状态，不输出配置正文。 */
-    private Map<String, Object> taskVersionFact(SyncTaskDefinition definition) {
-        return fact("id", definition.getId(), "taskId", definition.getId(),
+    private Map<String, Object> taskVersionFact(SyncTask task, SyncTaskDefinition definition) {
+        return fact("id", definition.getId(), "taskId", task.getId(),
                 "version", definition.getUpdateTime() == null ? "current" : definition.getUpdateTime().toString(),
                 "syncMode", String.valueOf(definition.getSyncMode()),
                 "writeStrategy", String.valueOf(definition.getWriteStrategy()),
                 "fieldMappingDeclared", definition.getFieldMappingConfig() != null && !definition.getFieldMappingConfig().isBlank());
     }
 
-    /** 执行诊断只投影状态、计数和根因码，保证图谱不会携带原始错误正文。 */
-    private Map<String, Object> executionFact(SyncExecutionDiagnosisResponse diagnosis) {
+    /**
+     * 将执行诊断投影为执行实体，并显式绑定本次快照中的错误和日志实体。
+     *
+     * <p>GraphRAG 不能依靠错误码字符串猜测 execution 与 error 的关系，因此这里把稳定 ID 列表作为
+     * 一等事实输出。列表只包含控制面主键和摘要 ID，不包含日志正文、样本值或堆栈。</p>
+     */
+    private Map<String, Object> executionFact(SyncExecutionDiagnosisResponse diagnosis,
+                                              List<String> errorIds,
+                                              List<String> logIds) {
         return fact("id", diagnosis.executionId() == null ? "latest" : diagnosis.executionId(),
                 "taskId", diagnosis.taskId(), "state", diagnosis.executionState(),
                 "recordsRead", diagnosis.recordsRead(), "recordsWritten", diagnosis.recordsWritten(),
                 "failedRecordCount", diagnosis.failedRecordCount(), "rootCauseCodes",
-                diagnosis.rootCauseCodes() == null ? List.of() : diagnosis.rootCauseCodes());
+                diagnosis.rootCauseCodes() == null ? List.of() : diagnosis.rootCauseCodes(),
+                "errorIds", errorIds, "logIds", logIds);
     }
 
-    /** 运行日志只保留阶段、事件和固定摘要，作为 GraphRAG 的错误事实来源。 */
-    private Map<String, Object> logFact(SyncExecutionLog log) {
+    /**
+     * 将运行日志绑定到 execution；失败级日志同时绑定该 execution 的稳定错误实体。
+     *
+     * <p>日志表当前没有 error 外键，因此只对 ERROR、WARN 或 FAILED/BLOCKED 事件建立错误关系。
+     * 正常 INFO 时间线不会被错误实体污染。</p>
+     */
+    private Map<String, Object> logFact(SyncExecutionLog log, List<String> errorIds) {
+        boolean failureLog = "ERROR".equalsIgnoreCase(safe(log.getLogLevel()))
+                || "WARN".equalsIgnoreCase(safe(log.getLogLevel()))
+                || "FAILED".equalsIgnoreCase(safe(log.getEventStatus()))
+                || "BLOCKED".equalsIgnoreCase(safe(log.getEventStatus()));
         return fact("id", log.getId(), "executionId", log.getExecutionId(), "logStage", log.getLogStage(),
                 "eventType", log.getEventType(), "eventStatus", safe(log.getEventStatus()),
-                "message", safe(log.getMessage()));
+                "message", safe(log.getMessage()), "errorIds", failureLog ? errorIds : List.of());
+    }
+
+    /** 为一次 execution 的聚合错误生成不会跨运行碰撞的稳定实体 ID。 */
+    private String errorId(SyncExecutionDiagnosisResponse diagnosis,
+                           SyncExecutionDiagnosisResponse.ErrorSummary error) {
+        return "execution:" + (diagnosis.executionId() == null ? "latest" : diagnosis.executionId())
+                + ":error:" + safe(error.errorCode()) + ":" + safe(error.errorType());
     }
 
     /** 错误摘要只保留稳定分类字段，禁止图谱建立在样本值或堆栈正文上。 */
-    private Map<String, Object> errorFact(SyncExecutionDiagnosisResponse.ErrorSummary error) {
-        return fact("id", safe(error.errorCode()) + ":" + safe(error.errorType()), "errorType", error.errorType(),
+    private Map<String, Object> errorFact(SyncExecutionDiagnosisResponse diagnosis,
+                                          SyncExecutionDiagnosisResponse.ErrorSummary error) {
+        return fact("id", errorId(diagnosis, error), "errorType", error.errorType(),
                 "errorCode", error.errorCode(), "count", error.count(), "retryable", error.retryable());
     }
 
-    /** 将历史案例关联转换为可追溯的事故实体。 */
-    private Map<String, Object> caseFact(SyncExecutionDiagnosisResponse.KnowledgeCaseSummary item) {
+    /** 把可空的诊断错误集合转换为有序、稳定且低敏的图实体列表。 */
+    private List<Map<String, Object>> errorFacts(SyncExecutionDiagnosisResponse diagnosis) {
+        return diagnosis.errors() == null ? List.of()
+                : diagnosis.errors().stream().map(item -> errorFact(diagnosis, item)).toList();
+    }
+
+    /** 将历史案例关联转换为可追溯的事故实体，并绑定当前相同错误分类。 */
+    private Map<String, Object> caseFact(SyncExecutionDiagnosisResponse.KnowledgeCaseSummary item,
+                                         List<String> errorIds) {
         return fact("id", item.caseId(), "title", safe(item.title()), "incidentType", safe(item.incidentType()),
-                "resolutionSummary", safe(item.resolutionSummary()));
+                "resolutionSummary", safe(item.resolutionSummary()), "errorIds", errorIds);
     }
 
     /** 调用 data-sync 已有元数据发现能力，把真实 schema/table/field 投影成图实体。 */
@@ -250,7 +292,7 @@ public class DataSyncExecutionController {
             }
             for (SyncTaskMetadataDiscoveryResponse.TableObject table :
                     response.getTables() == null ? List.<SyncTaskMetadataDiscoveryResponse.TableObject>of() : response.getTables()) {
-                String tableId = side + ":" + datasourceId + ":table:" + safe(table.getTableName());
+                String tableId = tableId(side, datasourceId, table.getSchemaName(), table.getTableName());
                 String schemaId = side + ":" + datasourceId + ":schema:" + safe(table.getSchemaName());
                 tables.add(fact("id", tableId, "schemaId", schemaId, "dataSourceId", datasourceId,
                         "name", safe(table.getTableName()), "tableType", safe(table.getTableType())));
@@ -282,8 +324,13 @@ public class DataSyncExecutionController {
         }
     }
 
-    /** 从已持久化字段映射 JSON 只提取两端字段名，禁止把转换表达式或默认值带入图谱。 */
-    private List<Map<String, Object>> mappingFacts(SyncTaskDefinition definition) {
+    /**
+     * 从已持久化字段映射 JSON 构造两端完整 FIELD ID。
+     *
+     * <p>旧实现只输出裸字段名，源表和目标表出现同名字段时会错误地把它们解析成同一实体。新实现把
+     * side、datasource、schema、table、field 全部纳入 ID，同时仍不输出转换表达式、默认值或 SQL。</p>
+     */
+    private List<Map<String, Object>> mappingFacts(SyncTaskDefinition definition, List<String> warnings) {
         if (definition.getFieldMappingConfig() == null || definition.getFieldMappingConfig().isBlank()) {
             return List.of();
         }
@@ -298,8 +345,18 @@ public class DataSyncExecutionController {
                 String source = safe(item.path("sourceField").asText(item.path("source").asText("")));
                 String target = safe(item.path("targetField").asText(item.path("target").asText("")));
                 if (!source.isBlank() && !target.isBlank()) {
-                    facts.add(fact("id", "mapping:" + source + "->" + target,
-                            "sourceFieldId", source, "targetFieldId", target));
+                    String sourceFieldId = fieldId("SOURCE", definition.getSourceDatasourceId(),
+                            definition.getSourceSchemaName(), definition.getSourceObjectName(), source);
+                    String targetFieldId = fieldId("TARGET", definition.getTargetDatasourceId(),
+                            definition.getTargetSchemaName(), definition.getTargetObjectName(), target);
+                    facts.add(fact("id", "mapping:" + sourceFieldId + "->" + targetFieldId,
+                            "sourceTableId", tableId("SOURCE", definition.getSourceDatasourceId(),
+                                    definition.getSourceSchemaName(), definition.getSourceObjectName()),
+                            "targetTableId", tableId("TARGET", definition.getTargetDatasourceId(),
+                                    definition.getTargetSchemaName(), definition.getTargetObjectName()),
+                            "sourceFieldId", sourceFieldId, "targetFieldId", targetFieldId));
+                } else {
+                    warnings.add("FIELD_MAPPING_ENDPOINT_INCOMPLETE");
                 }
                 if (facts.size() >= 512) {
                     break;
@@ -307,8 +364,55 @@ public class DataSyncExecutionController {
             }
             return facts;
         } catch (Exception exception) {
+            warnings.add("FIELD_MAPPING_CONFIG_UNREADABLE");
             return List.of();
         }
+    }
+
+    /** 将诊断服务给出的受治理恢复动作目录投影为图实体。 */
+    private List<Map<String, Object>> recoveryActionFacts(SyncExecutionDiagnosisResponse diagnosis) {
+        if (diagnosis.recommendedRepairActions() == null) {
+            return List.of();
+        }
+        return diagnosis.recommendedRepairActions().stream()
+                .filter(item -> item != null && !item.isBlank())
+                .map(item -> item.trim().toUpperCase(Locale.ROOT))
+                .distinct()
+                .map(item -> fact("id", item, "name", item, "status", "GOVERNED_ACTION_CATALOG"))
+                .toList();
+    }
+
+    /**
+     * 把 Java 恢复目录物化为可追溯 Runbook 候选。
+     *
+     * <p>这里的 Runbook 不是模型生成的自然语言正文，而是 data-sync 已实现动作目录的结构化引用。
+     * 每条记录同时绑定错误实体和动作实体，GraphRAG 可以回答“该错误有哪些已实现处置入口”，真正执行时
+     * 仍必须经过 Autopilot 策略、指纹、权限、风险和幂等回执校验。</p>
+     */
+    private List<Map<String, Object>> runbookFacts(SyncExecutionDiagnosisResponse diagnosis,
+                                                    List<String> errorIds) {
+        if (diagnosis.recommendedRepairActions() == null) {
+            return List.of();
+        }
+        return diagnosis.recommendedRepairActions().stream()
+                .filter(item -> item != null && !item.isBlank())
+                .map(item -> item.trim().toUpperCase(Locale.ROOT))
+                .distinct()
+                .map(item -> fact("id", "datasync-recovery:" + item, "name", "data-sync " + item + " runbook",
+                        "recommendedAction", item, "errorIds", errorIds,
+                        "sourceType", "DATA_SYNC_GOVERNED_RECOVERY_CATALOG"))
+                .toList();
+    }
+
+    /** 构造包含业务侧、数据源、schema 和表名的稳定 TABLE ID。 */
+    private String tableId(String side, Long datasourceId, String schemaName, String tableName) {
+        return safe(side).toUpperCase(Locale.ROOT) + ":" + datasourceId + ":table:"
+                + safe(schemaName) + "." + safe(tableName);
+    }
+
+    /** 构造与元数据发现输出完全一致的稳定 FIELD ID。 */
+    private String fieldId(String side, Long datasourceId, String schemaName, String tableName, String fieldName) {
+        return tableId(side, datasourceId, schemaName, tableName) + ":field:" + safe(fieldName);
     }
 
     private String safe(String value) {

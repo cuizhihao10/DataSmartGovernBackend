@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -47,6 +48,27 @@ def main() -> int:
     )
     parser.add_argument("--source-service", default="python-ai-runtime", help="内部来源服务名")
     parser.add_argument("--output", required=True, help="待审批 graph-facts JSON 输出路径")
+    parser.add_argument(
+        "--upload-minio",
+        action="store_true",
+        help="生成事实包后上传到 MinIO，并在摘要中返回稳定 s3:// URI；不会把凭据写入文件或 stdout",
+    )
+    parser.add_argument(
+        "--minio-endpoint",
+        default=os.getenv("DATASMART_GRAPH_FACT_MINIO_ENDPOINT") or os.getenv("DATASMART_RAG_ARTIFACT_MINIO_ENDPOINT") or "http://localhost:9000",
+        help="MinIO/S3 endpoint，生产环境应通过部署配置注入",
+    )
+    parser.add_argument(
+        "--minio-bucket",
+        default=os.getenv("DATASMART_GRAPH_FACT_MINIO_BUCKET", "datasmart-graph-facts"),
+        help="事实包固定 bucket",
+    )
+    parser.add_argument(
+        "--minio-prefix",
+        default=os.getenv("DATASMART_GRAPH_FACT_MINIO_PREFIX", "business-graph"),
+        help="事实包对象 key 前缀",
+    )
+    parser.add_argument("--minio-region", default=os.getenv("DATASMART_GRAPH_FACT_MINIO_REGION", "us-east-1"))
     args = parser.parse_args()
 
     output_path = Path(args.output).resolve()
@@ -58,10 +80,22 @@ def main() -> int:
         snapshot = _load_live_snapshot(args)
     result = BusinessGraphBuilder().build(snapshot)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(result.to_fact_bundle(), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    fact_bundle = result.to_fact_bundle()
+    serialized_bundle = json.dumps(fact_bundle, ensure_ascii=False, indent=2) + "\n"
+    output_path.write_text(serialized_bundle, encoding="utf-8")
+    fact_uri = None
+    if args.upload_minio:
+        fact_uri = _upload_fact_bundle(
+            serialized_bundle.encode("utf-8"),
+            endpoint=args.minio_endpoint,
+            bucket=args.minio_bucket,
+            prefix=args.minio_prefix,
+            tenant_id=args.tenant_id or str(snapshot.get("scope", {}).get("tenantId") or "unknown"),
+            application_id=args.application_id or str(snapshot.get("scope", {}).get("applicationId") or "unknown"),
+            project_id=args.project_id or str(snapshot.get("scope", {}).get("projectId") or "unknown"),
+            fingerprint=result.fingerprint,
+            region=args.minio_region,
+        )
     print(json.dumps({
         "status": "PROPOSED",
         "output": str(output_path),
@@ -70,8 +104,70 @@ def main() -> int:
         "edgeCount": result.edge_count,
         "skippedRelationCount": result.skipped_relation_count,
         "warningCount": len(result.warnings),
+        "factBundleUri": fact_uri,
+        "uploadStatus": "UPLOADED" if fact_uri else "LOCAL_ONLY",
     }, ensure_ascii=False))
     return 0
+
+
+def _upload_fact_bundle(
+    body: bytes,
+    *,
+    endpoint: str,
+    bucket: str,
+    prefix: str,
+    tenant_id: str,
+    application_id: str,
+    project_id: str,
+    fingerprint: str,
+    region: str,
+) -> str:
+    """把不可变图事实包上传到固定 MinIO bucket，并返回 worker 可读取的 s3 URI。
+
+    <p>对象 key 只由租户/应用/项目范围和事实指纹组成，既保证相同事实的幂等覆盖，
+    又不会把任务名称、SQL、字段样本或凭据写入对象存储路径。worker 只允许读取同一个
+    bucket，因此审批事件中的 URI 不能跨租户访问任意对象。</p>
+    """
+
+    try:
+        import boto3  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("上传图事实包需要 python-ai-runtime[object-store] 的 boto3 依赖") from exc
+    endpoint = str(endpoint or "").strip().rstrip("/")
+    bucket = str(bucket or "").strip()
+    prefix = str(prefix or "business-graph").strip("/")
+    if not endpoint or not bucket or not fingerprint or any(not str(value).strip() for value in (tenant_id, application_id, project_id)):
+        raise RuntimeError("图事实包 MinIO 上传配置不完整")
+    if not all(str(value).replace("-", "").replace("_", "").isalnum() for value in (bucket, prefix)):
+        raise RuntimeError("图事实包 bucket/prefix 不是安全对象存储标识")
+    access_key = os.getenv("DATASMART_GRAPH_FACT_MINIO_ACCESS_KEY") or os.getenv("DATASMART_MINIO_ACCESS_KEY")
+    secret_key = os.getenv("DATASMART_GRAPH_FACT_MINIO_SECRET_KEY") or os.getenv("DATASMART_MINIO_SECRET_KEY")
+    if not access_key or not secret_key:
+        raise RuntimeError("图事实包 MinIO 凭据未配置")
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region or "us-east-1",
+    )
+    try:
+        client.head_bucket(Bucket=bucket)
+    except Exception:
+        client.create_bucket(Bucket=bucket)
+    key = f"{prefix}/{tenant_id}/{application_id}/{project_id}/{fingerprint}.json"
+    digest = hashlib.sha256(body).hexdigest()
+    # fingerprint 是图内容指纹，不等于 JSON 文本摘要；两者都写入对象元数据，
+    # 便于运维核对对象完整性，但 consumer 仍以事件 fingerprint 校验图实体/关系事实。
+    metadata = {"graph-fact-fingerprint": fingerprint, "bundle-sha256": digest}
+    client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="application/json; charset=utf-8",
+        Metadata=metadata,
+    )
+    return f"s3://{bucket}/{key}"
 
 
 def _load_live_snapshot(args: argparse.Namespace) -> dict[str, object]:
