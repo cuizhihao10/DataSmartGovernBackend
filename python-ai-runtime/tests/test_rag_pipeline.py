@@ -37,13 +37,91 @@ from datasmart_ai_runtime.services.rag import (
     RagScoredChunk,
     chunk_document,
 )
-from datasmart_ai_runtime.services.rag.text import rag_query_document_intent_score
+from datasmart_ai_runtime.services.rag.text import (
+    normalize_rag_query_facet,
+    rag_query_document_intent_score,
+    rag_query_requests_multiple_evidence,
+)
 from datasmart_ai_runtime.services.rag import text as rag_text
 from datasmart_ai_runtime.services.rag import pipeline as rag_pipeline
 
 
 class RagPipelineTest(unittest.TestCase):
     """验证 RAG 管线的召回、隔离、压缩和 fallback。"""
+
+    def test_facet_normalization_does_not_delete_business_words_containing_scaffold_chars(self) -> None:
+        """问句骨架清理不能把“请求/当前设置/问题”中的业务字符误删。"""
+
+        self.assertIn("请求", normalize_rag_query_facet("从外部请求到最终收尾"))
+        self.assertIn("当前设置", normalize_rag_query_facet("怎样依据当前设置降低压力"))
+        self.assertIn("问题", normalize_rag_query_facet("批量搬运出问题时"))
+
+    def test_structured_responsibility_requires_positive_reranker_confirmation(self) -> None:
+        """结构化 category 只能解释职责，不能在 Reranker 零分时单独制造引用。"""
+
+        chunk = RagChunk(
+            chunk_id="connector-inventory#0",
+            document_id="connector-inventory",
+            chunk_index=0,
+            title="连接器版本与容量清单",
+            text="connector_id,version,max_batch_size,rate_limit_rps",
+            source_uri="test://connector-inventory",
+            tenant_id="*",
+            project_id="*",
+            workspace_key="*",
+            source_type=RagChunkSourceType.METADATA,
+            metadata={"category": "connector_inventory", "contentFormat": "csv"},
+        )
+        query = RagQuery(
+            tenant_id="*",
+            project_id="*",
+            actor_id="owner-a",
+            question="请结合既往情况、当前设置和能力上限判断接收方承受不住时怎样降低压力？",
+            retrieval_mode="lexical",
+            generate_answer=False,
+        )
+        self.assertFalse(
+            rag_pipeline._has_sufficient_evidence(
+                RagScoredChunk(chunk=chunk, final_score=0.1),
+                RagPipelineSettings(),
+                query,
+            )
+        )
+        self.assertTrue(
+            rag_pipeline._has_sufficient_evidence(
+                RagScoredChunk(chunk=chunk, rerank_score=0.001, final_score=0.1),
+                RagPipelineSettings(),
+                query,
+            )
+        )
+
+    def test_multi_evidence_detection_distinguishes_one_artifact_value_lists(self) -> None:
+        """同一份日志、台账或灾备手册的字段列表不能误触发多文档 fan-out。"""
+
+        single_artifact_questions = (
+            "保存的台账如何把补救过程、依据、动作和最后确认连起来？",
+            "消息处理变慢时，哪个消费组和分区堆积最严重？",
+            "严重故障后，业务资料和服务应按什么顺序恢复？",
+            "字段统计如何帮助判断地区字段的补值和必填问题能否安全处理？",
+            "持续接收消息时，如何安排并行读取、位置记录、乱序和失败处理？",
+        )
+        for question in single_artifact_questions:
+            with self.subTest(question=question):
+                self.assertFalse(rag_query_requests_multiple_evidence(question))
+
+    def test_multi_evidence_detection_keeps_explicit_complementary_workflows(self) -> None:
+        """结合、生命周期追踪和独立职责列表仍应启用互补证据覆盖。"""
+
+        multi_evidence_questions = (
+            "请结合运维流程、连接器容量和历史记录给出本次排查顺序。",
+            "怎样从接口标识追踪到 Recovery 修复、分片 replay 和最终验证？",
+            "Checkpoint 事故、失败分片 replay 和 Recovery 决策如何恢复？",
+            "怎样推进 CDC 检查点并避免重现历史位点间隙？",
+            "请还原最近成功任务的配置版本、批量、并发、超时和最终运行结果。",
+        )
+        for question in multi_evidence_questions:
+            with self.subTest(question=question):
+                self.assertTrue(rag_query_requests_multiple_evidence(question))
 
     def test_semantic_lifecycle_evidence_can_pass_without_query_word_overlap(self) -> None:
         """状态快照类资料即使没有题干原词，也能凭明确职责和向量信号进入证据集。"""

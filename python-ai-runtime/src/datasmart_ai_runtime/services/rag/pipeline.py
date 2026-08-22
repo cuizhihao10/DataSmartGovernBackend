@@ -1146,6 +1146,16 @@ def _has_sufficient_evidence(
     responsibility_backed = False
     if query is not None:
         responsibility_score = rag_query_document_intent_score(query.question, candidate.chunk)
+        # 结构化 CSV/JSON/SQL 资料经常把答案写在列名、键名或短值中，中文自然问法可能完全不复用
+        # 正文 token。它们不能因为 category 标签就直接成为引用；但如果资料已经先经过范围过滤、
+        # 真实 Reranker 窗口和排序，并且在一个明确的多证据问题中被模型保留了正相关分数，那么这
+        # 是“职责先验 + 模型确认”的独立证据路径。该路径只在具体 category 上生效，宽泛的 incident、
+        # runbook 等类别仍必须有正文或向量信号，避免 Manifest 元数据单独放行。
+        structured_reranker_confirmed = _structured_responsibility_reranker_confirmed(
+            candidate,
+            query,
+            responsibility_score,
+        )
         responsibility_backed = (
             responsibility_score >= _MULTI_EVIDENCE_RESPONSIBILITY_INTENT_THRESHOLD
             and (
@@ -1165,6 +1175,7 @@ def _has_sufficient_evidence(
             )
             and candidate.vector_score >= settings.minimum_vector_score
         )
+        responsibility_backed = responsibility_backed or structured_reranker_confirmed
     if query is not None:
         # 查询含有“火星冷链/海岛传感器”这类知识库外实体时，候选即使命中“规则/字段”等泛词，
         # 也不能凭普通向量近邻直接通过。只有较高的语义相似度，或候选确实覆盖了独特词，才允许进入
@@ -1179,6 +1190,47 @@ def _has_sufficient_evidence(
     # 当候选只覆盖某一个 facet 时，整句 distinctive token 可能没有命中是正常现象；
     # facet 门禁已经同时检查了独特词、职责先验和正文信号，此处允许它作为独立通过路径。
     return lexical_passed or vector_passed or multi_evidence_facet_passed or responsibility_backed
+
+
+def _structured_responsibility_reranker_confirmed(
+    candidate: RagScoredChunk,
+    query: RagQuery,
+    responsibility_score: float,
+) -> bool:
+    """判断结构化职责候选是否获得了足够的二阶段模型确认。
+
+    这条路径专门处理“接收方承受不住”“保存的台账如何串起来”这类自然表达：候选资料的
+    ``category``、标题和标签已经说明它负责连接器清单或恢复台账，但正文切块可能只有英文字段名，
+    因而 lexical/vector 任一路都没有达到普通 gate 的最低分。候选仍必须同时满足以下条件：
+
+    * 查询明确需要多个互补证据面，单证据问题继续保持 fail-closed；
+    *职责分达到多证据门槛；
+    * category 是具体职责类别，而不是宽泛的大类；
+    * 候选已进入 Reranker，且保留了正的原始分与最终排序分。
+
+    最后一项是关键边界：category 只负责解释“该资料应该回答哪一面”，真正的“这次查询确实
+    相关”仍由二阶段模型确认。若 Provider 返回零分、协议错误或候选根本没有进入窗口，就不能
+    通过这条路径生成引用。
+    """
+
+    if not rag_query_requests_multiple_evidence(query.question):
+        return False
+    if float(responsibility_score) < _MULTI_EVIDENCE_RESPONSIBILITY_INTENT_THRESHOLD:
+        return False
+    category = str((candidate.chunk.metadata or {}).get("category") or "").strip().casefold()
+    if not category or category in {
+        "architecture",
+        "document",
+        "governance",
+        "incident",
+        "rule",
+        "runbook",
+    }:
+        return False
+    return (
+        float(candidate.rerank_score) > 0.0
+        and float(candidate.final_score) > 0.0
+    )
 
 
 def _has_sufficient_multi_evidence_facet(
@@ -1366,6 +1418,29 @@ def _score_multi_evidence_facet(
             or kafka_runbook_context_passed
         )
     )
+    # 对结构化职责资料，正文可能只有字段名/短值，当前 facet 与 chunk 没有可复用的中文 token。
+    # 如果整句确实是多证据问题，并且该候选已经得到 Reranker 的正相关确认，则允许它覆盖自己的
+    # facet。这里复用与整句 gate 相同的具体 category 白名单边界；没有正的 rerank/final 分数时，
+    # category 仍然不能单独宣告 facet 已覆盖。
+    structured_facet_reranker_confirmed = (
+        query_context is not None
+        and rag_query_requests_multiple_evidence(query_context)
+        and _structured_responsibility_reranker_confirmed(
+            candidate,
+            RagQuery(
+                tenant_id=candidate.chunk.tenant_id,
+                project_id=candidate.chunk.project_id,
+                actor_id="rag-facet-gate",
+                question=query_context,
+                application_id=candidate.chunk.application_id,
+                workspace_key=candidate.chunk.workspace_key,
+                generate_answer=False,
+                retrieval_mode="lexical",
+            ),
+            intent_score,
+        )
+    )
+    intent_facet_passed = intent_facet_passed or structured_facet_reranker_confirmed
 
     # 长 facet 中只命中一个字段名或一个两字泛词，不能算作完整支持。短 facet（例如“批量”“超时”）
     # 仍允许一个稳定 ASCII 字段或一个明确的两字业务术语通过；这样不会破坏已有的参数/认证回归。
@@ -1579,6 +1654,24 @@ def _restrict_to_declared_responsibility(
     if not responsibility_backed_ids:
         return candidates
 
+    # 单证据查询只需要一个最贴合当前职责的类别。多个 category 都可能因为共享“恢复/日志/手册”
+    # 等词进入 gate，但继续把相邻职责陪引到最终上下文会降低 citation precision，例如恢复台账
+    # 与持久化快照、Kafka lag 日志与 Kafka 事故复盘。多证据问题必须保留互补类别，仍交给 facet
+    # 集合覆盖；这里只有明确的单一 sourceType 且没有多 facet 合同才做职责收敛。
+    if not rag_query_requests_multiple_evidence(query.question):
+        best_responsibility = max(
+            rag_query_document_intent_score(query.question, candidate.chunk)
+            for candidate in candidates
+            if candidate.chunk.document_id in responsibility_backed_ids
+        )
+        responsibility_backed_ids = {
+            candidate.chunk.document_id
+            for candidate in candidates
+            if candidate.chunk.document_id in responsibility_backed_ids
+            and rag_query_document_intent_score(query.question, candidate.chunk)
+            >= best_responsibility * 0.92
+        }
+
     protected_ids = responsibility_backed_ids.union(
         candidate.chunk.document_id
         for candidate in candidates
@@ -1769,9 +1862,10 @@ def _reserve_multi_evidence_coverage(
             whole_query_intent.get(document_id, 0.0),
             rag_query_document_intent_score(query.question, candidate.chunk),
         )
-    # 第一阶段只解决“还有哪些实质 facet 没有证据”的问题。排序先看 facet 自身的职责分，再看
-    # facet 质量；整句意图作为领域上下文的受控平局裁决。例如“Kafka 任务参数”与“成功任务
-    # 参数”会共享“任务参数” facet，但整句 Kafka 意图应优先选择 Kafka 案例。
+    # 第一阶段只解决“还有哪些实质 facet 没有证据”的问题。排序必须先看当前 facet 的原始
+    # 职责分、覆盖质量和局部词法，再把整句意图作为最后的领域平局裁决。例如“字段映射案例”
+    # 与“Schema 事故”都可能覆盖“字段故障” facet，但前者的 category 职责分更高；如果先把
+    # facet 意图封顶为 1.0，再比较长句整句分，长篇事故正文就会反过来压过真正的字段案例。
     while len(selected) < selection_limit:
         uncovered_facets = all_facets - covered_facets
         uncovered_source_types = (
@@ -1796,15 +1890,22 @@ def _reserve_multi_evidence_coverage(
                 len(newly_covered),
                 int(adds_source_type),
                 sum(
-                    min(1.0, max(0.0, facet_intent_by_document.get(document_id, {}).get(index, 0.0)))
+                    min(
+                        2.5,
+                        max(
+                            0.0,
+                            facet_intent_by_document.get(document_id, {}).get(index, 0.0),
+                        ),
+                    )
+                    / 2.5
                     for index in newly_covered
                 ),
-                min(1.0, max(0.0, whole_query_intent.get(document_id, 0.0))),
                 sum(facet_scores[index] for index in newly_covered),
                 sum(
                     min(1.0, max(0.0, facet_lexical_by_document.get(document_id, {}).get(index, 0.0)))
                     for index in newly_covered
                 ),
+                min(1.0, max(0.0, whole_query_intent.get(document_id, 0.0))),
                 whole_query_lexical.get(document_id, 0.0),
                 float(candidate.final_score),
             )

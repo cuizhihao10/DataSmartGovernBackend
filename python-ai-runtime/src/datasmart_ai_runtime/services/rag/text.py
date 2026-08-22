@@ -293,7 +293,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "configuration_versions",
-        (("配置", "参数", "版本", "配置改动"), ("差异", "对比", "上一版", "前一版", "历史", "划清可处理边界")),
+        (("配置", "参数", "版本", "配置改动"), ("差异", "对比", "上一版", "前一版", "历史", "事故经过", "兼容方案", "划清可处理边界")),
         ("task_config_versions", "successful_task_case"), ("task_case",), ("json",), 0.85,
     ),
     _RagDocumentIntentHint(
@@ -325,8 +325,8 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     _RagDocumentIntentHint(
         "agent_lifecycle_state",
         (
-            ("自动处理", "自动完成", "自动执行", "处理完成", "事情完成"),
-            ("下一步", "收尾", "最终环节", "最终验证", "结束", "状态变化", "可追溯链路", "最终收尾", "外部"),
+            ("自动处理", "自动完成", "自动执行", "处理完成", "事情完成", "外部请求", "过程", "状态变化"),
+            ("下一步", "收尾", "最终环节", "最终验证", "结束", "状态变化", "可追溯链路", "最终收尾", "外部", "关联"),
         ),
         ("agent_state_snapshot", "recovery_events", "database_recovery_ledger"),
         ("memory_export", "incident", "dataset"),
@@ -335,7 +335,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "connector_capacity",
-        (("连接器", "connector", "承载", "能力", "承载能力"), ("容量", "版本", "批量", "并发", "清单", "上限", "能力上限", "承载能力")),
+        (("连接器", "connector", "承载", "能力", "承载能力", "接收方", "当前设置"), ("容量", "版本", "批量", "并发", "清单", "上限", "能力上限", "承载能力", "承受不住", "降低压力")),
         ("connector_capabilities", "connector_inventory"), ("metadata",), ("json", "csv"), 1.00,
     ),
     _RagDocumentIntentHint(
@@ -422,6 +422,28 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
         ("api_data_sync_reference", "api_task_reference"), ("document",), ("docx",), 0.95,
     ),
     _RagDocumentIntentHint(
+        "natural_data_sync_execution_contract",
+        # 自然问法常把 API 合同拆成“发起动作”和“受影响内容”，而不会说“执行接口”。两组词分别
+        # 表示动作本身和同步对象/结果，只有同时命中才提升 api_data_sync_reference；正文、向量和
+        # Reranker 仍然负责最终确认，避免把任意“动作”问题路由到数据同步接口。
+        (("发起动作", "发起", "触发", "提交", "启动", "执行"), ("动作", "请求", "任务", "同步", "结果")),
+        ("api_data_sync_reference",), ("document",), ("docx",), 1.15,
+    ),
+    _RagDocumentIntentHint(
+        "natural_full_load_case",
+        # “批量搬运出问题”是全量任务案例的稳定业务表达。把“出问题/失败”作为第二个概念组，
+        # 可以在 facet 拆分后保留全量案例职责，而不要求用户重复“全量同步”这四个字。
+        (("全量", "批量导入", "批量搬运"), ("任务", "同步", "作业", "案例", "出问题", "失败", "故障")),
+        ("full_load_task_cases",), ("task_case",), ("xlsx",), 1.05,
+    ),
+    _RagDocumentIntentHint(
+        "natural_rate_limit_task_configuration",
+        # “当前设置”是限流问题中的参数证据面。单独出现“设置”不能证明 API 案例相关，必须和
+        # 当前配置以及限流/压力上下文同时出现，才把职责先验交给 api_task_cases。
+        (("当前设置", "当前配置", "配置", "参数"), ("设置", "限流", "压力", "批量", "并发", "超时", "api", "接收方")),
+        ("api_task_cases",), ("task_case",), ("xlsx",), 1.10,
+    ),
+    _RagDocumentIntentHint(
         "task_parameters",
         (("任务", "作业", "同步", "考虑配置", "夜间安排", "工作"), ("参数", "配置", "基线", "批量", "并发", "超时", "出错", "有限尝试")),
         ("successful_task_case", "api_task_cases", "kafka_task_cases", "schedule_case", "task_case_library", "full_load_task_cases"),
@@ -454,7 +476,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "recovery_and_audit",
-        (("恢复", "修复", "补救", "补救过程", "补救步骤", "安全恢复", "受影响记录", "recovery"), ("事件", "台账", "验证", "最后确认", "收尾确认", "审计", "快照", "状态", "受影响记录", "一致", "依据", "动作")),
+        (("恢复", "修复", "补救", "补救过程", "补救步骤", "安全恢复", "受影响记录", "受影响内容", "补救记录", "recovery"), ("事件", "台账", "验证", "最后确认", "收尾确认", "收尾", "审计", "快照", "状态", "受影响记录", "一致", "依据", "动作", "发起动作", "对上")),
         ("recovery_events", "database_recovery_ledger", "recovery_decision_trace", "agent_state_snapshot"),
         ("incident", "dataset", "memory_export"), ("json", "jsonl", "sql"), 0.90,
     ),
@@ -474,8 +496,16 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
         ("recovery_replay_cases", "recovery_events"), ("incident",), ("xlsx", "jsonl"), 1.10,
     ),
     _RagDocumentIntentHint(
+        "safe_recovery_replay_case",
+        # 用户未必会直接说 replay，常见自然问法是“怎样确认可以安全恢复”。在上下文同时出现
+        # 处理位置偏差时，这个职责组合指向可复现的恢复案例，而不是泛化事件流水；它只为
+        # recovery_replay_cases 提供候选先验，仍需正文/Embedding/Reranker 和证据门禁确认。
+        (("安全恢复", "安全起点", "恢复"), ("案例", "步骤", "确认", "位置", "偏差", "失败")),
+        ("recovery_replay_cases",), ("task_case",), ("xlsx",), 1.15,
+    ),
+    _RagDocumentIntentHint(
         "checkpoint_incident",
-        (("checkpoint", "检查点", "位点", "进度位置", "处理位置", "位置偏差"), ("事故", "漂移", "位置偏差", "异常", "根因", "提前确认")),
+        (("checkpoint", "检查点", "位点", "进度位置", "处理位置", "位置偏差"), ("事故", "漂移", "位置偏差", "偏差", "异常", "根因", "提前确认")),
         ("incident_checkpoint",), ("incident",), ("docx",), 1.10,
     ),
     _RagDocumentIntentHint(
@@ -511,7 +541,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "schema_drift",
-        (("schema", "字段", "列", "字段结构"), ("漂移", "演进", "变更", "兼容", "兼容方案", "事故经过")),
+        (("schema", "字段", "列", "字段结构"), ("漂移", "演进", "变更", "兼容", "兼容方案", "事故经过", "配置改动", "可处理边界")),
         ("incident_schema_drift", "schema_evolution_cases", "task_config_versions"),
         ("incident", "dataset", "task_case"), ("docx", "xlsx", "json"), 1.00,
     ),
@@ -594,8 +624,16 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "worker_execution_log",
-        (("worker", "执行"), ("日志", "非空", "错误", "字段", "失败")),
+        (("worker", "执行", "后台处理", "处理任务"), ("日志", "非空", "错误", "字段", "失败", "故障", "缺失", "定位", "恢复确认")),
         ("worker_execution",), ("incident",), ("log",), 1.20,
+    ),
+    _RagDocumentIntentHint(
+        "field_failure_execution",
+        # 用户常把“字段缺失后如何定位并确认恢复”作为完整业务动作描述，并不会逐字说出
+        # worker/log。该职责组把字段故障、定位和恢复确认分别作为独立概念，只有三者共同出现
+        # 才提升 worker_execution；正文、真实 Embedding/Reranker 与 evidence gate 仍是必需条件。
+        (("字段", "列", "field"), ("缺失", "非空", "故障", "报错", "失败", "定位"), ("恢复", "确认", "验证", "日志")),
+        ("worker_execution",), ("incident",), ("log",), 1.15,
     ),
     _RagDocumentIntentHint(
         "persistence_snapshot",
@@ -912,9 +950,109 @@ def split_rag_query_variants(text: str) -> tuple[str, ...]:
 
 
 def rag_query_requests_multiple_evidence(text: str) -> bool:
-    """判断问题是否明确要求多份互补证据。"""
+    """判断问题是否明确要求多份互补证据。
 
-    return len(split_rag_query_variants(text)) > 1
+    ``split_rag_query_variants`` 是召回 fan-out 的宽松工具：它需要把“字段、约束、映射”拆成若干
+    局部检索词，哪怕最终只由一份表格回答也没有问题。但多证据 gate、facet 覆盖和最终引用收敛
+    不能直接复用这个结果。之前仅用 ``len(variants) > 1`` 判断会把以下单资料问题误判成跨文档
+    问题：
+
+    * “哪个消费组和分区堆积最严重？”其实只需要一份 lag 日志；
+    * “保存的台账如何把补救过程、依据、动作和最后确认连起来？”是在问一张台账的列；
+    * “业务资料和服务应按什么顺序恢复？”通常由一份灾备手册给出顺序。
+
+    这里保留有界的本地语法判断，不调用模型，也不根据黄金文档名称生成规则。只有明确的结合/同时
+    语义、流程追踪迁移，或至少两个独立治理职责词同时出现时，才启用多文档互补选择；普通“和/、”
+    列表继续走单资料职责收敛，同时仍可通过宽松 variants 获得词法和向量召回机会。
+    """
+
+    normalized = normalize_rag_retrieval_question(text)
+    variants = split_rag_query_variants(normalized)
+    if len(variants) <= 1:
+        return False
+    if _rag_query_is_single_artifact_value_list(normalized):
+        return False
+
+    # “结合/同时考虑”是用户明确要求互补资料的最强本地信号；“共同/分别”只有在没有单资料
+    # 清单形状时才作为辅助信号，避免“表格中的多列分别怎么处理”再次触发 fan-out。
+    if re.search(r"(?:结合|同时(?:考虑|核对|参考|查看)?|共同(?:核对|满足|确认)?|分别(?:核对|查看|对照))", normalized):
+        return True
+
+    # “从接口标识追踪到 Recovery，再到最终验证”表达的是跨生命周期证据链，即使没有“结合”也
+    # 必须保留接口合同、事件流水和最终状态等互补资料。
+    if re.search(r"(?:从|由).{2,}(?:到|关联到|追踪到|映射到).{2,}", normalized):
+        return True
+
+    # “推进 A 并避免 B”“核对 A 并恢复 B”是两个独立动作；排除“并发”这类单个业务词。
+    if re.search(r"并(?!发)(?:避免|防止|恢复|核对|确认|关联|追踪|保证|证明|判断)", normalized):
+        return True
+
+    # 没有显式连接词时，只接受两个以上明确的资料职责词。字段/数量/对象等普通值不算职责，
+    # 因而不会把“消费组和分区”“补救过程和最后确认”误当成多份文档。
+    responsibility_markers = (
+        "接口",
+        "日志",
+        "手册",
+        "案例",
+        "事故",
+        "复盘",
+        "认证",
+        "审计",
+        "台账",
+        "快照",
+        "连接器容量",
+        "历史记录",
+        "任务参数",
+        "字段映射",
+        "状态快照",
+        "事件流水",
+        "运维流程",
+        "配置版本",
+        "最终运行结果",
+        "失败对象",
+        "恢复台账",
+        "Recovery",
+        "replay",
+        "DLT",
+        "Checkpoint",
+        "CDC",
+    )
+    marker_count = sum(1 for marker in responsibility_markers if marker.casefold() in normalized.casefold())
+    return marker_count >= 2
+
+
+def _rag_query_is_single_artifact_value_list(normalized: str) -> bool:
+    """识别“同一份资料内部多个字段/对象”的问法。
+
+    这是多证据判定的负向边界，不是答案路由规则。它只匹配稳定的句法外形：选择一个指标、从一
+    张台账取多列、按一份手册给出的顺序恢复，或让一份统计资料帮助判断多个字段状态。若用户同时
+    使用“结合”“从 A 到 B”“追踪到”等跨资料信号，调用方会在本函数之后按正向语法重新判定。
+    """
+
+    if not normalized:
+        return False
+    if re.search(r"哪个.{0,24}(?:和|与).{1,20}(?:最|多少|是否|有何|堆积|异常|严重)", normalized):
+        return True
+    if re.search(r"(?:按|按照).{0,16}顺序", normalized) and not re.search(
+        r"(?:结合|同时|共同|分别|从|关联到|追踪到|映射到)", normalized
+    ):
+        return True
+    if re.search(
+        r"(?:台账|日志|清单|手册|目录|快照|记录|表格|文件|资料).{0,18}"
+        r"(?:如何|怎样|哪些|什么).{0,28}(?:把|将|连起来|串起来|包含|记录|对应|核对)",
+        normalized,
+    ):
+        return True
+    if re.search(r"(?:如何|怎样)帮助判断|(?:如何|怎样)判断", normalized) and not re.search(
+        r"(?:结合|同时|共同|分别|从|关联到|追踪到|映射到)", normalized
+    ):
+        return True
+    if re.search(
+        r"(?:表格|文件|台账|日志|清单|手册).{0,24}分别(?:怎么|如何|应|要)",
+        normalized,
+    ) and not re.search(r"(?:结合|同时|共同|从|关联到|追踪到|映射到)", normalized):
+        return True
+    return False
 
 
 def chunk_document(document: RagDocument, *, max_chars: int = 700, overlap_chars: int = 120) -> tuple[RagChunk, ...]:
@@ -1272,7 +1410,15 @@ def normalize_rag_query_facet(text: str) -> str:
     """
 
     normalized = normalize_rag_retrieval_question(text)
+    # 这里不能对所有 scaffold 直接执行 ``str.replace``：中文没有空格边界，“请”会把“请求”
+    # 截成“求”，“当前”会把“当前设置”削成“设置”，“问题”也可能是故障语义的一部分。只移除
+    # 长度至少为两个字符且明确属于问句骨架的短语；单字骨架和业务高频词保留，让后续职责先验
+    # 看到完整的自然表达。开头的“请”由下面的正则单独处理，既去掉礼貌前缀又不破坏“请求”。
+    normalized = re.sub(r"^\s*请\s*", " ", normalized)
+    preserved_business_terms = {"当前", "内容", "信息", "记录", "问题"}
     for phrase in sorted(_RAG_QUERY_SCAFFOLD_TERMS, key=len, reverse=True):
+        if len(phrase) < 2 or phrase in preserved_business_terms:
+            continue
         normalized = normalized.replace(phrase, " ")
     normalized = re.sub(r"\s+", " ", normalized).strip(" ，,、。：:；;!?！？")
     return normalized
@@ -1733,6 +1879,22 @@ def _rag_intent_category_allowed(
             return normalized_category == "operations_record"
         return normalized_category == "operations_record" or normalized_category.startswith("incident_")
 
+    if intent_key == "recovery_and_audit":
+        # “处理位置偏差 + 安全恢复 + 补救步骤”是在核对恢复决策和 replay 案例，不是请求整条
+        # Recovery 事件流水。事件流水虽然也有“受影响记录”字段，但在这个语境中会把已覆盖的
+        # 影响面重复占用，挤掉真正的 recovery_decision_trace；只有用户明确要求事件/流水/追踪
+        # 时才让 recovery_events 承担该职责。
+        position_recovery_context = any(
+            term in context
+            for term in ("处理位置", "位置偏差", "位点偏差", "安全恢复", "补救步骤")
+        )
+        event_stream_requested = any(
+            term in context
+            for term in ("恢复事件", "事件流水", "事件追踪", "接口追踪", "状态变化")
+        )
+        if position_recovery_context and not event_stream_requested:
+            return normalized_category != "recovery_events"
+
     if intent_key in {"api_contract", "task_and_data_sync_api"} and any(
         term in context for term in ("稳定标识关联", "稳定标识")
     ):
@@ -1749,7 +1911,20 @@ def _rag_intent_category_allowed(
         connector_context = f"{query} {context_query}"
         if any(
             term in connector_context
-            for term in ("api", "限流", "429", "连接池", "连接器清单", "cdc", "checkpoint", "支持")
+            for term in (
+                "api",
+                "限流",
+                "429",
+                "连接池",
+                "连接器清单",
+                "cdc",
+                "checkpoint",
+                "支持",
+                "接收方",
+                "当前设置",
+                "承受不住",
+                "能力上限",
+            )
         ):
             return normalized_category == "connector_inventory"
         return normalized_category == "connector_capabilities"
@@ -1849,6 +2024,19 @@ def _rag_intent_category_allowed(
     if intent_key == "recovery_replay":
         # “某个 replay 案例如何配置”需要案例表；“从接口追踪到 replay 和最终验证”需要事件流水。
         # 两者正文都可能出现 replay，使用整句上下文做职责选择可以避免把案例数据误当成运行证据。
+        # 反过来，“处理位置出现偏差/位点漂移”首先是在问事故根因，不应因为事故资料里也提到
+        # 安全起点就让 replay 案例抢走 checkpoint 事故 facet。只有用户明确写出 replay、失败分片
+        # 或失败对象时，才激活 recovery_replay；这条收敛规则只缩小已有职责，不会新增候选。
+        position_drift_context = any(
+            term in query
+            for term in ("处理位置", "位置偏差", "位点偏差", "检查点", "checkpoint", "位点漂移")
+        )
+        explicit_replay = any(
+            term in context
+            for term in ("replay", "重放", "失败分片", "失败对象", "回放")
+        )
+        if position_drift_context and not explicit_replay:
+            return False
         lifecycle_trace = any(
             term in context
             for term in ("接口标识", "最终验证", "恢复事件", "事件流水", "追踪")

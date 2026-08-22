@@ -405,7 +405,14 @@ class RagHybridRetriever:
             if not score.match_terms and query_terms:
                 # 极短或只包含范围词的查询仍走原始 token 评分，保持旧调用的可解释行为。
                 score = lexical_score(query_terms, chunk)
-            if score.score > 0:
+            intent_score = rag_query_document_intent_score(retrieval_question, chunk)
+            # 自然语言问题经常只表达业务职责，不复用资料正文中的规范术语，例如“接收方承受不住”
+            # 对应连接器清单中的 max_batch_size/rate_limit_rps。若这里坚持“必须先有正文词法”，
+            # 这类资料永远进不了 fused，后面的 facet fan-out 和 SiliconFlow Reranker 没有机会判断
+            # 它是否是真正证据。高职责候选只能作为召回保留项进入后续窗口；它仍必须经过真实
+            # Reranker、正文/向量 evidence gate 和范围隔离，category 本身不能直接产生引用。
+            intent_backed = intent_score >= 0.85
+            if score.score > 0 or intent_backed:
                 scored.append(
                     RagScoredChunk(
                         chunk=chunk,
@@ -413,8 +420,9 @@ class RagHybridRetriever:
                         match_terms=score.match_terms,
                     )
                 )
-        # 先按正文词法信号筛出候选，再用资料职责先验做次级排序。category 不会把完全没有词法
-        # 证据的文档凭空召回，但能在近重复资料之间表达用户问题真正需要的职责差异。
+        # 先按正文词法或高职责保留条件筛出候选，再用资料职责先验做次级排序。category 不会把
+        # 完全没有词法证据直接变成答案；高职责保留项只是在进入 Reranker 前扩大候选窗口，最终
+        # 仍由证据门禁决定是否可引用。
         intent_weight = max(0.0, min(1.0, float(self._settings.query_intent_rank_weight)))
         scored.sort(
             key=lambda item: (
