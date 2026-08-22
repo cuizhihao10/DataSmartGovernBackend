@@ -77,6 +77,37 @@ _EXPLICIT_SCOPE_REFERENCE_PATTERN = re.compile(
 # 老资料和真实企业临时文档。
 _MULTI_EVIDENCE_RESPONSIBILITY_INTENT_THRESHOLD = 0.85
 
+# 多证据问题中的一个 facet 往往只是“结果概况”“安全恢复”或“当前设置”这样的短语。真实文档
+# 可能用 CSV 列名、XLSX 表头或规范化运维术语表达同一职责，局部词法分因此会低于正文长句；但
+# 整句已经由 SiliconFlow Reranker 确认候选与问题相关。这个白名单只描述“哪个明确 category 可以
+# 借用整句职责、哪些 facet 主题允许它承担”，不绑定任何黄金集 documentId，也不会自行召回候选。
+# 借用仍要求候选已经通过上游范围过滤、Reranker 和 evidence gate，因而不会把 category 元数据
+# 变成答案证据。
+_MULTI_EVIDENCE_CONTEXT_BORROW_FACET_TERMS: dict[str, tuple[str, ...]] = {
+    "successful_runs": ("结果概况", "运行结果", "结果", "写入数量", "统计", "数量"),
+    "successful_task_case": ("资源设置", "参数设置", "成功任务", "批量", "并发", "超时", "配置"),
+    "worker_execution": ("确认已经恢复", "执行日志", "失败日志"),
+    "operations_manual": ("操作经验", "逐步排查", "排查顺序", "运维流程", "排查"),
+    "api_task_reference": ("夜间安排", "有限尝试", "任务接口", "任务工作"),
+    "task_case_library": ("可复用经验", "可复用", "以往作业记录", "案例库"),
+    # 数据同步 API 只承担请求/发起合同；“批量搬运”和“受影响内容”分别交给全量任务案例与
+    # 恢复/结果资料，避免 API category 一次覆盖多个 facet 后挤掉真正的业务证据。
+    "api_data_sync_reference": ("发起动作", "同步执行", "执行接口"),
+    "database_recovery_ledger": ("补救记录", "收尾确认", "恢复台账", "最终验证"),
+    "schema_evolution_cases": ("结构变化", "结构变更", "兼容方案", "数据方案", "配置改动", "可处理边界", "schema"),
+    "incident_schema_drift": ("结构变化", "结构变更", "事故经过", "兼容方案", "schema", "长期措施"),
+    "api_task_cases": ("当前设置", "限流设置", "任务参数", "批量并发"),
+    "connector_inventory": ("能力上限", "连接器清单", "连接方式", "承载能力"),
+    "incident_rate_limit": ("接收方承受不住", "既往情况", "限流"),
+    "incident_checkpoint": ("处理位置", "位置偏差", "断点位置", "checkpoint", "检查点"),
+    "recovery_replay_cases": ("安全恢复", "失败分片", "回放", "重放", "失败对象", "安全起点"),
+    "recovery_decision_trace": ("补救步骤", "修复决策", "决策轨迹", "授权边界"),
+    "recovery_events": ("状态变化", "可追溯链路", "事件追踪", "生命周期", "外部请求", "最终收尾"),
+    "api_authentication_reference": ("认证", "证明发起", "身份", "实际执行", "受控操作"),
+    "security_manual": ("双主体", "越权", "实际执行", "授权", "受控操作", "边界"),
+    "rag_agent_evaluation_report": ("资料匹配", "质量表现", "评测", "指标", "结果异常", "检索结果"),
+}
+
 
 @dataclass(frozen=True)
 class RagPipelineSettings:
@@ -1290,6 +1321,74 @@ def _facet_has_strong_match(
     return len(matched_terms) >= 2 or len(distinctive_terms) <= 1
 
 
+def _multi_evidence_context_borrow_signal(
+    candidate: RagScoredChunk,
+    facet_question: str,
+    query_context: str | None,
+    settings: RagPipelineSettings,
+) -> tuple[bool, float]:
+    """判断结构化职责候选能否把整句意图借给当前 facet。
+
+    多证据查询的局部 facet 经常只剩一个短业务词，例如“当前设置”或“收尾确认”。如果直接要求
+    候选正文也逐字复述这个短词，CSV/XLSX/日志资料会在最终集合覆盖阶段丢失，即使它们已经进入
+    Reranker 窗口并被整句模型确认。这里采用四层边界：
+
+    1. 问题必须确实被识别为多证据请求；
+    2. category 必须在受控白名单中，且当前 facet 必须包含该 category 的业务主题；
+    3. 候选对整句问题的职责分必须达到门槛；
+    4. 候选必须保留正的 Reranker/final 分，并已经通过正文或结构化职责 evidence gate。
+
+    第四层不重新访问知识库，也不提升候选分数；函数只返回整句职责分，供 facet 质量计算复用。
+    因此它修复的是“已确认证据在最终覆盖中被丢掉”的断层，而不是用规则替代 Embedding 或
+    SiliconFlow Reranker。
+    """
+
+    if not query_context or not rag_query_requests_multiple_evidence(query_context):
+        return False, 0.0
+    category = str((candidate.chunk.metadata or {}).get("category") or "").strip().casefold()
+    facet = normalize_rag_query_facet(facet_question).casefold()
+    allowed_terms = _MULTI_EVIDENCE_CONTEXT_BORROW_FACET_TERMS.get(category)
+    if not allowed_terms or not facet or not any(term.casefold() in facet for term in allowed_terms):
+        return False, 0.0
+
+    context_intent_score = rag_query_document_intent_score(query_context, candidate.chunk)
+    responsibility_threshold = max(
+        _MULTI_EVIDENCE_RESPONSIBILITY_INTENT_THRESHOLD,
+        float(settings.multi_evidence_responsibility_intent_threshold),
+    )
+    if context_intent_score < responsibility_threshold:
+        return False, context_intent_score
+    if float(candidate.rerank_score) <= 0.0 or float(candidate.final_score) <= 0.0:
+        return False, context_intent_score
+
+    # _score_multi_evidence_facet 通常接收已经 gated 的候选，但保留这层局部校验，避免未来调用方
+    # 直接复用辅助函数时让 category 单独放行。结构化资料可走既有“category + 正 Reranker”
+    # gate；文本资料仍需保留最低词法或向量信号。
+    text_signal = (
+        float(candidate.lexical_score) >= float(settings.minimum_lexical_score) * 0.30
+        or float(candidate.vector_score) >= float(settings.minimum_vector_score) * 0.70
+        or bool(candidate.match_terms)
+    )
+    if not text_signal:
+        full_query = RagQuery(
+            tenant_id=candidate.chunk.tenant_id,
+            project_id=candidate.chunk.project_id,
+            actor_id="rag-context-borrow-gate",
+            question=query_context,
+            application_id=candidate.chunk.application_id,
+            workspace_key=candidate.chunk.workspace_key,
+            generate_answer=False,
+            retrieval_mode="lexical",
+        )
+        if not _structured_responsibility_reranker_confirmed(
+            candidate,
+            full_query,
+            context_intent_score,
+        ):
+            return False, context_intent_score
+    return True, context_intent_score
+
+
 def _score_multi_evidence_facet(
     candidate: RagScoredChunk,
     facet_question: str,
@@ -1308,8 +1407,9 @@ def _score_multi_evidence_facet(
 
     职责先验路径使用比普通词法更低的正文阈值，是为了容纳 DOCX/XLSX 提取后的同义表达；它仍然
     不能脱离正文命中单独放行。``query_context`` 只供职责内部区分“事件追踪型 replay”与“案例配置型
-    replay”，不会把整句其他主题当成当前 facet 的词法证据。质量分优先使用职责匹配，再使用有界词法
-    分，避免长日志仅凭重复词频压过短而准确的接口或 Runbook。
+    replay”，以及让已通过整句 Reranker/evidence gate 的结构化资料受控借用整句职责，不会把整句
+    其他主题当成当前 facet 的词法证据。质量分优先使用职责匹配，再使用有界词法分，避免长日志仅凭
+    重复词频压过短而准确的接口或 Runbook。
     """
 
     distinctive_terms = set(distinctive_rag_query_terms(facet_question))
@@ -1335,6 +1435,53 @@ def _score_multi_evidence_facet(
     # category 开启整句职责借用，并且要求当前 facet 是“失败处置/堵塞/消费端现象”类主题、候选仍
     # 有最低正文词法信号。它不会让 category 单独生成证据，也不会影响其他资料职责。
     category = str((candidate.chunk.metadata or {}).get("category") or "").strip().casefold()
+    if category == "worker_execution" and query_context:
+        context_lower = query_context.casefold()
+        explicit_worker_facet = any(
+            term in facet_question.casefold()
+            for term in ("确认已经恢复", "执行日志", "失败日志", "worker")
+        )
+        # 字段缺失的第一面由字段映射资料承担；Worker 日志只在 facet 明确指出日志/恢复确认时
+        # 借用整句职责。否则结构化日志正文中出现“字段/缺失”就会与映射工作簿重复覆盖。
+        if "字段缺失" in context_lower and not explicit_worker_facet:
+            return None
+    if category in {"schema_evolution_cases", "incident_schema_drift"} and query_context:
+        context_lower = query_context.casefold()
+        explicit_schema_context = any(
+            term in context_lower
+            for term in ("schema", "字段结构", "结构变化", "结构变更", "漂移", "演进", "兼容方案", "配置改动")
+        )
+        # 非空/字段映射故障虽然可能被事故资料顺带提及，但没有 Schema 演进语义时不应引入
+        # schema evolution 工作簿或漂移事故，避免它们压过字段映射和 Worker 执行证据。
+        if "字段缺失" in context_lower and not explicit_schema_context:
+            return None
+    if category in {"successful_task_case", "api_task_cases"} and query_context:
+        context_lower = query_context.casefold()
+        batch_context = any(term in context_lower for term in ("批量搬运", "全量", "大量数据"))
+        explicit_api_or_success_context = any(
+            term in context_lower
+            for term in ("api", "接口", "限流", "当前设置", "最近成功", "成功任务", "成功参数")
+        )
+        # 批量搬运问题的配置/执行面应由全量任务案例回答；泛成功参数和 API 案例不能仅凭“任务/
+        # 批量”共享词抢占该 facet。明确说 API、限流或最近成功基线时才重新启用这些 category。
+        if batch_context and not explicit_api_or_success_context:
+            return None
+    # Recovery replay 工作簿通常也会记录“恢复确认”，但在字段缺失/Worker 日志问题里它不是目标
+    # 证据；真正需要的是执行日志里的失败字段和重跑确认。只有整句明确出现 replay、失败分片、
+    # 位点/Checkpoint 等 replay 主题时，才允许该 category 参与当前 facet，避免它凭一个“恢复”
+    # 词抢走 Worker 执行面。该判断只做职责消歧，不扩大候选范围。
+    if category == "recovery_replay_cases" and query_context:
+        context_lower = query_context.casefold()
+        replay_context = any(
+            term in context_lower
+            for term in ("replay", "回放", "重放", "失败分片", "失败对象", "处理位置", "位置偏差", "checkpoint", "检查点")
+        )
+        worker_context = any(
+            term in context_lower
+            for term in ("字段缺失", "字段映射", "worker", "执行日志", "失败日志")
+        )
+        if worker_context and not replay_context:
+            return None
     kafka_operational_facet = any(
         term in facet_question.casefold()
         for term in ("失败处置", "消费端现象", "堵塞", "积压", "dlt", "死信")
@@ -1363,8 +1510,16 @@ def _score_multi_evidence_facet(
             or candidate.vector_score >= float(settings.minimum_vector_score) * 0.70
         )
     )
+    context_borrow_passed, context_borrow_intent_score = _multi_evidence_context_borrow_signal(
+        candidate,
+        facet_question,
+        query_context,
+        settings,
+    )
     if kafka_runbook_context_passed:
         intent_score = max(float(intent_score), float(context_intent_score))
+    if context_borrow_passed:
+        intent_score = max(float(intent_score), float(context_borrow_intent_score))
     responsibility_threshold = max(
         0.0,
         min(
@@ -1416,30 +1571,18 @@ def _score_multi_evidence_facet(
                 and bool(lexical.match_terms)
             )
             or kafka_runbook_context_passed
+            or context_borrow_passed
         )
     )
     # 对结构化职责资料，正文可能只有字段名/短值，当前 facet 与 chunk 没有可复用的中文 token。
     # 如果整句确实是多证据问题，并且该候选已经得到 Reranker 的正相关确认，则允许它覆盖自己的
     # facet。这里复用与整句 gate 相同的具体 category 白名单边界；没有正的 rerank/final 分数时，
     # category 仍然不能单独宣告 facet 已覆盖。
-    structured_facet_reranker_confirmed = (
-        query_context is not None
-        and rag_query_requests_multiple_evidence(query_context)
-        and _structured_responsibility_reranker_confirmed(
-            candidate,
-            RagQuery(
-                tenant_id=candidate.chunk.tenant_id,
-                project_id=candidate.chunk.project_id,
-                actor_id="rag-facet-gate",
-                question=query_context,
-                application_id=candidate.chunk.application_id,
-                workspace_key=candidate.chunk.workspace_key,
-                generate_answer=False,
-                retrieval_mode="lexical",
-            ),
-            intent_score,
-        )
-    )
+    # 结构化职责的“整句模型确认”不能单独覆盖任意 facet：例如成功运行 CSV 可能凭整句相关性
+    # 被误认为“资源设置”证据，replay 工作簿也可能凭“恢复”二字抢走 Worker 日志面。只有上面
+    # 的 category + facet 业务主题白名单已经明确允许上下文借用时，才启用这条低正文信号路径。
+    # 这样 category 仍然是受控的职责解释，而不是一份资料覆盖整句所有子问题的捷径。
+    structured_facet_reranker_confirmed = context_borrow_passed
     intent_facet_passed = intent_facet_passed or structured_facet_reranker_confirmed
 
     # 长 facet 中只命中一个字段名或一个两字泛词，不能算作完整支持。短 facet（例如“批量”“超时”）

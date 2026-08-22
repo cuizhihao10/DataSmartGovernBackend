@@ -41,6 +41,7 @@ from datasmart_ai_runtime.services.rag.text import (
     normalize_rag_query_facet,
     rag_query_document_intent_score,
     rag_query_requests_multiple_evidence,
+    _rag_intent_category_allowed,
 )
 from datasmart_ai_runtime.services.rag import text as rag_text
 from datasmart_ai_runtime.services.rag import pipeline as rag_pipeline
@@ -55,6 +56,143 @@ class RagPipelineTest(unittest.TestCase):
         self.assertIn("请求", normalize_rag_query_facet("从外部请求到最终收尾"))
         self.assertIn("当前设置", normalize_rag_query_facet("怎样依据当前设置降低压力"))
         self.assertIn("问题", normalize_rag_query_facet("批量搬运出问题时"))
+
+    def test_natural_cross_format_role_conflicts_are_resolved_by_business_action(self) -> None:
+        """跨格式资料职责冲突必须由业务动作收敛，而不能让相似词或远端排序单独决定引用。
+
+        这些断言覆盖真实 SiliconFlow 全局语义子集暴露的八类竞争：排查流程与只读命令、持久化
+        快照与恢复台账、快速参考与任务 API、命令参考与错误码目录、成功运行统计与成功参数表、
+        案例流水与成功运行记录、配置差异与成功参数表、对象存储案例与文件案例。测试直接验证
+        category gate 的可泛化语义合同，不绑定任何黄金集 documentId；Embedding、Reranker 和
+        evidence gate 仍然负责确认正文相关性及最终引用。
+        """
+
+        operations_question = "一次作业出问题后，值班人员该按什么线索逐步排查？"
+        self.assertTrue(
+            _rag_intent_category_allowed("operations_flow", "operations_manual", operations_question)
+        )
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "operations_flow", "operations_command_reference", operations_question
+            )
+        )
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "operations_command_reference", "operations_command_reference", operations_question
+            )
+        )
+
+        command_question = "值班人员应先运行哪些只读操作来找出处理异常？"
+        self.assertTrue(
+            _rag_intent_category_allowed(
+                "operations_flow", "operations_command_reference", command_question
+            )
+        )
+        self.assertFalse(
+            _rag_intent_category_allowed("error_code_catalog", "error_code_catalog", command_question)
+        )
+
+        persistence_question = "保存下来的工作记录怎样串起执行过程、补救方案和依据？"
+        self.assertTrue(
+            _rag_intent_category_allowed("persistence_snapshot", "persistence_snapshot", persistence_question)
+        )
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "recovery_ledger_lifecycle", "database_recovery_ledger", persistence_question
+            )
+        )
+
+        quick_reference_question = "工作刚出错时，值班同学最先应该查看什么？"
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "task_management_api", "api_task_reference", quick_reference_question
+            )
+        )
+
+        successful_runs_question = "最近一次顺利结束的工作用了哪个配置，留下了多少问题数据？"
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "successful_task_configuration", "successful_task_case", successful_runs_question
+            )
+        )
+        self.assertTrue(
+            _rag_intent_category_allowed("successful_runs", "successful_runs", successful_runs_question)
+        )
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "data_quality_task_cases", "data_quality_cases", successful_runs_question
+            )
+        )
+
+        task_case_question = "以往作业记录里包含哪些处理方式和补救策略？"
+        self.assertFalse(
+            _rag_intent_category_allowed("successful_runs", "successful_runs", task_case_question)
+        )
+        self.assertTrue(
+            _rag_intent_category_allowed("task_case_library", "task_case_library", task_case_question)
+        )
+
+        scope_governance_question = "在全局产品基线，检索隔离和授权事实需要共同满足哪些边界？"
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "security_approval",
+                "security_manual",
+                scope_governance_question,
+            )
+        )
+        self.assertTrue(
+            _rag_intent_category_allowed(
+                "security_approval",
+                "security_manual",
+                "受控操作怎样同时证明发起、同意和实际执行的人都没有越界？",
+            )
+        )
+
+        config_diff_question = "当前配置和上次顺利完成时相比，有哪些改动？"
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "successful_task_configuration", "successful_task_case", config_diff_question
+            )
+        )
+        self.assertTrue(
+            _rag_intent_category_allowed(
+                "configuration_versions", "task_config_versions", config_diff_question
+            )
+        )
+
+        object_storage_question = "从文件仓库取数据时，如何避免重复、覆盖或漏掉分区？"
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "file_task_case_workbook", "file_task_cases", object_storage_question
+            )
+        )
+        self.assertTrue(
+            _rag_intent_category_allowed(
+                "object_storage_task_case_workbook", "object_storage_task_cases", object_storage_question
+            )
+        )
+
+        repair_ledger_question = "一次必填项报错需要保留哪些依据、处理动作和确认结果？"
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "worker_execution_log", "worker_execution", repair_ledger_question
+            )
+        )
+        self.assertTrue(
+            _rag_intent_category_allowed("repair_ledger", "repair_ledger", repair_ledger_question)
+        )
+
+        performance_question = "平台在高负荷下，协作、资料查询和处理环节的速度与容量应怎样比较？"
+        self.assertFalse(
+            _rag_intent_category_allowed(
+                "administrator_manual", "administrator_manual", performance_question
+            )
+        )
+        self.assertTrue(
+            _rag_intent_category_allowed(
+                "performance_test_report", "performance_test_report", performance_question
+            )
+        )
 
     def test_structured_responsibility_requires_positive_reranker_confirmation(self) -> None:
         """结构化 category 只能解释职责，不能在 Reranker 零分时单独制造引用。"""
@@ -122,6 +260,70 @@ class RagPipelineTest(unittest.TestCase):
         for question in multi_evidence_questions:
             with self.subTest(question=question):
                 self.assertTrue(rag_query_requests_multiple_evidence(question))
+
+    def test_multi_evidence_detection_recognizes_natural_coordination_language(self) -> None:
+        """自然业务表达也应进入多证据覆盖，而不要求用户套用“结合/同时”模板。
+
+        真实 SiliconFlow 评测中的跨格式问题经常使用“并给出结果”“把几类事实对上”“依据既往
+        情况和当前设置降低压力”等表达。这里验证的是职责族识别，不把任何黄金 documentId 写进
+        规则；单一台账/日志的列清单仍由上一条回归用例保护为单资料查询。
+        """
+
+        natural_multi_evidence_questions = (
+            "请说明近期一次顺利结束的作业用了哪些资源设置，并给出结果概况？",
+            "一条地区字段缺失的故障该如何定位、调整并确认已经恢复？",
+            "夜间安排的工作需要系统按计划启动、有限尝试并保留可复用的经验？",
+            "批量搬运出问题时，怎样把发起动作、受影响内容、补救记录和收尾确认对上？",
+            "字段结构变化之后的事故经过、数据方案和配置改动能否落到处理边界？",
+            "接收方承受不住时，怎样依据既往情况、当前设置和能力上限降低压力？",
+            "处理位置出现偏差时，如何确认可安全恢复、补救步骤和受影响记录一致？",
+        )
+        for question in natural_multi_evidence_questions:
+            with self.subTest(question=question):
+                self.assertTrue(rag_query_requests_multiple_evidence(question))
+
+    def test_context_borrow_keeps_structured_success_result_alongside_parameter_case(self) -> None:
+        """结构化成功运行结果可以借用整句职责，但不能吞掉资源参数 facet。"""
+
+        documents = (
+            RagDocument(
+                document_id="success-parameter-case",
+                title="成功任务资源参数基线",
+                source_uri="test://success-parameter-case",
+                source_type=RagChunkSourceType.TASK_CASE,
+                content="参数基线记录 batch、并发、超时和资源设置。",
+                metadata={"category": "successful_task_case", "contentFormat": "xlsx"},
+            ),
+            RagDocument(
+                document_id="successful-run-result",
+                title="成功运行结果记录",
+                source_uri="test://successful-run-result",
+                source_type=RagChunkSourceType.TASK_CASE,
+                content="run_id=run-20260822 status=SUCCESS rows_written=1200 finished_at=2026-08-22T03:12:00Z",
+                metadata={"category": "successful_runs", "contentFormat": "csv"},
+            ),
+        )
+        pipeline = self._category_pipeline(
+            documents,
+            {"success-parameter-case": 0.82, "successful-run-result": 0.79},
+        )
+
+        result = pipeline.answer(
+            RagQuery(
+                tenant_id="*",
+                project_id="*",
+                actor_id="owner-a",
+                question="请说明近期一次顺利结束的作业用了哪些资源设置，并给出结果概况？",
+                retrieval_mode="lexical",
+                top_k=2,
+                generate_answer=False,
+            )
+        )
+
+        self.assertEqual(
+            {"success-parameter-case", "successful-run-result"},
+            {item.document_id for item in result.citations},
+        )
 
     def test_semantic_lifecycle_evidence_can_pass_without_query_word_overlap(self) -> None:
         """状态快照类资料即使没有题干原词，也能凭明确职责和向量信号进入证据集。"""
