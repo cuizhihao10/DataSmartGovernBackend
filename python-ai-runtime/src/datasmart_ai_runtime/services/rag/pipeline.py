@@ -1277,6 +1277,42 @@ def _score_multi_evidence_facet(
         candidate.chunk,
         context_text=query_context,
     )
+    # 某些结构化运维手册不会复述用户的自然动作词。例如 Kafka Runbook 记录的是“DLT/积压/处置
+    # 步骤”，而用户 facet 可能只写“失败处置”；该资料已经凭整句“消息处理堵塞 + 消费端现象”被
+    # 识别为 Kafka 运维职责，却没有可供局部 facet 复用的字面词。这里仅对明确的 Kafka 运维手册
+    # category 开启整句职责借用，并且要求当前 facet 是“失败处置/堵塞/消费端现象”类主题、候选仍
+    # 有最低正文词法信号。它不会让 category 单独生成证据，也不会影响其他资料职责。
+    category = str((candidate.chunk.metadata or {}).get("category") or "").strip().casefold()
+    kafka_operational_facet = any(
+        term in facet_question.casefold()
+        for term in ("失败处置", "消费端现象", "堵塞", "积压", "dlt", "死信")
+    )
+    # 整句同时包含“消费端现象”和“失败处置”时，职责收敛器会优先把整句判给日志 category，
+    # 这对日志 facet 是正确的，却会让 Runbook facet 无法借用整句分。对当前 Runbook facet 只
+    # 构造最小的 Kafka 运维上下文，保留它自己的动作词和“消息处理堵塞”主题，避免另一 facet 的
+    # category 优先级把本资料误判为不相关。
+    role_context = query_context
+    if category == "kafka_operations_manual" and query_context:
+        role_context = f"{facet_question} 消息处理堵塞 Kafka"
+    context_intent_score = (
+        rag_query_document_intent_score(role_context, candidate.chunk)
+        if role_context
+        else 0.0
+    )
+    kafka_runbook_context_passed = (
+        category == "kafka_operations_manual"
+        and kafka_operational_facet
+        and context_intent_score >= _MULTI_EVIDENCE_RESPONSIBILITY_INTENT_THRESHOLD
+        and (
+            # Runbook 正文往往使用“DLT/积压/消费者组”等规范术语，而自然 facet 只写“失败处置”。
+            # 因此用候选对整句的既有词法/向量信号证明它确实属于本问题，再允许整句职责补足
+            # 局部动作词；不能要求局部 facet 与 Runbook 逐字重合。
+            candidate.lexical_score >= float(settings.minimum_lexical_score) * 0.30
+            or candidate.vector_score >= float(settings.minimum_vector_score) * 0.70
+        )
+    )
+    if kafka_runbook_context_passed:
+        intent_score = max(float(intent_score), float(context_intent_score))
     responsibility_threshold = max(
         0.0,
         min(
@@ -1322,8 +1358,13 @@ def _score_multi_evidence_facet(
     # 稳定，也能让字段恢复手册在“根因”facet 中保留一条可引用证据。
     intent_facet_passed = (
         intent_score >= responsibility_threshold
-        and lexical.score >= settings.minimum_lexical_score * 0.30
-        and bool(lexical.match_terms)
+        and (
+            (
+                lexical.score >= settings.minimum_lexical_score * 0.30
+                and bool(lexical.match_terms)
+            )
+            or kafka_runbook_context_passed
+        )
     )
 
     # 长 facet 中只命中一个字段名或一个两字泛词，不能算作完整支持。短 facet（例如“批量”“超时”）

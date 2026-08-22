@@ -145,6 +145,70 @@ _GENERIC_RAG_QUERY_NGRAMS = frozenset(
     for index in range(max(len(phrase) - size + 1, 0))
 )
 
+# 多证据 facet 与“无答案拒答”使用不同的词项边界。拒答门禁需要删除“字段、恢复、验证”等高频
+# 治理词，防止只命中泛词就把知识库外问题当成有答案；facet 覆盖则必须保留这些词，因为“字段缺失、
+# 故障定位、恢复确认”本身就是三个互补证据面。这里仅删除句法骨架和指代词，不删除业务主题词。
+_MULTI_EVIDENCE_FACET_SCAFFOLD_TERMS = frozenset(
+    {
+        "一条",
+        "一个",
+        "一种",
+        "这",
+        "这个",
+        "这些",
+        "该",
+        "已经",
+        "正在",
+        "然后",
+        "之后",
+        "以后",
+        "时候",
+        "请",
+        "给出",
+        "结合",
+        "同时",
+        "共同",
+        "分别",
+        "以及",
+        "并且",
+        "需要",
+        "哪些",
+        "什么",
+        "是否",
+        "可以",
+        "应该",
+        "如何",
+        "怎样",
+        "的",
+        "时",
+        "后",
+        "前",
+        "中",
+        "里",
+        "上",
+        "下",
+        "为",
+        "把",
+        "将",
+        "对",
+        "从",
+        "到",
+        "并",
+        "和",
+        "与",
+    }
+)
+_MULTI_EVIDENCE_FACET_WEAK_ACTIONS = frozenset(
+    {
+        "调整",
+        "安排",
+        "定位",
+        "查看",
+        "说明",
+        "处理",
+    }
+)
+
 # 离线词法基线无法像 Embedding 一样自动理解同义表达，因此只维护少量稳定、可审计的治理术语扩展。
 # 这些不是把答案写死在检索器里，而是把用户常说的业务表达映射到资料中已经明确使用的术语；真实
 # BGE-M3 仍会通过向量通道提供更广的语义召回。扩展词会进入同一 lexical/rerank 评分，不改变范围或
@@ -229,18 +293,18 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "configuration_versions",
-        (("配置", "参数", "版本"), ("差异", "对比", "上一版", "前一版", "历史")),
+        (("配置", "参数", "版本", "配置改动"), ("差异", "对比", "上一版", "前一版", "历史", "划清可处理边界")),
         ("task_config_versions", "successful_task_case"), ("task_case",), ("json",), 0.85,
     ),
     _RagDocumentIntentHint(
         "operations_flow",
-        (("运维", "运行", "值守"), ("流程", "手册", "排查", "处置", "命令")),
+        (("运维", "运行", "值守", "例行", "数据工作", "异常", "例行数据工作异常"), ("流程", "手册", "排查", "处置", "安排", "命令", "例行数据工作异常")),
         ("operations_manual", "operations_command_reference", "observability_operations_manual", "kafka_operations_manual"),
         ("runbook",), ("docx", "txt"), 0.90,
     ),
     _RagDocumentIntentHint(
         "operations_history",
-        (("历史", "经过", "时间线", "记录"), ("事故", "运维", "故障", "处置")),
+        (("历史", "经过", "时间线", "记录", "以往", "既往"), ("事故", "运维", "故障", "异常", "处置", "排查")),
         ("operations_record", "incident_"), ("incident",), ("docx", "md", "csv", "log"), 0.90,
     ),
     _RagDocumentIntentHint(
@@ -262,7 +326,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
         "agent_lifecycle_state",
         (
             ("自动处理", "自动完成", "自动执行", "处理完成", "事情完成"),
-            ("下一步", "收尾", "最终环节", "最终验证", "结束"),
+            ("下一步", "收尾", "最终环节", "最终验证", "结束", "状态变化", "可追溯链路", "最终收尾", "外部"),
         ),
         ("agent_state_snapshot", "recovery_events", "database_recovery_ledger"),
         ("memory_export", "incident", "dataset"),
@@ -271,18 +335,18 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "connector_capacity",
-        (("连接器", "connector"), ("容量", "版本", "批量", "并发", "清单", "上限")),
+        (("连接器", "connector", "承载", "能力", "承载能力"), ("容量", "版本", "批量", "并发", "清单", "上限", "能力上限", "承载能力")),
         ("connector_capabilities", "connector_inventory"), ("metadata",), ("json", "csv"), 1.00,
     ),
     _RagDocumentIntentHint(
         "schema_mapping",
-        (("字段", "schema", "列"), ("映射", "默认值", "非空", "约束", "漂移", "演进", "不满足要求", "系统代劳", "人工")),
+        (("字段", "schema", "列"), ("映射", "默认值", "非空", "约束", "漂移", "演进", "缺失", "故障", "定位", "不满足要求", "系统代劳", "人工")),
         ("field_mapping_case", "schema_evolution_cases", "recovery_manual", "incident_schema_drift"),
         ("dataset", "runbook", "incident"), ("xlsx", "docx"), 0.95,
     ),
     _RagDocumentIntentHint(
         "field_mapping_case_specific",
-        (("字段", "映射"), ("案例", "样例", "案例库", "表格")),
+        (("字段", "映射", "缺失"), ("案例", "样例", "案例库", "表格", "故障")),
         ("field_mapping_case",), ("dataset", "task_case"), ("xlsx",), 1.15,
     ),
     _RagDocumentIntentHint(
@@ -292,7 +356,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "worker_and_consumer_logs",
-        (("worker", "消费者", "消费组", "consumer"), ("日志", "错误", "验证", "lag", "积压", "堆积", "分区")),
+        (("worker", "消费者", "消费组", "consumer", "执行"), ("日志", "错误", "验证", "恢复", "确认", "lag", "积压", "堆积", "分区")),
         ("worker_execution", "kafka_lag_log", "observability_operations_manual"),
         ("incident", "runbook"), ("log", "docx"), 0.95,
     ),
@@ -322,78 +386,81 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     _RagDocumentIntentHint(
         "event_bridge_correlation",
         (
-            ("事件", "回执", "异步", "桥接", "处理结果", "工作结束", "完成结果"),
-            ("关联", "correlationid", "标识", "版本", "原任务", "回到", "发起", "对应", "那件事"),
+            ("事件", "回执", "异步", "桥接", "处理结果", "工作结束", "完成结果", "外部请求", "外部"),
+            ("关联", "correlationid", "标识", "版本", "原任务", "回到", "发起", "状态变化", "可追溯链路", "最终收尾", "对应", "那件事"),
         ),
         ("architecture", "architecture_event_bridge"), ("wiki", "document"), ("md", "docx", "json"), 1.20,
     ),
     _RagDocumentIntentHint(
         "authentication_reference",
-        (("认证", "会话", "身份", "令牌"), ("接口", "服务", "登录", "调用")),
+        (("认证", "会话", "身份", "令牌", "发起", "主体", "受控操作", "证明发起"), ("接口", "服务", "登录", "调用", "证明", "越界", "证明发起")),
         ("api_authentication_reference",), ("document",), ("docx",), 1.10,
     ),
     _RagDocumentIntentHint(
         "security_approval",
-        (("审批", "授权", "权限", "越权", "同意", "自动处理"), ("双主体", "边界", "安全", "校验", "人工", "范围限制", "做的范围")),
+        (("审批", "授权", "权限", "越权", "同意", "自动处理", "受控操作"), ("双主体", "边界", "安全", "校验", "人工", "范围限制", "证明", "实际执行", "越界", "受控操作", "做的范围")),
         ("security_manual",), ("rule", "document"), ("docx",), 1.15,
     ),
     _RagDocumentIntentHint(
         "audit_events",
-        (("审计", "留痕"), ("修复", "调用", "事件", "记录")),
+        (("审计", "留痕", "发起", "同意"), ("修复", "调用", "事件", "记录", "实际执行", "越界", "同意")),
         ("audit_event_stream",), ("memory_export", "incident"), ("jsonl",), 1.10,
     ),
     _RagDocumentIntentHint(
         "api_contract",
-        (("接口", "api", "rest", "websocket"), ("标识", "合同", "字段", "说明", "响应")),
+        (("接口", "api", "rest", "websocket", "外部请求"), ("标识", "合同", "字段", "说明", "响应", "过程", "状态变化", "可追溯链路")),
         ("api_contract_snapshot", "api_reference", "api_agent_reference"), ("metadata", "document"), ("json", "docx"), 1.00,
     ),
     _RagDocumentIntentHint(
         "websocket_events",
-        (("websocket", "ws"), ("事件", "状态", "实时", "字典")),
+        (("websocket", "ws", "外部请求"), ("事件", "状态", "状态变化", "实时", "字典", "可追溯链路")),
         ("websocket_event_reference",), ("document",), ("docx",), 0.90,
     ),
     _RagDocumentIntentHint(
         "task_and_data_sync_api",
-        (("任务", "同步", "执行"), ("接口", "api", "触发", "请求", "响应")),
+        (("任务", "同步", "执行", "批量搬运"), ("接口", "api", "触发", "请求", "响应", "发起动作", "受影响内容")),
         ("api_data_sync_reference", "api_task_reference"), ("document",), ("docx",), 0.95,
     ),
     _RagDocumentIntentHint(
         "task_parameters",
-        (("任务", "作业", "同步"), ("参数", "配置", "基线", "批量", "并发", "超时")),
+        (("任务", "作业", "同步", "考虑配置", "夜间安排", "工作"), ("参数", "配置", "基线", "批量", "并发", "超时", "出错", "有限尝试")),
         ("successful_task_case", "api_task_cases", "kafka_task_cases", "schedule_case", "task_case_library", "full_load_task_cases"),
         ("task_case",), ("xlsx", "jsonl"), 0.90,
     ),
     _RagDocumentIntentHint(
         "schedule_cases",
-        (("定时", "调度", "夜间", "非工作时间", "例行"), ("重试", "失败", "间隔", "次数", "执行")),
+        (("定时", "调度", "夜间", "夜间安排", "非工作时间", "例行"), ("重试", "失败", "出错", "有限尝试", "夜间安排", "间隔", "次数", "执行")),
         ("schedule_case",), ("task_case", "incident"), ("xlsx", "jsonl"), 1.20,
     ),
     _RagDocumentIntentHint(
         "task_case_library",
-        (("任务", "同步", "作业"), ("案例", "案例库", "流水", "保留", "样例")),
+        (("任务", "同步", "作业", "工作", "可复用经验"), ("案例", "案例库", "流水", "保留", "样例", "可复用经验")),
         ("task_case_library", "full_load_task_cases", "api_task_cases", "kafka_task_cases", "recovery_replay_cases", "successful_task_case"),
         ("task_case", "incident"), ("xlsx", "jsonl"), 0.95,
     ),
     _RagDocumentIntentHint(
         "full_load_task_cases",
-        (("全量", "批量导入"), ("任务", "同步", "作业", "案例")),
+        (("全量", "批量导入", "批量搬运"), ("任务", "同步", "作业", "案例", "受影响内容", "批量搬运")),
         ("full_load_task_cases",), ("task_case",), ("xlsx",), 1.00,
     ),
     _RagDocumentIntentHint(
         "kafka_operations",
-        (("kafka", "消息", "消费者", "消费组"), ("积压", "堆积", "堆着不动", "分区", "lag", "dlt", "死信", "失败队列", "回放", "重复消费", "重复处理", "处理变慢")),
+        # 真实运维人员经常不会直接说出 Kafka，而是描述“消息处理堵塞、消费端现象、失败处置”。
+        # 这些是 Kafka 资料中稳定的业务同义表达；它们只激活职责先验，仍需正文、Embedding、
+        # SiliconFlow Reranker 和 evidence gate 共同确认，不能单独生成引用。
+        (("kafka", "消息", "消费者", "消费组", "消费端", "消息处理", "失败处置"), ("积压", "堆积", "堵塞", "堆着不动", "分区", "lag", "dlt", "死信", "失败队列", "失败处置", "回放", "重复消费", "重复处理", "处理变慢", "消费端现象")),
         ("kafka_operations_manual", "kafka_task_cases", "kafka_lag_log", "incident_kafka_backlog"),
         ("runbook", "task_case", "incident"), ("docx", "xlsx", "log"), 1.00,
     ),
     _RagDocumentIntentHint(
         "recovery_and_audit",
-        (("恢复", "修复", "补救", "补救过程", "recovery"), ("事件", "台账", "验证", "最后确认", "审计", "快照", "状态", "依据", "动作")),
+        (("恢复", "修复", "补救", "补救过程", "补救步骤", "安全恢复", "受影响记录", "recovery"), ("事件", "台账", "验证", "最后确认", "收尾确认", "审计", "快照", "状态", "受影响记录", "一致", "依据", "动作")),
         ("recovery_events", "database_recovery_ledger", "recovery_decision_trace", "agent_state_snapshot"),
         ("incident", "dataset", "memory_export"), ("json", "jsonl", "sql"), 0.90,
     ),
     _RagDocumentIntentHint(
         "recovery_decision",
-        (("恢复", "修复", "recovery"), ("决策", "决议", "原因", "动作")),
+        (("恢复", "修复", "补救", "安全恢复", "补救步骤", "recovery"), ("决策", "决议", "原因", "动作", "补救步骤", "一致")),
         ("recovery_decision_trace", "recovery_events"), ("incident",), ("jsonl",), 1.00,
     ),
     _RagDocumentIntentHint(
@@ -403,22 +470,22 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "recovery_replay",
-        (("回放", "重放", "重新处理", "replay"), ("失败对象", "失败分片", "分片", "位点", "检查点", "安全起点")),
+        (("回放", "重放", "重新处理", "replay", "补救步骤", "处理位置"), ("失败对象", "失败分片", "分片", "位点", "检查点", "处理位置", "位置偏差", "安全起点")),
         ("recovery_replay_cases", "recovery_events"), ("incident",), ("xlsx", "jsonl"), 1.10,
     ),
     _RagDocumentIntentHint(
         "checkpoint_incident",
-        (("checkpoint", "检查点", "位点", "进度位置"), ("事故", "漂移", "异常", "根因", "提前确认")),
+        (("checkpoint", "检查点", "位点", "进度位置", "处理位置", "位置偏差"), ("事故", "漂移", "位置偏差", "异常", "根因", "提前确认")),
         ("incident_checkpoint",), ("incident",), ("docx",), 1.10,
     ),
     _RagDocumentIntentHint(
         "rag_evaluation",
-        (("rag", "检索"), ("评测", "评估", "指标", "recall", "citationprecision", "拒答")),
+        (("rag", "检索", "资料匹配", "匹配结果"), ("评测", "评估", "指标", "质量表现", "recall", "citationprecision", "拒答")),
         ("rag_agent_evaluation_report", "test_report", "performance_test_report"), ("document",), ("docx",), 1.00,
     ),
     _RagDocumentIntentHint(
         "pgvector_and_model_provider",
-        (("pgvector", "向量", "embedding", "reranker", "资料匹配", "语义检索", "检索结果", "智能服务", "外部服务"), ("模型", "provider", "维度", "检索", "索引", "存放设置", "存储设置", "结果对不上", "不稳定", "被限制", "答复不全", "响应缺项", "降级", "处理变慢")),
+        (("pgvector", "向量", "embedding", "reranker", "资料匹配", "匹配结果", "语义检索", "检索结果", "智能服务", "外部服务", "底层存放"), ("模型", "provider", "维度", "检索", "索引", "存放设置", "存储设置", "结果异常", "结果对不上", "不稳定", "被限制", "答复不全", "响应缺项", "降级", "处理变慢")),
         ("postgresql_pgvector_manual", "model_provider_manual"), ("runbook",), ("docx", "md"), 0.90,
     ),
     _RagDocumentIntentHint(
@@ -428,23 +495,23 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "field_profile",
-        (("字段", "列", "field"), ("画像", "统计", "null_ratio", "distinct_count", "分布")),
+        (("字段", "列", "field", "字段统计"), ("画像", "统计", "质量表现", "null_ratio", "distinct_count", "分布")),
         ("field_profile_statistics",), ("dataset",), ("csv",), 1.20,
     ),
     _RagDocumentIntentHint(
         "rate_limit",
-        (("限流", "429", "throttle"), ("目标端", "api", "压力", "并发", "批量", "连接器")),
+        (("限流", "429", "throttle", "接收方", "承受不住", "接收方承受不住"), ("目标端", "api", "压力", "降低压力", "能力上限", "接收方承受不住", "并发", "批量", "连接器")),
         ("incident_rate_limit", "api_task_cases", "connector_inventory"), ("incident", "task_case", "metadata"),
         ("docx", "xlsx", "csv"), 1.00,
     ),
     _RagDocumentIntentHint(
         "rate_limit_incident",
-        (("限流", "429", "throttle"), ("事故", "历史", "复盘", "影响")),
+        (("限流", "429", "throttle", "接收方", "承受不住", "接收方承受不住"), ("事故", "历史", "既往情况", "接收方承受不住", "复盘", "影响")),
         ("incident_rate_limit",), ("incident",), ("docx",), 1.20,
     ),
     _RagDocumentIntentHint(
         "schema_drift",
-        (("schema", "字段", "列"), ("漂移", "演进", "变更", "兼容")),
+        (("schema", "字段", "列", "字段结构"), ("漂移", "演进", "变更", "兼容", "兼容方案", "事故经过")),
         ("incident_schema_drift", "schema_evolution_cases", "task_config_versions"),
         ("incident", "dataset", "task_case"), ("docx", "xlsx", "json"), 1.00,
     ),
@@ -457,7 +524,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "data_sync_api_contract",
-        (("数据同步", "同步", "连接器"), ("接口", "预检", "分片", "checkpoint", "台账")),
+        (("数据同步", "同步", "连接器", "批量搬运"), ("接口", "预检", "分片", "checkpoint", "台账", "发起动作", "受影响内容")),
         ("api_data_sync_reference",), ("document",), ("docx",), 1.25,
     ),
     _RagDocumentIntentHint(
@@ -467,12 +534,12 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "lifecycle_api_contract",
-        (("agent", "任务", "同步"), ("标识", "关联", "correlationid", "rest", "websocket")),
+        (("agent", "任务", "同步", "外部请求"), ("标识", "关联", "correlationid", "rest", "websocket", "状态变化", "可追溯链路", "最终收尾")),
         ("api_reference",), ("document",), ("docx",), 1.25,
     ),
     _RagDocumentIntentHint(
         "task_management_api",
-        (("任务", "作业"), ("接口", "创建", "版本", "触发", "历史", "调度")),
+        (("任务", "作业", "工作", "夜间安排"), ("接口", "创建", "版本", "触发", "历史", "调度", "出错", "有限尝试")),
         ("api_task_reference",), ("document",), ("docx",), 1.20,
     ),
     _RagDocumentIntentHint(
@@ -497,7 +564,7 @@ _RAG_QUERY_DOCUMENT_INTENT_HINTS: tuple[_RagDocumentIntentHint, ...] = (
     ),
     _RagDocumentIntentHint(
         "rag_agent_evaluation_report",
-        (("rag", "检索", "材料", "证据"), ("agent", "智能体", "决策", "自动"), ("评测", "评判", "可靠", "品质", "引用", "拒答", "治理")),
+        (("rag", "检索", "材料", "证据", "质量表现"), ("agent", "智能体", "决策", "自动"), ("评测", "评判", "可靠", "品质", "质量表现", "引用", "拒答", "治理")),
         ("rag_agent_evaluation_report",), ("document",), ("docx",), 1.20,
     ),
     _RagDocumentIntentHint(
@@ -1146,6 +1213,40 @@ def distinctive_rag_query_terms(text: str) -> tuple[str, ...]:
     return tuple(distinctive)
 
 
+def multi_evidence_facet_terms(text: str) -> tuple[str, ...]:
+    """提取多证据覆盖使用的业务主题词。
+
+    该路径不能复用 :func:`distinctive_rag_query_terms`。后者服务于“无答案拒答”安全门禁，必须把
+    ``字段``、``恢复``、``验证`` 等高频词视为不足以单独证明答案的泛词；多证据选择的目标却是判断
+    一份资料是否覆盖某个子问题，恰恰需要保留这些主题词。实现只移除有限提问骨架，再生成中文
+    n-gram 和 ASCII 标识符，因此不会把某个黄金文档或答案写入路由规则。
+    """
+
+    normalized = normalize_rag_query_facet(text)
+    if not normalized:
+        return ()
+    # 先删除完整骨架短语，避免“一条地区字段”生成跨越数量词的伪 n-gram。单字连接词不在这里
+    # 直接做字符串替换，因为“并发”包含“并”，“与时”这类业务词也可能包含连接字；它们应当
+    # 在分词后按完整 token 过滤，不能破坏真实业务术语。
+    for phrase in sorted(_MULTI_EVIDENCE_FACET_SCAFFOLD_TERMS, key=len, reverse=True):
+        if len(phrase) > 1:
+            normalized = normalized.replace(phrase, " ")
+    terms: list[str] = []
+    seen: set[str] = set()
+    for variant in _query_lexical_variants(normalized):
+        for token in tokenize_for_rag(variant):
+            candidate = str(token).strip().casefold()
+            if (
+                len(candidate) < 2
+                or candidate in _MULTI_EVIDENCE_FACET_SCAFFOLD_TERMS
+                or candidate in seen
+            ):
+                continue
+            seen.add(candidate)
+            terms.append(candidate)
+    return tuple(terms)
+
+
 def _strip_generic_rag_query_phrases(text: str) -> str:
     """从拒答锚点提取输入中删除完整的治理泛词。
 
@@ -1184,7 +1285,13 @@ def rag_query_variant_has_substantive_signal(text: str) -> bool:
     “满足哪些边界”，也能保留“批量、并发、超时、最终运行结果”等短但真实的业务 facet。
     """
 
-    return bool(distinctive_rag_query_terms(normalize_rag_query_facet(text)))
+    terms = multi_evidence_facet_terms(normalize_rag_query_facet(text))
+    if not terms:
+        return False
+    # 单独的“调整/安排/定位”只是连接上下文中的动作，不足以构成独立证据面；如果它与“字段、
+    # Kafka、恢复”等业务主题组成同一 facet，仍会保留。这样不会让空动作占用集合覆盖名额，
+    # 也不会破坏“批量/并发/超时”这类短但明确的业务 facet。
+    return not all(term in _MULTI_EVIDENCE_FACET_WEAK_ACTIONS for term in terms)
 
 
 def rag_query_document_intent_score(
@@ -1691,7 +1798,7 @@ def _rag_intent_category_allowed(
         )
         if facet_explicit_success:
             return normalized_category == "successful_task_case"
-        if any(term in task_parameter_context for term in ("kafka", "dlt", "消费者", "积压")):
+        if any(term in task_parameter_context for term in ("kafka", "dlt", "消费者", "消费端", "积压")):
             return normalized_category == "kafka_task_cases"
         if any(term in task_parameter_context for term in ("api", "限流", "分页")):
             return normalized_category == "api_task_cases"
@@ -1706,7 +1813,7 @@ def _rag_intent_category_allowed(
         )
         if facet_explicit_success:
             return normalized_category == "successful_task_case"
-        if any(term in task_case_context for term in ("kafka", "dlt", "消费者", "积压")):
+        if any(term in task_case_context for term in ("kafka", "dlt", "消费者", "消费端", "积压")):
             return normalized_category == "kafka_task_cases"
         if any(term in task_case_context for term in ("api", "限流", "分页")):
             return normalized_category == "api_task_cases"
@@ -1718,11 +1825,11 @@ def _rag_intent_category_allowed(
         # Kafka 排障的三个证据面职责不同：消费者日志证明当前 lag，DLT 手册解释规则与处置，
         # 任务案例保存参数。事故复盘可以解释历史根因，但不能因为同时提到这些词就包办全部职责。
         # 本判断既作用于拆分后的 facet，也作用于整句领域平局裁决；它只读取 category，不绑定文档 ID。
-        if any(term in query for term in ("消费者日志", "consumer lag", "group lag", "grouplag")):
+        if any(term in query for term in ("消费者日志", "消费端现象", "consumer lag", "group lag", "grouplag")):
             return normalized_category == "kafka_lag_log"
-        if any(term in query for term in ("dlt", "死信", "规则处置", "回放规则")):
+        if any(term in query for term in ("dlt", "死信", "失败处置", "规则处置", "回放规则")):
             return normalized_category == "kafka_operations_manual"
-        if "任务参数" in query or "参数基线" in query:
+        if any(term in query for term in ("任务参数", "参数基线", "考虑配置", "配置")):
             return normalized_category == "kafka_task_cases"
         return normalized_category in {
             "kafka_operations_manual",

@@ -3296,6 +3296,79 @@ class RagPipelineTest(unittest.TestCase):
             {item.document_id for item in result.citations},
         )
 
+    def test_natural_kafka_operations_facets_keep_runbook_after_remote_window(self) -> None:
+        """自然中文只描述“消息堵塞/消费端现象/失败处置”时，仍应保留 Kafka Runbook。
+
+        真实 SiliconFlow 评测暴露了一个只有线上模型窗口才会出现的边界：Kafka 运维手册正文使用
+        DLT、积压和回放等规范词，而用户 facet 只说“失败处置”。如果最终覆盖阶段只比较局部字面
+        词，通用数据质量案例会凭“失败/处置”抢走该 facet。管线现在允许明确的
+        ``kafka_operations_manual`` category 借用最小 Kafka 上下文，但仍要求候选已经有整句词法
+        或向量信号；本测试验证的是职责补足，不是把 category 当作无条件答案。
+        """
+
+        documents = (
+            RagDocument(
+                document_id="natural-kafka-case",
+                title="Kafka 流式同步任务案例",
+                source_uri="test://natural-kafka-case",
+                source_type=RagChunkSourceType.TASK_CASE,
+                content="Kafka 任务配置包含分区、offset、乱序和失败重试参数。",
+                metadata={"category": "kafka_task_cases", "contentFormat": "xlsx"},
+            ),
+            RagDocument(
+                document_id="natural-kafka-log",
+                title="Kafka 消费端诊断日志",
+                source_uri="test://natural-kafka-log",
+                source_type=RagChunkSourceType.INCIDENT,
+                content="消费者日志记录 groupLag、积压分区和当前消费延迟。",
+                metadata={"category": "kafka_lag_log", "contentFormat": "log"},
+            ),
+            RagDocument(
+                document_id="natural-kafka-runbook",
+                title="Kafka DLT 运维处置手册",
+                source_uri="test://natural-kafka-runbook",
+                source_type=RagChunkSourceType.RUNBOOK,
+                content="DLT 手册说明失败消息隔离、受治理回放和恢复验证步骤。",
+                metadata={"category": "kafka_operations_manual", "contentFormat": "docx"},
+            ),
+            RagDocument(
+                document_id="natural-quality-case",
+                title="数据质量失败处置案例",
+                source_uri="test://natural-quality-case",
+                source_type=RagChunkSourceType.TASK_CASE,
+                content="数据质量案例记录失败数据隔离、处置动作和复核结果。",
+                metadata={"category": "data_quality_cases", "contentFormat": "xlsx"},
+            ),
+        )
+        pipeline = self._category_pipeline(
+            documents,
+            {
+                "natural-quality-case": 0.98,
+                "natural-kafka-case": 0.90,
+                "natural-kafka-log": 0.88,
+                "natural-kafka-runbook": 0.86,
+            },
+        )
+
+        result = pipeline.answer(
+            RagQuery(
+                tenant_id="*",
+                project_id="*",
+                actor_id="owner-a",
+                question="消息处理堵塞时，怎样同时考虑配置、消费端现象和失败处置？",
+                source_types=("incident", "runbook", "task_case"),
+                retrieval_mode="lexical",
+                top_k=6,
+                generate_answer=False,
+            )
+        )
+
+        self.assertEqual(
+            {"natural-kafka-case", "natural-kafka-log", "natural-kafka-runbook"},
+            {item.document_id for item in result.citations},
+        )
+        self.assertNotIn("natural-quality-case", {item.document_id for item in result.citations})
+
     def test普通字段标识符不会冻结多证据选择(self) -> None:
         """普通字段名命中 exact 通道时，仍必须保留手册、案例和执行日志的互补证据。"""
 
